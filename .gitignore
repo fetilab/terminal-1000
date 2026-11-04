@@ -34,3 +34,6 @@ research/
 spec/
 *.deb
 asar-extracted/
+
+# ── 开发期验证截图（非交付物）──────────────────
+docs/

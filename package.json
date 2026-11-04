@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Terminal and remote connection manager (independent reimplementation)",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "packageManager": "pnpm@11.28.5",
   "scripts": {
     "dev": "pnpm --filter @t1000/desktop dev",
