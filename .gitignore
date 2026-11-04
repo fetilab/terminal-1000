@@ -1,0 +1,36 @@
+# ── 依赖与构建产物 ───────────────────────────────
+node_modules/
+dist/
+out/
+build/
+release/
+coverage/
+*.tsbuildinfo
+*.log
+
+# ── 本地环境 ────────────────────────────────────
+.env
+.env.local
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!/.vscode/settings.json.example
+
+# ── 运行时数据（含用户凭证，绝不入库）──────────────
+data/
+*.db
+*.db-wal
+*.db-shm
+secrets/
+backups/
+notes/
+session-log/
+
+# ── 内部/非公开材料（不属于开源项目内容）───────────
+# research/ 原始软件包与解包产物（第三方二进制，不可分发）
+# spec/     逆向分析笔记（内部参考资料，不随 GPL 源码发布）
+research/
+spec/
+*.deb
+asar-extracted/

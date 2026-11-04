@@ -1,0 +1,175 @@
+/**
+ * IPC 契约：单一通道 + 域/动作路由。
+ *
+ * 设计要点
+ * - 只有一条 Electron IPC 通道（`t1000`），避免通道名散落各处。
+ * - 载荷统一 `{ domain, action, payload }`，主进程按 domain 分派到 handler。
+ * - 入参在 handler 边界用 zod 校验；这里给出信封与各域的 schema 定义位置。
+ */
+
+import { z } from 'zod'
+
+/** 唯一的 IPC 通道名 */
+export const IPC_CHANNEL = 't1000' as const
+
+/** IPC 域（与主进程服务边界一一对应，见 ARCHITECTURE.md §3） */
+export const IPC_DOMAINS = [
+  'app',
+  'store',
+  'credential',
+  'ssh',
+  'sftp',
+  'forward',
+  'pty',
+  'telnet',
+  'vnc',
+  'rdp',
+  'monitor',
+  'notes',
+  'completion',
+  'ai',
+  'mcp',
+  'sessionlog',
+  'settings',
+  'sync',
+] as const
+
+export type IpcDomain = (typeof IPC_DOMAINS)[number]
+
+/** 请求信封 */
+export interface IpcRequest<D extends IpcDomain = IpcDomain, A extends string = string, P = unknown> {
+  domain: D
+  action: A
+  payload: P
+}
+
+/** 成功响应 */
+export interface IpcOk<T> {
+  ok: true
+  data: T
+}
+
+/** 失败响应：code 稳定可判，message 面向用户 */
+export interface IpcErr {
+  ok: false
+  error: {
+    code: IpcErrorCode
+    message: string
+    /** 可选的补充数据（如 zod 的 issues） */
+    detail?: unknown
+  }
+}
+
+export type IpcResponse<T> = IpcOk<T> | IpcErr
+
+/** 稳定错误码 */
+export type IpcErrorCode =
+  | 'BAD_REQUEST'
+  | 'NOT_FOUND'
+  | 'CONFLICT'
+  | 'UNAUTHORIZED'
+  | 'FORBIDDEN'
+  | 'NOT_CONNECTED'
+  | 'TIMEOUT'
+  | 'UNSUPPORTED'
+  | 'INTERNAL'
+
+export const ipcRequestSchema = z.object({
+  domain: z.enum(IPC_DOMAINS),
+  action: z.string().min(1),
+  payload: z.unknown(),
+})
+
+/** 构造请求（渲染侧用，保证类型收敛） */
+export function ipcRequest<D extends IpcDomain, A extends string, P>(
+  domain: D,
+  action: A,
+  payload: P,
+): IpcRequest<D, A, P> {
+  return { domain, action, payload }
+}
+
+/**
+ * 各域动作名。集中登记以免拼写漂移；新增动作先加这里。
+ */
+export const Actions = {
+  app: ['getInfo', 'getPaths', 'openExternal', 'showItemInFolder', 'quit', 'relaunch'] as const,
+
+  store: [
+    'listConnections',
+    'getConnection',
+    'saveConnection',
+    'deleteConnection',
+    'moveConnection',
+    'listGroups',
+    'saveGroup',
+    'deleteGroup',
+    'exportBackup',
+    'importBackup',
+    'setMasterPassword',
+    'unlock',
+    'lock',
+    'isUnlocked',
+    'search',
+  ] as const,
+
+  credential: ['list', 'get', 'save', 'delete'] as const,
+
+  ssh: [
+    'connect',
+    'disconnect',
+    'listSessions',
+    'write',
+    'resize',
+    'verifyHostKey',
+    'respondAuth',
+    'testConnection',
+    'reconnect',
+    'setEncoding',
+  ] as const,
+
+  sftp: [
+    'list',
+    'stat',
+    'mkdir',
+    'rename',
+    'remove',
+    'chmod',
+    'home',
+    'readFile',
+    'writeFile',
+    'upload',
+    'download',
+    'cancelTransfer',
+    'listTransfers',
+    'openEditor',
+  ] as const,
+
+  forward: ['open', 'close', 'list'] as const,
+
+  pty: ['open', 'close', 'write', 'resize', 'list', 'listProfiles', 'listShells'] as const,
+
+  telnet: ['connect', 'disconnect', 'write'] as const,
+
+  vnc: ['connect', 'disconnect', 'sendPointer', 'sendKey'] as const,
+
+  rdp: ['connect', 'disconnect', 'sendResize'] as const,
+
+  monitor: ['start', 'stop', 'getSnapshot', 'listCards', 'setCards', 'refresh'] as const,
+
+  notes: ['list', 'get', 'save', 'delete', 'restore', 'purge', 'listFolders'] as const,
+
+  completion: ['complete', 'settings', 'setSettings', 'listSpecs'] as const,
+
+  ai: ['listChats', 'getChat', 'send', 'cancel', 'deleteChat', 'listProviders', 'setProvider'] as const,
+
+  mcp: ['status', 'start', 'stop', 'listTools', 'setPolicy'] as const,
+
+  sessionlog: ['start', 'stop', 'list', 'read', 'delete'] as const,
+
+  settings: ['getAll', 'get', 'set', 'reset'] as const,
+
+  sync: ['status', 'login', 'logout', 'push', 'pull', 'resolveConflict'] as const,
+} as const
+
+export type DomainAction<D extends IpcDomain> = (typeof Actions)[D][number]
