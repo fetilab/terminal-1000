@@ -2,13 +2,7 @@ packages:
   - 'apps/*'
   - 'packages/*'
   - 'server'
-
-# 允许执行安装脚本的依赖（pnpm 默认全部阻止）。
-# electron 需要 postinstall 下载二进制；esbuild 需要放置平台二进制；
-# 其余三个是原生模块，需要编译。
-onlyBuiltDependencies:
-  - electron
-  - esbuild
-  - better-sqlite3
-  - node-pty
-  - argon2
+allowBuilds:
+  cpu-features: true
+  node-pty: true
+  ssh2: true

@@ -36,4 +36,6 @@ spec/
 asar-extracted/
 
 # ── 开发期验证截图（非交付物）──────────────────
-docs/
+# docs/ 为工程文档，需要入库；仅忽略其中的临时截图
+docs/*.png
+docs/shot-*.png
