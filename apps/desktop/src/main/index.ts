@@ -8,6 +8,8 @@ import { registerAllHandlers } from './ipc'
 import { createLogger } from './logger'
 import { getAppPaths } from './paths'
 import { broadcast, createWindow, getMainWindow } from './window'
+import { shutdownSsh } from './services/ssh'
+import { shutdownForwards } from './services/forward'
 
 const log = createLogger('bootstrap')
 
@@ -52,6 +54,27 @@ app.whenReady().then(bootstrap).catch((err) => {
   log.error('启动失败', err)
   app.exit(1)
 })
+
+/**
+ * 退出前释放外部资源。
+ *
+ * 顺序很重要：先关隧道（释放本地监听端口，否则下次启动会 EADDRINUSE），
+ * 再断 SSH 会话（隧道依赖会话）。
+ */
+function shutdownServices(): void {
+  try {
+    shutdownForwards()
+  } catch (err) {
+    log.warn('关闭隧道时出错', err)
+  }
+  try {
+    shutdownSsh()
+  } catch (err) {
+    log.warn('关闭 SSH 会话时出错', err)
+  }
+}
+
+app.on('before-quit', shutdownServices)
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
