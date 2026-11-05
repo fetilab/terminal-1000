@@ -20,9 +20,12 @@ export interface ExecResult {
   code: number
 }
 
-/** 在已建立会话上执行远端命令 */
+/**
+ * 在已建立会话上执行远端命令。
+ * 用可调用签名（而非 `{ exec(): ... }`），调用端写成 `session.exec(cmd)` 更自然。
+ */
 export interface RemoteExec {
-  exec(command: string, options?: { timeoutMs?: number }): Promise<ExecResult>
+  (command: string, options?: { timeoutMs?: number }): Promise<ExecResult>
 }
 
 /** 一个已建立的 SSH 会话句柄 */
