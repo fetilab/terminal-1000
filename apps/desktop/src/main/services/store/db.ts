@@ -17,7 +17,15 @@ import Database from 'better-sqlite3'
 import type { Database as SqliteDatabase, Statement } from 'better-sqlite3'
 
 /** 实体后缀。store_key = `GeneralDatabaseLocalImp-<Entity>DatabaseLocalImp` */
-export type StoreEntity = 'Server' | 'Group' | 'Credential' | 'Settings' | 'AIChat'
+export type StoreEntity =
+  | 'Server'
+  | 'Group'
+  | 'Credential'
+  | 'Settings'
+  | 'AIChat'
+  | 'Note'
+  | 'NoteFolder'
+  | 'SessionLog'
 
 export const STORE_ENTITIES: readonly StoreEntity[] = [
   'Server',
@@ -25,6 +33,9 @@ export const STORE_ENTITIES: readonly StoreEntity[] = [
   'Credential',
   'Settings',
   'AIChat',
+  'Note',
+  'NoteFolder',
+  'SessionLog',
 ] as const
 
 /** 拼出参考实现同构的 store_key */
@@ -39,6 +50,9 @@ export const STORE_KEYS = {
   credential: storeKeyOf('Credential'),
   settings: storeKeyOf('Settings'),
   aiChat: storeKeyOf('AIChat'),
+  note: storeKeyOf('Note'),
+  noteFolder: storeKeyOf('NoteFolder'),
+  sessionLog: storeKeyOf('SessionLog'),
 } as const
 
 /** 元数据表里保存主密码校验记录、schema 版本等 */

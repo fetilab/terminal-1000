@@ -1,132 +1,186 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 terminal-1000 contributors
 
-import { useEffect, useState } from 'react'
-import { invoke } from './lib/ipc'
-
-interface AppInfo {
-  name: string
-  version: string
-  electron: string
-  chrome: string
-  node: string
-  platform: string
-  arch: string
-  locale: string
-}
-
-interface AppPaths {
-  userData: string
-  dbFile: string
-  logDir: string
-}
-
 /**
- * 应用外壳。当前阶段只做两件事：
- * 1. 证明 main ↔ preload ↔ renderer 链路可用
- * 2. 落地整体布局骨架（左图标栏 / 列表面板 / 内容区）
+ * 应用外壳：图标栏 | 列表面板 | 内容区。
+ *
+ * 三栏的角色在每个视图下是固定的：
+ *   rail    = 顶级功能入口（连接中心 / 控制台 / 笔记 / 工具 / 设置）
+ *   panel   = 当前视图的导航（连接中心是分组树，控制台是会话列表…）
+ *   content = 当前视图的主体
+ *
+ * 视图内容全部走 React.lazy：首屏只会下载「连接中心」这一个 chunk，
+ * xterm / 监控面板 / 连接表单这类重模块在真正用到时才拉取。
  */
+
+import { Suspense, lazy, useEffect } from 'react'
+import { Icon, type IconName } from './components/Icon'
+import { Loading } from './components/Feedback'
+import { ToastHost } from './components/Toast'
+import { actions, loadConnections, useStoreShallow, wireEvents, type ViewId } from './lib/store'
+import { installTestHook } from './lib/testhook'
+import './styles/global.css'
+import './styles/components.css'
+
+const ConnectionsView = lazy(() => import('./features/connections/ConnectionsView'))
+const TerminalWorkspace = lazy(() => import('./features/terminal/TerminalWorkspace'))
+const NotesView = lazy(() => import('./features/notes/NotesView'))
+const ToolsView = lazy(() => import('./features/tools/ToolsView'))
+const SettingsView = lazy(() => import('./features/settings/SettingsView'))
+
+const ConnectionsSidebar = lazy(() =>
+  import('./features/connections/ConnectionsSidebar').then((m) => ({ default: m.ConnectionsSidebar })),
+)
+const SessionSidebar = lazy(() =>
+  import('./features/terminal/SessionSidebar').then((m) => ({ default: m.SessionSidebar })),
+)
+const NotesSidebar = lazy(() =>
+  import('./features/notes/NotesView').then((m) => ({ default: m.NotesSidebar })),
+)
+const ToolsSidebar = lazy(() =>
+  import('./features/tools/ToolsView').then((m) => ({ default: m.ToolsSidebar })),
+)
+const SettingsSidebar = lazy(() =>
+  import('./features/settings/SettingsView').then((m) => ({ default: m.SettingsSidebar })),
+)
+
+interface RailEntry {
+  view: ViewId
+  icon: IconName
+  label: string
+}
+
+const RAIL: RailEntry[] = [
+  { view: 'connections', icon: 'connections', label: '连接中心' },
+  { view: 'console', icon: 'console', label: '控制台' },
+  { view: 'notes', icon: 'notes', label: '笔记' },
+  { view: 'tools', icon: 'tools', label: '工具' },
+]
+
+function Rail(): React.JSX.Element {
+  const { view, sessionCount } = useStoreShallow((s) => ({ view: s.view, sessionCount: s.tabs.length }))
+
+  const item = (entry: RailEntry, badge?: number): React.JSX.Element => {
+    const active = view === entry.view
+    return (
+      <button
+        key={entry.view}
+        type="button"
+        className={`rail-item${active ? ' rail-item--active' : ''}`}
+        title={entry.label}
+        aria-label={entry.label}
+        aria-current={active ? 'page' : undefined}
+        onClick={() => actions.setView(entry.view)}
+      >
+        <Icon name={entry.icon} size={18} />
+        {badge && badge > 0 ? <span className="rail-badge">{badge > 99 ? '99+' : badge}</span> : null}
+      </button>
+    )
+  }
+
+  return (
+    <nav className="rail" aria-label="功能入口">
+      <div className="rail-brand" title="terminal-1000">
+        T1
+      </div>
+      {RAIL.map((entry) => item(entry, entry.view === 'console' ? sessionCount : undefined))}
+      <div className="rail-spacer" />
+      <button
+        type="button"
+        className={`rail-item${view === 'settings' ? ' rail-item--active' : ''}`}
+        title="设置"
+        aria-label="设置"
+        aria-current={view === 'settings' ? 'page' : undefined}
+        onClick={() => actions.setView('settings')}
+      >
+        <Icon name="settings" size={18} />
+      </button>
+    </nav>
+  )
+}
+
+function Sidebar(): React.JSX.Element {
+  const view = useStoreShallow((s) => ({ view: s.view })).view
+  switch (view) {
+    case 'connections':
+      return <ConnectionsSidebar />
+    case 'console':
+      return <SessionSidebar />
+    case 'notes':
+      return <NotesSidebar />
+    case 'tools':
+      return <ToolsSidebar />
+    case 'settings':
+      return <SettingsSidebar />
+    default:
+      return <aside className="panel" />
+  }
+}
+
+function View(): React.JSX.Element {
+  const view = useStoreShallow((s) => ({ view: s.view })).view
+  switch (view) {
+    case 'connections':
+      return <ConnectionsView />
+    case 'console':
+      return <TerminalWorkspace />
+    case 'notes':
+      return <NotesView />
+    case 'tools':
+      return <ToolsView />
+    case 'settings':
+      return <SettingsView />
+    default:
+      return <main className="content" />
+  }
+}
+
 export function App(): React.JSX.Element {
-  const [info, setInfo] = useState<AppInfo | null>(null)
-  const [paths, setPaths] = useState<AppPaths | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    // 事件接线与应用同生命周期；loadConnections 内部对并发调用做了去重
+    wireEvents()
+    void loadConnections()
+    installTestHook()
+  }, [])
 
   useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const [i, p] = await Promise.all([
-          invoke<'app', 'getInfo', undefined, AppInfo>('app', 'getInfo', undefined),
-          invoke<'app', 'getPaths', undefined, AppPaths>('app', 'getPaths', undefined),
-        ])
-        if (cancelled) return
-        setInfo(i)
-        setPaths(p)
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (!e.ctrlKey) return
+      if (e.key === ',') {
+        e.preventDefault()
+        actions.setView('settings')
+        return
       }
-    })()
-    return () => {
-      cancelled = true
+      const byNumber: Record<string, ViewId> = {
+        '1': 'connections',
+        '2': 'console',
+        '3': 'notes',
+        '4': 'tools',
+      }
+      const target = byNumber[e.key]
+      if (target) {
+        e.preventDefault()
+        actions.setView(target)
+      }
     }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
+
+  const view = useStoreShallow((s) => ({ view: s.view })).view
 
   return (
     <div className="app-shell">
-      <aside className="rail" aria-label="功能入口">
-        <div className="rail-item rail-item--active" title="连接中心">
-          <span aria-hidden>⌘</span>
+      <Rail />
+      <Suspense fallback={<aside className="panel"><Loading text="载入面板…" /></aside>}>
+        <Sidebar />
+      </Suspense>
+      <Suspense fallback={<Loading text="载入视图…" />}>
+        <div key={view} className="view-enter" style={{ display: 'contents' }}>
+          <View />
         </div>
-        <div className="rail-item" title="控制台">
-          <span aria-hidden>▚</span>
-        </div>
-        <div className="rail-item" title="笔记">
-          <span aria-hidden>▤</span>
-        </div>
-        <div className="rail-item" title="工具">
-          <span aria-hidden>✦</span>
-        </div>
-        <div className="rail-spacer" />
-        <div className="rail-item" title="设置">
-          <span aria-hidden>⚙</span>
-        </div>
-      </aside>
-
-      <section className="panel" aria-label="列表">
-        <header className="panel-header">
-          <span className="panel-title">连接中心</span>
-        </header>
-        <nav className="filter-list">
-          <button className="filter filter--active" type="button">
-            全部
-          </button>
-          <button className="filter" type="button">
-            收藏
-          </button>
-          <button className="filter" type="button">
-            最近
-          </button>
-          <button className="filter" type="button">
-            常用
-          </button>
-        </nav>
-      </section>
-
-      <main className="content" aria-label="主内容">
-        <div className="empty-state">
-          <h1 className="empty-title">terminal-1000</h1>
-          <p className="empty-subtitle">当前为骨架版本，功能模块正在接入。</p>
-
-          {error && (
-            <p className="banner banner--error" role="alert">
-              主进程通信失败：{error}
-            </p>
-          )}
-
-          {info && (
-            <dl className="info-grid">
-              <dt>版本</dt>
-              <dd>{info.version}</dd>
-              <dt>运行环境</dt>
-              <dd>
-                Electron {info.electron} · Chromium {info.chrome} · Node {info.node}
-              </dd>
-              <dt>平台</dt>
-              <dd>
-                {info.platform} / {info.arch} · {info.locale}
-              </dd>
-              {paths && (
-                <>
-                  <dt>数据目录</dt>
-                  <dd className="mono">{paths.userData}</dd>
-                </>
-              )}
-            </dl>
-          )}
-
-          {!info && !error && <p className="empty-subtitle">正在读取运行环境…</p>}
-        </div>
-      </main>
+      </Suspense>
+      <ToastHost />
     </div>
   )
 }

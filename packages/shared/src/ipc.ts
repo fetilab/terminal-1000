@@ -143,6 +143,9 @@ export const Actions = {
     'cancelTransfer',
     'listTransfers',
     'openEditor',
+    // 远端目录监听（轮询实现；SFTP 协议本身无 watch 能力）
+    'watch',
+    'unwatch',
   ] as const,
 
   forward: ['open', 'close', 'list'] as const,
@@ -157,7 +160,17 @@ export const Actions = {
 
   monitor: ['start', 'stop', 'getSnapshot', 'listCards', 'setCards', 'refresh'] as const,
 
-  notes: ['list', 'get', 'save', 'delete', 'restore', 'purge', 'listFolders'] as const,
+  notes: [
+    'list',
+    'get',
+    'save',
+    'delete',
+    'restore',
+    'purge',
+    'listFolders',
+    'saveFolder',
+    'deleteFolder',
+  ] as const,
 
   completion: ['complete', 'settings', 'setSettings', 'listSpecs'] as const,
 

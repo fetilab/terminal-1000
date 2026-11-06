@@ -349,6 +349,12 @@ function storeKeyAlias(entity: StoreEntity): keyof typeof STORE_KEYS {
       return 'settings'
     case 'AIChat':
       return 'aiChat'
+    case 'Note':
+      return 'note'
+    case 'NoteFolder':
+      return 'noteFolder'
+    case 'SessionLog':
+      return 'sessionLog'
   }
 }
 

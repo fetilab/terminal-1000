@@ -12,6 +12,8 @@ import { sftpHandlers } from '../services/sftp'
 import { monitorHandlers } from '../services/monitor'
 import { ptyHandlers } from '../services/pty'
 import { forwardHandlers } from '../services/forward'
+import { settingsHandlers } from '../services/settings'
+import { notesHandlers } from '../services/notes'
 
 const log = createLogger('ipc-setup')
 
@@ -27,6 +29,8 @@ export function registerAllHandlers(): void {
   registerDomain('monitor', monitorHandlers)
   registerDomain('pty', ptyHandlers)
   registerDomain('forward', forwardHandlers)
+  registerDomain('settings', settingsHandlers)
+  registerDomain('notes', notesHandlers)
 
   log.info(`已注册 ${listRegistered().length} 个 IPC 动作`)
 }

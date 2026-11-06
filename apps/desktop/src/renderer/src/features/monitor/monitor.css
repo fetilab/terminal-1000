@@ -1,0 +1,244 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 terminal-1000 contributors */
+
+/* 监控面板样式。单独成文件是因为面板是懒加载模块，
+   样式跟随它自己的 chunk，没打开监控就不会下载。 */
+
+/* ── 监控面板（右侧） ─────────────────────────────── */
+
+.monitor {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 320px;
+  min-width: 0;
+  border-left: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-panel);
+}
+
+.monitor__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: var(--t1000-header-height);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--t1000-border);
+}
+
+.monitor__title {
+  flex: 1;
+  font-weight: 600;
+}
+
+.monitor__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mcard {
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-raised);
+  overflow: hidden;
+}
+
+.mcard__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--t1000-border);
+  color: var(--t1000-fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mcard__head-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcard__body {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* 指标行 */
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.metric__top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.metric__label {
+  flex: 1;
+  min-width: 0;
+  color: var(--t1000-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric__value {
+  color: var(--t1000-fg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.metric__sub {
+  color: var(--t1000-fg-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  position: relative;
+  height: 5px;
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-bg-active);
+  overflow: hidden;
+}
+
+.bar__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--t1000-radius-pill);
+  background: linear-gradient(90deg, var(--t1000-accent-strong), var(--t1000-accent));
+  transition: width var(--t1000-normal) var(--t1000-ease);
+}
+
+.bar__fill--warn {
+  background: linear-gradient(90deg, #b8862f, var(--t1000-warn));
+}
+
+.bar__fill--danger {
+  background: linear-gradient(90deg, #b3383c, var(--t1000-danger));
+}
+
+/* 逐核小格 */
+.cores {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+  gap: 4px;
+}
+
+.core {
+  position: relative;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--t1000-bg-active);
+  overflow: hidden;
+}
+
+.core__fill {
+  position: absolute;
+  inset: auto 0 0 0;
+  background: var(--t1000-accent-soft);
+  transition: height var(--t1000-normal) var(--t1000-ease);
+}
+
+.core__text {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--t1000-fg-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 走势图 */
+.spark {
+  display: block;
+  width: 100%;
+  height: 34px;
+  overflow: visible;
+}
+
+/* 进程表 */
+.proc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 进程列表是嵌套在「可滚动面板」里的第二层滚动区：
+   必须给出高度上界，否则同样会被内容撑高、窗口化失效（实测 400 行全渲染）。
+   注意：高度必须落在滚动容器自己身上——给它一个块级父级加 display:flex 也行，
+   但用 max-height 更直接，也不会影响面板整体的滚动行为。 */
+.proc__list {
+  max-height: 260px;
+}
+
+.proc__row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 44px 48px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--t1000-radius-sm);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.proc__row:nth-child(odd) {
+  background: color-mix(in srgb, var(--t1000-bg-hover) 45%, transparent);
+}
+
+.proc__pid {
+  color: var(--t1000-fg-faint);
+  font-family: var(--t1000-font-mono);
+}
+
+.proc__cmd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t1000-fg);
+}
+
+.proc__num {
+  text-align: right;
+  color: var(--t1000-fg-muted);
+}
+
+.proc__head {
+  color: var(--t1000-fg-faint);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* 键值对 */
+.kv {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+.kv__k {
+  color: var(--t1000-fg-faint);
+}
+
+.kv__v {
+  color: var(--t1000-fg);
+  overflow-wrap: anywhere;
+}

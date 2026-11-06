@@ -2,38 +2,83 @@
 /* Copyright (C) 2026 terminal-1000 contributors */
 
 /*
- * 设计令牌。视觉语言全部自研：此处定义中性灰蓝基调，
- * 强调色用青色系，刻意区别于同类产品常见的绿色主色。
+ * 设计令牌 —— 全部自研。
+ *
+ * 基调：冷灰蓝的深色底 + 青色强调（刻意区别于同类产品常见的绿色主色）。
+ * 层级用「底色深浅 + 1px 描边 + 极轻投影」表达，不用重投影；
+ * 圆角统一 8/5px 两档（大面板可用 14px），动效统一 120~180ms。
  */
 :root {
+  /* ── 表面层次 ───────────────────────────────── */
   --t1000-bg: #12141a;
+  --t1000-bg-sunken: #0d0f14;
   --t1000-bg-raised: #191c24;
   --t1000-bg-panel: #1e222b;
   --t1000-bg-hover: #252a35;
   --t1000-bg-active: #2c3240;
+  --t1000-bg-input: #171a21;
+  --t1000-overlay: rgba(6, 8, 12, 0.62);
 
+  /* ── 描边 ───────────────────────────────────── */
   --t1000-border: #2a2f3a;
   --t1000-border-strong: #3a4150;
+  --t1000-border-accent: rgba(62, 201, 214, 0.45);
 
+  /* ── 前景 ───────────────────────────────────── */
   --t1000-fg: #e4e7ee;
   --t1000-fg-muted: #9aa3b2;
   --t1000-fg-dim: #6b7382;
+  --t1000-fg-faint: #4c5361;
 
+  /* ── 强调与语义色 ───────────────────────────── */
   --t1000-accent: #3ec9d6;
   --t1000-accent-strong: #22b3c1;
   --t1000-accent-fg: #05222a;
-  --t1000-danger: #e5484d;
-  --t1000-warn: #d9a441;
-  --t1000-ok: #46b17b;
+  --t1000-accent-soft: rgba(62, 201, 214, 0.14);
+  --t1000-accent-softer: rgba(62, 201, 214, 0.07);
 
+  --t1000-danger: #e5484d;
+  --t1000-danger-soft: rgba(229, 72, 77, 0.15);
+  --t1000-warn: #d9a441;
+  --t1000-warn-soft: rgba(217, 164, 65, 0.15);
+  --t1000-ok: #46b17b;
+  --t1000-ok-soft: rgba(70, 177, 123, 0.15);
+  --t1000-info: #6f8dff;
+
+  /* ── 圆角 ───────────────────────────────────── */
   --t1000-radius: 8px;
   --t1000-radius-sm: 5px;
-  --t1000-rail-width: 52px;
-  --t1000-panel-width: 248px;
+  --t1000-radius-lg: 14px;
+  --t1000-radius-pill: 999px;
 
+  /* ── 投影（克制） ───────────────────────────── */
+  --t1000-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --t1000-shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.55);
+  --t1000-shadow-3: 0 24px 64px -16px rgba(0, 0, 0, 0.7);
+
+  /* ── 尺寸 ───────────────────────────────────── */
+  --t1000-rail-width: 54px;
+  --t1000-panel-width: 252px;
+  --t1000-row-height: 46px;
+  --t1000-header-height: 44px;
+  --t1000-toolbar-height: 46px;
+
+  /* ── 动效 ───────────────────────────────────── */
+  --t1000-ease: cubic-bezier(0.2, 0, 0, 1);
+  --t1000-fast: 120ms;
+  --t1000-normal: 180ms;
+
+  /* ── 层级 ───────────────────────────────────── */
+  --t1000-z-panel: 10;
+  --t1000-z-popover: 60;
+  --t1000-z-modal: 80;
+  --t1000-z-toast: 100;
+
+  /* ── 字体 ───────────────────────────────────── */
   --t1000-font: system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', 'PingFang SC',
     'Microsoft YaHei', sans-serif;
-  --t1000-font-mono: 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --t1000-font-mono: 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, 'Noto Sans Mono',
+    monospace;
 
   color-scheme: dark;
 }
@@ -65,15 +110,89 @@ button {
   color: inherit;
 }
 
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--t1000-accent);
+  text-decoration: none;
+}
+
+/* 统一滚动条：细、低对比、悬停才明显 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--t1000-border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--t1000-border);
+  border: 3px solid transparent;
+  border-radius: var(--t1000-radius-pill);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--t1000-border-strong);
+  background-clip: content-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--t1000-accent);
+  outline-offset: 1px;
+}
+
 .mono {
   font-family: var(--t1000-font-mono);
+  font-variant-ligatures: none;
+}
+
+/* 视觉隐藏但保留可访问性 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ── 整体骨架：图标栏 | 列表面板 | 内容区 ───────────── */
+/*
+ * 这行 grid-template-rows 不是装饰：缺了它，隐式行会按内容撑高，
+ * 于是「flex:1 + overflow:auto」的滚动容器会一直长高到装下全部内容，
+ * 虚拟滚动的视口高度被测成上万像素 → 窗口化静默失效（实测 300 行全渲染）。
+ * 结论：窗口化列表的祖先链必须有确定的高度上界。
+ */
 .app-shell {
   display: grid;
   grid-template-columns: var(--t1000-rail-width) var(--t1000-panel-width) 1fr;
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
+  overflow: hidden;
+}
+
+.app-shell--wide {
+  grid-template-columns: var(--t1000-rail-width) 1fr;
+}
+
+.app-shell--collapsed {
+  grid-template-columns: var(--t1000-rail-width) 44px 1fr;
 }
 
 /* ── 左侧图标栏 ─────────────────────────────────── */
@@ -81,22 +200,42 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 10px 0;
+  gap: 4px;
+  padding: 10px 0 12px;
   background: var(--t1000-bg-raised);
   border-right: 1px solid var(--t1000-border);
+  z-index: var(--t1000-z-panel);
 }
 
-.rail-item {
+.rail-brand {
   display: grid;
   place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: var(--t1000-radius-sm);
-  color: var(--t1000-fg-muted);
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background: linear-gradient(150deg, var(--t1000-accent) 0%, var(--t1000-accent-strong) 100%);
+  color: var(--t1000-accent-fg);
+  font-weight: 800;
+  font-size: 14px;
+  letter-spacing: -0.5px;
+  user-select: none;
+}
+
+.rail-item {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--t1000-fg-dim);
   cursor: pointer;
   user-select: none;
-  font-size: 15px;
+  transition: background var(--t1000-fast) var(--t1000-ease),
+    color var(--t1000-fast) var(--t1000-ease);
 }
 
 .rail-item:hover {
@@ -105,12 +244,41 @@ button {
 }
 
 .rail-item--active {
-  background: var(--t1000-bg-active);
+  background: var(--t1000-accent-soft);
   color: var(--t1000-accent);
+}
+
+/* 选中态左侧的短竖条，是这一套视觉的签名元素 */
+.rail-item--active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  width: 3px;
+  height: 18px;
+  transform: translateY(-50%);
+  border-radius: 0 3px 3px 0;
+  background: var(--t1000-accent);
 }
 
 .rail-spacer {
   flex: 1;
+}
+
+.rail-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-accent);
+  color: var(--t1000-accent-fg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
 }
 
 /* ── 列表面板 ───────────────────────────────────── */
@@ -120,107 +288,85 @@ button {
   min-width: 0;
   background: var(--t1000-bg-panel);
   border-right: 1px solid var(--t1000-border);
+  overflow: hidden;
+  z-index: var(--t1000-z-panel);
 }
 
 .panel-header {
   display: flex;
   align-items: center;
-  height: 42px;
-  padding: 0 14px;
+  gap: 8px;
+  flex: 0 0 auto;
+  height: var(--t1000-header-height);
+  padding: 0 12px;
   border-bottom: 1px solid var(--t1000-border);
 }
 
 .panel-title {
+  flex: 1;
+  min-width: 0;
   font-weight: 600;
   letter-spacing: 0.2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.filter-list {
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.panel-footer {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
   padding: 8px;
-}
-
-.filter {
-  padding: 7px 10px;
-  text-align: left;
-  background: transparent;
-  border: none;
-  border-radius: var(--t1000-radius-sm);
-  color: var(--t1000-fg-muted);
-  cursor: pointer;
-}
-
-.filter:hover {
-  background: var(--t1000-bg-hover);
-  color: var(--t1000-fg);
-}
-
-.filter--active {
-  background: var(--t1000-bg-active);
-  color: var(--t1000-accent);
+  border-top: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-panel);
 }
 
 /* ── 内容区 ─────────────────────────────────────── */
 .content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
+  overflow: hidden;
   background: var(--t1000-bg);
 }
 
-.empty-state {
-  max-width: 620px;
-  margin: 12vh auto 0;
-  padding: 0 24px;
+.content-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
-.empty-title {
-  margin: 0 0 6px;
-  font-size: 22px;
-  font-weight: 650;
-  letter-spacing: 0.3px;
+/* 视图切换时的轻微上浮，替代生硬的直切 */
+@keyframes t1000-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
-.empty-subtitle {
-  margin: 0 0 20px;
-  color: var(--t1000-fg-muted);
+.view-enter {
+  animation: t1000-view-in var(--t1000-normal) var(--t1000-ease);
 }
 
-.error-text {
-  color: var(--t1000-danger);
-}
-
-.banner {
-  margin: 0 0 18px;
-  padding: 10px 12px;
-  border-radius: var(--t1000-radius);
-  border: 1px solid var(--t1000-border-strong);
-  background: var(--t1000-bg-raised);
-}
-
-.banner--error {
-  border-color: color-mix(in srgb, var(--t1000-danger) 55%, transparent);
-  color: var(--t1000-danger);
-}
-
-.info-grid {
-  display: grid;
-  grid-template-columns: 110px 1fr;
-  gap: 8px 16px;
-  margin: 0;
-  padding: 16px;
-  border: 1px solid var(--t1000-border);
-  border-radius: var(--t1000-radius);
-  background: var(--t1000-bg-raised);
-}
-
-.info-grid dt {
-  color: var(--t1000-fg-dim);
-}
-
-.info-grid dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
