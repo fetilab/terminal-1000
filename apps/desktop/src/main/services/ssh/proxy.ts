@@ -38,6 +38,15 @@ export function parseProxyUrl(proxy: ProxyConfig): ParsedProxy {
   try {
     url = new URL(proxy.url)
   } catch {
+    // URL 解析器对越界端口只会笼统地报 "Invalid URL"。
+    // 这里补一次精确探测，让用户看到真正的原因（端口越界 vs 地址格式错）。
+    const portMatch = /:(\d+)(?:[/?#]|$)/.exec(proxy.url)
+    if (portMatch?.[1]) {
+      const raw = Number(portMatch[1])
+      if (Number.isInteger(raw) && (raw <= 0 || raw > 65535)) {
+        throw AppError.badRequest(`代理端口不合法: ${portMatch[1]}（有效范围 1-65535）`)
+      }
+    }
     throw AppError.badRequest(`代理地址不合法: ${proxy.url}`)
   }
 
@@ -239,8 +248,8 @@ class ProxyTunnel {
   }
 }
 
-/** 按 SOCKS5 ATYP 编码目标地址 */
-function encodeSocks5Target(host: string, port: number): Buffer {
+/** 按 SOCKS5 ATYP 编码目标地址（导出以便单测） */
+export function encodeSocks5Target(host: string, port: number): Buffer {
   const portBuf = Buffer.from([port >> 8, port & 0xff])
 
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
@@ -260,8 +269,8 @@ function encodeSocks5Target(host: string, port: number): Buffer {
   return Buffer.concat([Buffer.from([0x03, name.length]), name, portBuf])
 }
 
-/** 把 IPv6 文本展开成 16 字节 */
-function expandIpv6(host: string): number[] | null {
+/** 把 IPv6 文本展开成 16 字节（导出以便单测） */
+export function expandIpv6(host: string): number[] | null {
   const parts = host.split('::')
   if (parts.length > 2) return null
 

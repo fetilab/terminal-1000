@@ -134,11 +134,29 @@ export class Repository {
     return this.decryptSensitive(parsed, this.key()) as T
   }
 
-  /** 序列化 + 按需加密 */
-  private dehydrate(payload: unknown): string {
+  /**
+   * 序列化 + 按需加密。
+   *
+   * @param previous 磁盘上原有的 payload（**仍是密文**）。
+   *   锁定态下写入时，入参里的敏感字段是 `__LOCKED__` 掩码——它代表
+   *   "渲染层没改过这个字段"，此时必须**从 previous 里把原密文原样搬过来**，
+   *   而不是丢掉。否则锁定态下一次无关的改名就会永久抹掉用户保存的密码。
+   */
+  private dehydrate(payload: unknown, previous?: unknown): string {
     const key = this.key()
-    const value = key ? this.encryptSensitive(payload, key) : stripLockedMasks(payload)
-    return JSON.stringify(value)
+    if (key) return JSON.stringify(this.encryptSensitive(payload, key))
+    return JSON.stringify(preserveMaskedCiphertext(payload, previous))
+  }
+
+  /** 取出磁盘上某行已解析的原始 payload（密文态）；不存在返回 undefined */
+  private rawPayload(storeKey: string, itemId: string): unknown {
+    const row = this.db.get(storeKey, itemId)
+    if (!row) return undefined
+    try {
+      return JSON.parse(row.payload) as unknown
+    } catch {
+      return undefined
+    }
   }
 
   // ------------------------------------------------------------ 连接 CRUD
@@ -169,16 +187,17 @@ export class Repository {
    *   渲染层回存的是明文），这里统一重新加密
    */
   saveConnection(input: Connection, now: string): Connection {
-    const existingRow = this.db.get(STORE_KEYS.server, input.id)
-    const existing = existingRow ? (JSON.parse(existingRow.payload) as Partial<Connection>) : undefined
+    const previous = this.rawPayload(STORE_KEYS.server, input.id)
+    const existing = previous as Partial<Connection> | undefined
 
     const saved = {
       ...input,
-      createdAt: existing?.createdAt ?? input.createdAt ?? now,
+      // 用 || 而不是 ??：空字符串同样视为"没给值"，应当回落到 now
+      createdAt: existing?.createdAt || input.createdAt || now,
       updatedAt: now,
     } as Connection
 
-    this.db.put(STORE_KEYS.server, saved.id, this.dehydrate(saved), Date.now())
+    this.db.put(STORE_KEYS.server, saved.id, this.dehydrate(saved, previous), Date.now())
     return this.hydrate<Connection>(this.db.get(STORE_KEYS.server, saved.id)!)
   }
 
@@ -203,7 +222,8 @@ export class Repository {
     } else {
       moved.groupId = groupId
     }
-    this.db.put(STORE_KEYS.server, id, this.dehydrate(moved), Date.now())
+    // 锁定态下 current 的敏感字段是掩码，靠 previous 把原密文搬回来
+    this.db.put(STORE_KEYS.server, id, this.dehydrate(moved, this.rawPayload(STORE_KEYS.server, id)), Date.now())
     return this.hydrate<Connection>(this.db.get(STORE_KEYS.server, id)!)
   }
 
@@ -226,15 +246,15 @@ export class Repository {
   }
 
   saveGroup(input: ConnectionGroup, now: string): ConnectionGroup {
-    const existingRow = this.db.get(STORE_KEYS.group, input.id)
-    const existing = existingRow ? (JSON.parse(existingRow.payload) as Partial<ConnectionGroup>) : undefined
+    const previous = this.rawPayload(STORE_KEYS.group, input.id)
+    const existing = previous as Partial<ConnectionGroup> | undefined
 
     const saved: ConnectionGroup = {
       ...input,
-      createdAt: existing?.createdAt ?? input.createdAt ?? now,
+      createdAt: existing?.createdAt || input.createdAt || now,
       updatedAt: now,
     }
-    this.db.put(STORE_KEYS.group, saved.id, this.dehydrate(saved), Date.now())
+    this.db.put(STORE_KEYS.group, saved.id, this.dehydrate(saved, previous), Date.now())
     return this.hydrate<ConnectionGroup>(this.db.get(STORE_KEYS.group, saved.id)!)
   }
 
@@ -281,7 +301,12 @@ export class Repository {
             const reparented: ConnectionGroup = { ...g, updatedAt: new Date(now).toISOString() }
             delete (reparented as { parentId?: string }).parentId
             if (target.parentId !== undefined) reparented.parentId = target.parentId
-            this.db.put(STORE_KEYS.group, g.id, this.dehydrate(reparented), now)
+            this.db.put(
+              STORE_KEYS.group,
+              g.id,
+              this.dehydrate(reparented, this.rawPayload(STORE_KEYS.group, g.id)),
+              now,
+            )
           }
         }
       }
@@ -290,7 +315,12 @@ export class Repository {
       for (const conn of affected) {
         const next = { ...conn, updatedAt: new Date(now).toISOString() } as Connection
         delete (next as { groupId?: string }).groupId
-        this.db.put(STORE_KEYS.server, conn.id, this.dehydrate(next), now)
+        this.db.put(
+          STORE_KEYS.server,
+          conn.id,
+          this.dehydrate(next, this.rawPayload(STORE_KEYS.server, conn.id)),
+          now,
+        )
       }
     })
 
@@ -355,14 +385,14 @@ export class Repository {
   }
 
   saveCredential(input: Credential, now: string): Credential {
-    const existingRow = this.db.get(STORE_KEYS.credential, input.id)
-    const existing = existingRow ? (JSON.parse(existingRow.payload) as Partial<Credential>) : undefined
+    const previous = this.rawPayload(STORE_KEYS.credential, input.id)
+    const existing = previous as Partial<Credential> | undefined
     const saved: Credential = {
       ...input,
-      createdAt: existing?.createdAt ?? input.createdAt ?? now,
+      createdAt: existing?.createdAt || input.createdAt || now,
       updatedAt: now,
     }
-    this.db.put(STORE_KEYS.credential, saved.id, this.dehydrate(saved), Date.now())
+    this.db.put(STORE_KEYS.credential, saved.id, this.dehydrate(saved, previous), Date.now())
     return this.hydrate<Credential>(this.db.get(STORE_KEYS.credential, saved.id)!)
   }
 
@@ -452,17 +482,40 @@ function hasCiphertext(value: unknown): boolean {
 }
 
 /**
- * 未解锁时写回：把掩码字段整个丢掉，避免把 `__LOCKED__` 当密码存进库。
- * （锁定态下渲染层理论上不该提交写操作，这里是防御性兜底。）
+ * 锁定态写回：把 `__LOCKED__` 掩码字段替换成 `previous` 里的**原始密文**。
+ *
+ * 不能简单丢掉掩码字段——那样用户"锁定状态下改了个名字"就会永久抹掉
+ * 已保存的密码。也不能把掩码字符串本身存进库——那是把占位符当密码。
+ * 正确语义是：掩码 = "这一项没被修改"，沿用磁盘上原有的密文。
+ *
+ * 若 previous 里也没有对应密文（新建记录时携带掩码），则整项删除。
  */
-function stripLockedMasks(value: unknown): unknown {
+function preserveMaskedCiphertext(value: unknown, previous: unknown): unknown {
   if (value === null || typeof value !== 'object') return value
-  if (Array.isArray(value)) return value.map(stripLockedMasks)
+
+  if (Array.isArray(value)) {
+    const prevArr = Array.isArray(previous) ? previous : []
+    return value.map((item, i) => preserveMaskedCiphertext(item, prevArr[i]))
+  }
+
+  const prevObj =
+    previous !== null && typeof previous === 'object' && !Array.isArray(previous)
+      ? (previous as Record<string, unknown>)
+      : undefined
 
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (isSensitiveKey(k) && isLockedMask(v)) continue
-    out[k] = stripLockedMasks(v)
+    if (isSensitiveKey(k) && isLockedMask(v)) {
+      const prev = prevObj?.[k]
+      // 只有原值确实是密文才搬回来，避免把明文当密文写回
+      if (typeof prev === 'string' && isCiphertext(prev)) out[k] = prev
+      continue
+    }
+    if (isSensitiveKey(k) && v === undefined) {
+      // 字段被显式清空（删掉属性）时，允许它消失
+      continue
+    }
+    out[k] = preserveMaskedCiphertext(v, prevObj?.[k])
   }
   return out
 }

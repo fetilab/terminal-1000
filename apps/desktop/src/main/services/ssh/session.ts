@@ -17,6 +17,7 @@ import type { ConnectionState, SshConnection, SshAuthType } from '@t1000/shared'
 import { AppError } from '../../errors'
 import { createLogger } from '../../logger'
 import type { ExecResult, SshSessionHandle } from '../session-registry'
+import { OutputBatcher } from '../output-batcher'
 import { createProxySocket } from './proxy'
 
 const log = createLogger('ssh')
@@ -77,10 +78,11 @@ export class SshSession {
   private state: ConnectionState = 'idle'
   private connectedAt = 0
 
-  /** 输出合批缓冲 */
-  private outBuf: string[] = []
-  private outBytes = 0
-  private flushTimer: NodeJS.Timeout | null = null
+  /**
+   * 输出合批器：把高频小包合并后交付，避免事件风暴打爆渲染进程。
+   * 与本地 PTY 共用同一实现，保证两者吞吐特性一致。
+   */
+  private readonly batcher: OutputBatcher
 
   /** 跳板链上已建立的上游连接（用于关闭时逐级清理） */
   private jumpClients: Client[] = []
@@ -91,6 +93,11 @@ export class SshSession {
   ) {
     this.sessionId = randomUUID()
     this.connection = connection
+    this.batcher = new OutputBatcher({
+      windowMs: OUTPUT_BATCH_MS,
+      maxBytes: OUTPUT_BATCH_MAX_BYTES,
+      onFlush: (chunk) => this.options.events.onData(chunk),
+    })
   }
 
   getState(): ConnectionState {
@@ -159,7 +166,7 @@ export class SshSession {
         if (this.state !== 'disconnected') this.setState('failed', err.message)
       })
       client.on('close', () => {
-        this.flushOutput(true)
+        this.batcher.flush()
         this.setState('disconnected')
         this.options.events.onClosed()
         this.cleanup()
@@ -420,46 +427,15 @@ export class SshSession {
 
   private attachShell(shell: ClientChannel): void {
     shell.on('data', (chunk: Buffer) => {
-      this.pushOutput(chunk.toString('utf8'))
+      this.batcher.push(chunk.toString('utf8'))
     })
     shell.stderr?.on('data', (chunk: Buffer) => {
-      this.pushOutput(chunk.toString('utf8'))
+      this.batcher.push(chunk.toString('utf8'))
     })
     shell.on('close', () => {
-      this.flushOutput(true)
+      // 会话结束前排空缓冲，避免最后一段输出丢失
+      this.batcher.flush()
     })
-  }
-
-  /**
-   * 输出合批：把高频小包合并成大块再推给渲染层。
-   * 这是吞吐量的关键 —— 参考实现逐包转发，我们按帧合批。
-   */
-  private pushOutput(text: string): void {
-    this.outBuf.push(text)
-    this.outBytes += text.length
-
-    if (this.outBytes >= OUTPUT_BATCH_MAX_BYTES) {
-      this.flushOutput()
-      return
-    }
-    if (!this.flushTimer) {
-      this.flushTimer = setTimeout(() => this.flushOutput(), OUTPUT_BATCH_MS)
-    }
-  }
-
-  private flushOutput(force = false): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
-    }
-    if (this.outBuf.length === 0) return
-    if (!force && this.outBytes === 0) return
-
-    const payload = this.outBuf.join('')
-    this.outBuf = []
-    this.outBytes = 0
-
-    if (payload.length > 0) this.options.events.onData(payload)
   }
 
   /** 向 shell 写入数据 */
@@ -525,7 +501,7 @@ export class SshSession {
 
   /** 主动断开 */
   disconnect(): void {
-    this.flushOutput(true)
+    this.batcher.flush()
     try {
       this.shell?.end()
     } catch {
@@ -542,10 +518,8 @@ export class SshSession {
 
   /** 清理跳板链等上游资源 */
   private cleanup(): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
-    }
+    // 停止合批（不再向已关闭的会话推送数据）
+    this.batcher.dispose()
     for (const c of this.jumpClients) {
       try {
         c.end()
