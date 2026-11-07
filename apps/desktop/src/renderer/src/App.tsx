@@ -18,7 +18,6 @@ import { Icon, type IconName } from './components/Icon'
 import { Loading } from './components/Feedback'
 import { ToastHost } from './components/Toast'
 import { actions, loadConnections, useStoreShallow, wireEvents, type ViewId } from './lib/store'
-import { installTestHook } from './lib/testhook'
 import './styles/global.css'
 import './styles/components.css'
 
@@ -140,7 +139,21 @@ export function App(): React.JSX.Element {
     // 事件接线与应用同生命周期；loadConnections 内部对并发调用做了去重
     wireEvents()
     void loadConnections()
-    installTestHook()
+  }, [])
+
+  useEffect(() => {
+    // 自动化验证钩子只在开发构建里安装。
+    // import.meta.env.DEV 在 production 下被替换为 false，配合动态 import，
+    // 死代码消除会把整条分支连同 testhook chunk 一起删掉——
+    // 生产包里不存在能被控制台调用、往真实库里灌数据的入口。
+    if (!import.meta.env.DEV) return
+    let cancelled = false
+    void import('./lib/testhook').then((m) => {
+      if (!cancelled) m.installTestHook()
+    })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {

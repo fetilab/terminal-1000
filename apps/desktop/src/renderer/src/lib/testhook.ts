@@ -16,14 +16,8 @@
  */
 
 import type { ConnectionKind, MonitorSnapshot } from '@t1000/shared'
-import {
-  actions,
-  applySnapshot,
-  getState,
-  seedDemo,
-  setState,
-  type ViewId,
-} from './store'
+import { seedDemo } from './demo-seed'
+import { actions, applySnapshot, getState, setState, type ViewId } from './store'
 
 const DEMO_SESSION_ID = 'demo-session-0001'
 

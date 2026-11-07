@@ -279,6 +279,18 @@ export interface ConnectionGroup {
   updatedAt: string
 }
 
+/**
+ * 分组树节点（含子节点与直属连接数）。
+ *
+ * 放在 shared 而非主进程内部：渲染层要递归渲染分组树，需要这个类型。
+ * 主进程 `buildGroupTree()` 直接返回它，双方共用一份定义，避免各写一遍。
+ */
+export interface GroupTreeNode extends ConnectionGroup {
+  children: GroupTreeNode[]
+  /** 直属该分组（不含子分组）的连接数 */
+  connectionCount: number
+}
+
 /** 登录凭证（可被 SSH 连接以 identity 方式引用） */
 export interface Credential {
   id: string

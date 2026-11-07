@@ -20,12 +20,11 @@ import {
   isLockedMask,
 } from './crypto'
 
-/** 分组树节点 */
-export interface GroupTreeNode extends ConnectionGroup {
-  children: GroupTreeNode[]
-  /** 直属该分组（不含子分组）的连接数 */
-  connectionCount: number
-}
+// 分组树节点定义已上移到 packages/shared（渲染层要递归渲染，共用同一份定义）。
+// 注意：`export type { X } from '...'` 只做再导出、不会把 X 引入本地作用域，
+// 所以这里必须先 import 再 export，否则本文件内部引用会报 Cannot find name。
+import type { GroupTreeNode } from '@t1000/shared'
+export type { GroupTreeNode }
 
 /**
  * 需要加密的字段：

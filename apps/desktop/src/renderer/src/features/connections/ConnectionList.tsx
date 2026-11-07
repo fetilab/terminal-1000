@@ -127,8 +127,13 @@ const Row = memo(function Row({ conn, selected, showInfo, sessionState }: RowPro
         e.dataTransfer.setData(CONNECTION_DND_TYPE, conn.id)
         e.dataTransfer.effectAllowed = 'move'
       }}
-      onDoubleClick={() => {
-        if (canConnect) void connectTo(conn)
+      onDoubleClick={(e) => {
+        if (!canConnect) return
+        // 双击落在按钮/复选框/开关上时不再触发：它们自己的 onClick 已经处理过了。
+        // 否则「快速双击连接按钮」会同时走按钮 onClick 与行 onDoubleClick，
+        // 一个手势发起两次 ssh.connect（实测现象：两条 handshake 超时）。
+        if (e.target instanceof HTMLElement && e.target.closest('button, input, a, select')) return
+        void connectTo(conn)
       }}
     >
       <Checkbox bare checked={selected} ariaLabel={`选择 ${conn.name}`} onChange={() => actions.toggleSelect(conn.id)} />

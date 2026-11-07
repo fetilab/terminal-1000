@@ -10,7 +10,6 @@ import { Segmented } from '../../components/Segmented'
 import {
   actions,
   loadConnections,
-  seedDemo,
   selectProtocolCounts,
   selectVisibleConnections,
   useStore,
@@ -21,6 +20,15 @@ import './connections.css'
 
 /** 表单只在真正打开时加载：它是这个视图里最重的模块 */
 const ConnectionForm = lazy(() => import('./ConnectionForm'))
+
+/** 演示数据只在开发构建里可载入；生产包连这段代码都不会被加载 */
+const DEMO_ENABLED = import.meta.env.DEV
+
+async function loadDemoData(): Promise<void> {
+  if (!DEMO_ENABLED) return
+  const { seedDemo } = await import('../../lib/demo-seed')
+  await seedDemo()
+}
 
 const PROTOCOLS: ReadonlyArray<{ value: ConnectionKind; label: string }> = [
   { value: 'ssh', label: 'SSH' },
@@ -137,15 +145,17 @@ export default function ConnectionsView(): React.JSX.Element {
           <EmptyState
             icon="server"
             title="还没有任何连接"
-            text="新建一条 SSH 连接，或用演示数据先看看完整界面。演示数据全部指向保留地址段，不会真的发起连接。"
+            text="新建一条 SSH 连接。填好地址、端口与凭据后保存，双击列表项即可打开终端。"
             actions={
               <>
                 <Button variant="primary" icon="plus" onClick={() => actions.openCreate('ssh')}>
                   新建 SSH 连接
                 </Button>
-                <Button variant="outline" icon="cloud" onClick={() => void seedDemo()}>
-                  载入演示数据
-                </Button>
+                {DEMO_ENABLED ? (
+                  <Button variant="outline" icon="cloud" onClick={() => void loadDemoData()}>
+                    载入演示数据
+                  </Button>
+                ) : null}
               </>
             }
           />

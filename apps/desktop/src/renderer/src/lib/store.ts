@@ -31,7 +31,6 @@ import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { invoke, subscribe } from './ipc'
 import { toast } from '../components/Toast'
 import { errorText } from './format'
-import { demoConnections, demoGroups, demoOtherConnections } from './demo'
 
 /* ────────────────────────────────────────────── 类型 */
 
@@ -532,7 +531,7 @@ export function loadConnections(force = false): Promise<void> {
 }
 
 /** 兜底：主进程返回的树节点可能缺 children / connectionCount，补齐成规范形状。 */
-function normaliseGroups(nodes: GroupNode[]): GroupNode[] {
+export function normaliseGroups(nodes: GroupNode[]): GroupNode[] {
   return nodes.map((n) => ({
     ...n,
     children: Array.isArray(n.children) ? normaliseGroups(n.children) : [],
@@ -731,58 +730,6 @@ export async function deleteGroup(id: string): Promise<void> {
   }
 }
 
-/* ────────────────────────────────────────────── 演示数据 */
-
-/**
- * 通过**真实 IPC** 灌入演示数据。
- * 这样既能在空状态下给用户一个可看的界面，也顺带验证了整条读写链路。
- * 后端不可用时退化为纯内存展示，UI 依然可验证。
- */
-export async function seedDemo(count = 14): Promise<{ persisted: boolean; total: number }> {
-  const conns = [...demoConnections(count), ...demoOtherConnections()]
-  const groups = demoGroups()
-  let persisted = true
-
-  setState({ busy: { label: '载入演示数据', done: 0, total: conns.length } })
-  for (const g of groups) {
-    try {
-      await invoke<'store', 'saveGroup', ConnectionGroup, unknown>('store', 'saveGroup', g)
-    } catch {
-      persisted = false
-    }
-  }
-  for (let i = 0; i < conns.length; i += 1) {
-    const conn = conns[i]
-    if (!conn) continue
-    try {
-      await invoke<'store', 'saveConnection', UiConnection, UiConnection>(
-        'store',
-        'saveConnection',
-        conn as UiConnection,
-      )
-    } catch {
-      persisted = false
-    }
-    if (i % 10 === 0) {
-      setState({ busy: { label: '载入演示数据', done: i, total: conns.length } })
-    }
-  }
-
-  setState({
-    busy: null,
-    connections: conns,
-    groups: normaliseGroups(groups.map((g) => ({ ...g, children: [], connectionCount: 0 }))),
-    loaded: true,
-    loading: false,
-  })
-  await loadConnections(true)
-
-  toast[persisted ? 'ok' : 'warn'](
-    persisted ? `已载入 ${conns.length} 条演示连接` : `后端不可用，已用内存数据展示 ${conns.length} 条连接`,
-  )
-  return { persisted, total: conns.length }
-}
-
 /* ────────────────────────────────────────────── 终端标签 */
 
 let tabSeq = 0
@@ -846,6 +793,19 @@ export async function connectTo(connection: UiConnection): Promise<void> {
     toast.info(`${connection.kind.toUpperCase()} 工作区尚未接入，当前版本先支持 SSH 与本地终端`)
     return
   }
+
+  // 幂等：同一连接已经在连接中/已连接时，只把焦点切过去，不再发起第二次握手。
+  // 重复点击、双击、批量操作叠加都不会产生多余会话——每个多余会话在远端都是一次真实登录。
+  const alive = state.tabs.find(
+    (t) =>
+      t.connectionId === connection.id &&
+      (t.state === 'connecting' || t.state === 'authenticating' || t.state === 'ready'),
+  )
+  if (alive) {
+    setState({ activeTabId: alive.tabId, view: 'console' })
+    return
+  }
+
   const tab = makeTab({
     kind: 'ssh',
     title: connection.name,

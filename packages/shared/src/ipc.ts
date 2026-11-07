@@ -93,7 +93,17 @@ export function ipcRequest<D extends IpcDomain, A extends string, P>(
  * 各域动作名。集中登记以免拼写漂移；新增动作先加这里。
  */
 export const Actions = {
-  app: ['getInfo', 'getPaths', 'openExternal', 'showItemInFolder', 'quit', 'relaunch'] as const,
+  app: [
+    'getInfo',
+    'getPaths',
+    'openExternal',
+    'showItemInFolder',
+    'quit',
+    'relaunch',
+    // 延迟探测：ping 单个目标；pingMany 一次探一批（列表刷新用，避免 N 次 IPC 往返）
+    'ping',
+    'pingMany',
+  ] as const,
 
   store: [
     'listConnections',
