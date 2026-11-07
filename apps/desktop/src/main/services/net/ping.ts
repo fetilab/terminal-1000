@@ -18,37 +18,15 @@
 
 import { spawn } from 'node:child_process'
 import { connect, type Socket } from 'node:net'
-import { LATENCY_UNREACHABLE } from '@t1000/shared'
+import { LATENCY_UNREACHABLE, type PingMethod, type PingOptions, type PingResult } from '@t1000/shared'
 import { createLogger } from '../../logger'
 
 const log = createLogger('ping')
 
-export type PingMethod = 'tcp' | 'icmp' | 'none'
-
-export interface PingResult {
-  host: string
-  port?: number
-  reachable: boolean
-  /** 往返时延（ms）；不可达时为 LATENCY_UNREACHABLE */
-  latencyMs: number
-  method: PingMethod
-  /** 不可达/降级原因，便于 UI 提示与排查 */
-  reason?: string
-}
-
-export interface PingOptions {
-  /** 单目标超时（ms），默认 2000 */
-  timeoutMs?: number
-  /** 整批预算（ms），默认 5000；超预算的目标直接标记为未测 */
-  budgetMs?: number
-  /** 并发上限，默认 16 */
-  concurrency?: number
-  /**
-   * TCP 不通时是否回退到 ICMP，默认 true。
-   * 关掉可避免起子进程（受限环境/不想有额外开销），也让行为更可预期。
-   */
-  allowIcmpFallback?: boolean
-}
+// PingResult / PingOptions / PingMethod 已上移到 packages/shared：
+// 渲染层要渲染延迟列，必须共用同一份定义，否则主进程改字段会静默漂移。
+// 这里再导出，保持既有 import 路径可用。
+export type { PingMethod, PingOptions, PingResult }
 
 /** TCP 连通性探测：能建连即视为可达，时延取握手耗时 */
 function pingTcp(host: string, port: number, timeoutMs: number): Promise<PingResult> {

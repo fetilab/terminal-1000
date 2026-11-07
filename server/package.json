@@ -1,0 +1,16 @@
+{
+  "name": "@t1000/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "terminal-1000 sync backend (zero-knowledge blob store)",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "main": "./src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
