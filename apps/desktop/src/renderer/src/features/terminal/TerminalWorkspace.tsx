@@ -24,6 +24,7 @@ import {
   openLocalTerminal,
   setActiveTab,
   setTabLayout,
+  setTabMode,
   toggleTabMonitor,
   useStoreShallow,
   type PaneLayout,
@@ -33,6 +34,8 @@ import './terminal.css'
 
 /** 监控面板按需加载：没打开监控就不下载这一块代码 */
 const MonitorPanel = lazy(() => import('../monitor/MonitorPanel'))
+/** SFTP 浏览器同理：只有切到「文件」才加载 */
+const SftpBrowser = lazy(() => import('../sftp/SftpBrowser'))
 
 const LAYOUTS: ReadonlyArray<{ value: PaneLayout; icon: 'panel-right' | 'split-h' | 'split-v'; label: string }> = [
   { value: 'single', icon: 'panel-right', label: '单窗格' },
@@ -151,6 +154,29 @@ export default function TerminalWorkspace(): React.JSX.Element {
         <div style={{ flex: 1 }} />
 
         <div className="t-toolbar__divider" />
+        {/* 终端 / 远端文件：同一会话的两种视图，SFTP 依附于该会话 */}
+        <div className="t-segmented" role="tablist" aria-label="工作区视图">
+          {(
+            [
+              ['terminal', '终端'],
+              ['sftp', '文件'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={(mono.mode ?? 'terminal') === value}
+              disabled={value === 'sftp' && !mono.sessionId}
+              title={value === 'sftp' && !mono.sessionId ? '会话建立后才能浏览远端文件' : undefined}
+              className={`t-segmented__item${(mono.mode ?? 'terminal') === value ? ' t-segmented__item--active' : ''}`}
+              onClick={() => setTabMode(mono.tabId, value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="t-toolbar__divider" />
         {LAYOUTS.map((l) => (
           <IconButton
             key={l.value}
@@ -194,6 +220,11 @@ export default function TerminalWorkspace(): React.JSX.Element {
       </div>
 
       <div className="term-workspace">
+        {(mono.mode ?? 'terminal') === 'sftp' ? (
+          <Suspense fallback={<Loading text="正在载入文件浏览器…" />}>
+            <SftpBrowser sessionId={mono.sessionId} title={mono.title} />
+          </Suspense>
+        ) : (
         <div className={`term-panes term-panes--${layout}`}>
           {tabs.map((tab) => {
             const visible = visibleIds.includes(tab.tabId)
@@ -209,8 +240,9 @@ export default function TerminalWorkspace(): React.JSX.Element {
             )
           })}
         </div>
+        )}
 
-        {mono.monitorOpen ? (
+        {mono.monitorOpen && (mono.mode ?? 'terminal') === 'terminal' ? (
           <Suspense fallback={<div className="monitor"><Loading text="正在载入监控面板…" /></div>}>
             <MonitorPanel
               sessionId={mono.sessionId}

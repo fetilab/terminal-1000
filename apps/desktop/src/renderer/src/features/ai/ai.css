@@ -1,0 +1,160 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 terminal-1000 contributors */
+
+.ai-chat-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+}
+
+.ai-messages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ai-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 860px;
+}
+
+.ai-msg--user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.ai-msg__role {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--t1000-fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.ai-msg__body {
+  padding: 10px 13px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-raised);
+}
+
+.ai-msg--user .ai-msg__body {
+  background: var(--t1000-accent-softer);
+  border-color: var(--t1000-border-accent);
+}
+
+.ai-msg__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* 流式光标 */
+.ai-caret {
+  width: 6px;
+  height: 12px;
+  background: var(--t1000-accent);
+  animation: t1000-pulse 1s steps(2) infinite;
+}
+
+/* 工具调用卡片 */
+.ai-tool {
+  margin-top: 8px;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-sunken);
+  overflow: hidden;
+}
+
+.ai-tool--error {
+  border-color: color-mix(in srgb, var(--t1000-danger) 50%, transparent);
+}
+
+.ai-tool__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 9px;
+  border: none;
+  background: transparent;
+  color: var(--t1000-fg-muted);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-tool__head:hover {
+  background: var(--t1000-bg-hover);
+}
+
+.ai-tool__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--t1000-font-mono);
+  color: var(--t1000-fg);
+}
+
+.ai-tool__body {
+  padding: 0 9px 9px;
+}
+
+.ai-tool__label {
+  margin: 6px 0 3px;
+  color: var(--t1000-fg-faint);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.ai-tool__pre {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg);
+  color: var(--t1000-fg-muted);
+  font-family: var(--t1000-font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 输入区 */
+.ai-composer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-raised);
+}
+
+.ai-composer__input {
+  min-height: 66px;
+  max-height: 200px;
+}
+
+.ai-composer__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

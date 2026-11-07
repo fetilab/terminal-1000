@@ -58,8 +58,25 @@ export function createWindow(options: CreateWindowOptions = {}): BrowserWindow {
 
   windows.add(win)
 
+  // 窗口生命周期日志：出问题时（窗口不出现、白屏）这几条是唯一能定位的线索，
+  // 没有它们只能靠猜。
   win.once('ready-to-show', () => {
-    if (options.show ?? true) win.show()
+    log.info('窗口 ready-to-show')
+    if (options.show ?? true) {
+      win.show()
+      log.info('窗口已显示')
+    }
+  })
+
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    log.error(`渲染层加载失败 ${code} ${desc} ${url}`)
+  })
+  win.webContents.on('render-process-gone', (_e, details) => {
+    log.error(`渲染进程退出: ${JSON.stringify(details)}`)
+  })
+  win.webContents.on('preload-error', (_e, preloadPath, error) => {
+    // preload 出错会让 window.t1000 变成 undefined，渲染层随即大面积抛错
+    log.error(`preload 加载失败 ${preloadPath}: ${error.message}`)
   })
 
   win.on('closed', () => {

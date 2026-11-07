@@ -33,6 +33,8 @@ const ConnectionsView = lazy(() => import('./features/connections/ConnectionsVie
 const TerminalWorkspace = lazy(() => import('./features/terminal/TerminalWorkspace'))
 const NotesView = lazy(() => import('./features/notes/NotesView'))
 const ToolsView = lazy(() => import('./features/tools/ToolsView'))
+const AiView = lazy(() => import('./features/ai/AiView'))
+const ServicesView = lazy(() => import('./features/services/ServicesView'))
 const SettingsView = lazy(() => import('./features/settings/SettingsView'))
 
 const ConnectionsSidebar = lazy(() =>
@@ -50,6 +52,10 @@ const ToolsSidebar = lazy(() =>
 const SettingsSidebar = lazy(() =>
   import('./features/settings/SettingsView').then((m) => ({ default: m.SettingsSidebar })),
 )
+const AiSidebar = lazy(() => import('./features/ai/AiView').then((m) => ({ default: m.AiSidebar })))
+const ServicesSidebar = lazy(() =>
+  import('./features/services/ServicesView').then((m) => ({ default: m.ServicesSidebar })),
+)
 
 interface RailEntry {
   view: ViewId
@@ -62,6 +68,8 @@ const RAIL: RailEntry[] = [
   { view: 'console', icon: 'console', label: '控制台' },
   { view: 'notes', icon: 'notes', label: '笔记' },
   { view: 'tools', icon: 'tools', label: '工具' },
+  { view: 'ai', icon: 'activity', label: 'AI 助手' },
+  { view: 'services', icon: 'cloud', label: '外部服务' },
 ]
 
 function Rail(): React.JSX.Element {
@@ -117,6 +125,10 @@ function Sidebar(): React.JSX.Element {
       return <NotesSidebar />
     case 'tools':
       return <ToolsSidebar />
+    case 'ai':
+      return <AiSidebar />
+    case 'services':
+      return <ServicesSidebar />
     case 'settings':
       return <SettingsSidebar />
     default:
@@ -135,6 +147,10 @@ function View(): React.JSX.Element {
       return <NotesView />
     case 'tools':
       return <ToolsView />
+    case 'ai':
+      return <AiView />
+    case 'services':
+      return <ServicesView />
     case 'settings':
       return <SettingsView />
     default:
@@ -180,6 +196,8 @@ export function App(): React.JSX.Element {
         '2': 'console',
         '3': 'notes',
         '4': 'tools',
+        '5': 'ai',
+        '6': 'services',
       }
       const target = byNumber[e.key]
       if (target) {

@@ -70,10 +70,21 @@ async function bootstrap(): Promise<void> {
   })
 }
 
-app.whenReady().then(bootstrap).catch((err) => {
-  log.error('启动失败', err)
-  app.exit(1)
-})
+/**
+ * 只有拿到单实例锁才启动。
+ *
+ * 之前这里漏了判断：拿不到锁时虽然调了 app.quit()，但 whenReady 仍会触发 bootstrap，
+ * 于是又建了一个窗口、随即被 quit 关掉 —— 表现为"进程还活着、窗口却不见了"，
+ * 排查时非常迷惑（会误以为是渲染层或显示环境的问题）。
+ */
+if (gotLock) {
+  app.whenReady().then(bootstrap).catch((err) => {
+    log.error('启动失败', err)
+    app.exit(1)
+  })
+} else {
+  log.info('已有实例在运行，本次启动退出并聚焦既有窗口')
+}
 
 /**
  * 退出前释放外部资源。

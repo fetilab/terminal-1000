@@ -70,6 +70,8 @@ export interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   size?: number
   /** 视觉语气 */
   tone?: 'default' | 'accent' | 'danger' | 'on'
+  /** 进行中：显示转圈并禁用点击 */
+  loading?: boolean
 }
 
 /** 行内纯图标按钮（列表行操作、工具条等）。 */
@@ -78,6 +80,8 @@ export function IconButton({
   label,
   size = 15,
   tone = 'default',
+  loading = false,
+  disabled,
   className,
   type = 'button',
   ...rest
@@ -89,8 +93,16 @@ export function IconButton({
   if (className) classes.push(className)
 
   return (
-    <button {...rest} type={type} className={classes.join(' ')} title={label} aria-label={label}>
-      <Icon name={icon} size={size} />
+    <button
+      {...rest}
+      type={type}
+      className={classes.join(' ')}
+      title={label}
+      aria-label={label}
+      disabled={disabled === true || loading}
+      aria-busy={loading || undefined}
+    >
+      {loading ? <span className="t-spinner" style={{ width: size, height: size }} aria-hidden /> : <Icon name={icon} size={size} />}
     </button>
   )
 }

@@ -68,7 +68,7 @@ export interface PingEntry {
  */
 export type GroupNode = GroupTreeNode
 
-export type ViewId = 'connections' | 'console' | 'notes' | 'tools' | 'settings'
+export type ViewId = 'connections' | 'console' | 'notes' | 'tools' | 'ai' | 'services' | 'settings'
 
 /** 笔记面板的过滤条件：三个固定视图 + 任意文件夹 */
 export type NotesFilter = 'all' | 'favorites' | 'trash' | `folder:${string}`
@@ -110,6 +110,8 @@ export interface TerminalTab {
   layout: PaneLayout
   /** 该标签右侧是否展开监控 */
   monitorOpen: boolean
+  /** 工作区视图：终端 / 远端文件（SFTP） */
+  mode: 'terminal' | 'sftp'
   createdAt: number
 }
 
@@ -126,6 +128,12 @@ export interface AppState {
 
   /** 设置面板当前分区 */
   settingsSection: SettingsSectionId
+  /** 传输同名冲突策略（来自 settings.transfer），SFTP 上传下载要用 */
+  transferConflictPolicy: 'ask' | 'overwrite' | 'skip' | 'rename'
+  /** AI 交互模式（来自 settings.ai.mode），面板顶部展示 */
+  aiMode: 'chat' | 'assistant' | 'confirm' | 'thinking'
+  /** 外部服务面板当前分区 */
+  servicesSection: 'sync' | 'mcp'
 
   /* ── 笔记 ── */
   notes: NoteSummary[]
@@ -199,6 +207,9 @@ const initialState: AppState = {
   view: 'connections',
   protocol: 'ssh',
   settingsSection: 'app',
+  transferConflictPolicy: 'ask',
+  aiMode: 'chat',
+  servicesSection: 'sync',
   notes: [],
   noteFolders: [],
   notesFilter: 'all',
@@ -504,6 +515,10 @@ export const actions = {
     setState({ settingsSection: section })
   },
 
+  setServicesSection(section: 'sync' | 'mcp') {
+    setState({ servicesSection: section })
+  },
+
   setNotesFilter(filter: NotesFilter) {
     // 切分类时关掉当前详情：它可能不属于新分类，留着会让人误以为还在同一个列表里
     setState({ notesFilter: filter, noteDraft: null, noteDirty: false })
@@ -626,6 +641,10 @@ export async function loadInitialSettings(): Promise<void> {
       {},
     )
     applyTheme(settings.app.theme)
+    setState({
+      transferConflictPolicy: settings.transfer.conflictPolicy,
+      aiMode: settings.ai.mode,
+    })
   } catch {
     applyTheme('dark')
   }
@@ -1085,13 +1104,18 @@ export async function removeNoteFolder(id: string): Promise<void> {
 
 let tabSeq = 0
 
-function makeTab(partial: Omit<TerminalTab, 'tabId' | 'createdAt' | 'layout' | 'monitorOpen' | 'encoding'> & { encoding?: TerminalEncoding }): TerminalTab {
+function makeTab(
+  partial: Omit<TerminalTab, 'tabId' | 'createdAt' | 'layout' | 'monitorOpen' | 'encoding' | 'mode'> & {
+    encoding?: TerminalEncoding
+  },
+): TerminalTab {
   tabSeq += 1
   return {
     tabId: `tab-${tabSeq}`,
     createdAt: Date.now(),
     layout: 'single',
     monitorOpen: false,
+    mode: 'terminal',
     encoding: partial.encoding ?? 'utf-8',
     ...partial,
   }
@@ -1125,6 +1149,10 @@ export function closeTab(tabId: string): void {
 
 export function setTabLayout(tabId: string, layout: PaneLayout): void {
   updateTab(tabId, { layout })
+}
+
+export function setTabMode(tabId: string, mode: 'terminal' | 'sftp'): void {
+  updateTab(tabId, { mode })
 }
 
 export function toggleTabMonitor(tabId: string): void {

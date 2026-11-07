@@ -57,6 +57,7 @@ export type IconName =
   | 'shield'
   // 领域
   | 'server'
+  | 'home'
   | 'terminal'
   | 'split-h'
   | 'split-v'
@@ -268,6 +269,13 @@ const GLYPHS: Record<IconName, JSX.Element> = {
       <rect {...S} x="3.8" y="5.4" width="16.4" height="5.4" rx="1.8" />
       <rect {...S} x="3.8" y="13.2" width="16.4" height="5.4" rx="1.8" />
       <path {...S} d="M7.2 8.1v.1M7.2 15.9v.1" />
+    </>
+  ),
+  home: (
+    <>
+      <path {...S} d="M4 10.6l8-6.2 8 6.2" />
+      <path {...S} d="M6.2 12.4v6.6a1 1 0 0 0 1 1h9.6a1 1 0 0 0 1-1v-6.6" />
+      <path {...S} d="M10.4 20v-4.4h3.2V20" />
     </>
   ),
   terminal: (
