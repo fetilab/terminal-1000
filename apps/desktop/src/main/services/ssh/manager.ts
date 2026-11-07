@@ -16,6 +16,7 @@ import {
   listSessions as listRegistrySessions,
   registerSession,
   unregisterSession,
+  publishSessionData,
   type SshSessionHandle,
 } from '../session-registry'
 import { SshSession, type AuthPromptInfo, type HostKeyAskInfo } from './session'
@@ -161,6 +162,9 @@ export class SshManager {
         },
         onData: (data) => {
           this.events.onData(session.sessionId, data)
+          // 同时分发给内部订阅者（会话日志/录制）。
+          // 走中立契约：录制不依赖"界面恰好订阅了 SSH_DATA"，界面关掉也能继续记。
+          publishSessionData(session.sessionId, data)
         },
         onDebug: (message) => {
           this.events.onDebug(session.sessionId, message)

@@ -13,40 +13,22 @@
  * 绝不真的访问外部 AI 服务。
  */
 
-import type { AiProviderConfig } from '@t1000/shared'
+import type { AiProviderConfig, ChatMessage, TokenUsage, ToolCallRequest } from '@t1000/shared'
 import { AppError } from '../../errors'
 
 // ---------------------------------------------------------------------------
 // 类型
 // ---------------------------------------------------------------------------
 
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
-  /** tool 角色回填时对应哪次调用 */
-  toolCallId?: string
-  /** assistant 消息里模型发起的工具调用 */
-  toolCalls?: ToolCallRequest[]
-  name?: string
-}
-
-export interface ToolCallRequest {
-  id: string
-  name: string
-  /** 原始 JSON 字符串（流式拼装完成前可能不完整） */
-  arguments: string
-}
+// 消息 / 工具调用 / 用量这些**跨进程形状**的唯一定义处已上移到 `@t1000/shared`
+// （渲染层同样从那里取），这里再导出一次保持既有 `./providers` 路径可用。
+export type { ChatMessage, TokenUsage, ToolCallRequest }
 
 /** 暴露给模型的工具定义（JSON Schema） */
 export interface ToolSpec {
   name: string
   description: string
   parameters: Record<string, unknown>
-}
-
-export interface TokenUsage {
-  inputTokens?: number
-  outputTokens?: number
 }
 
 export interface StreamCallbacks {

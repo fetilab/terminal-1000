@@ -13,71 +13,35 @@
  * - 语料访问全部通过 `CompletionCorpus`，因此「按需加载 / LRU」可被计数断言。
  */
 
-import type { CompletionSettings } from '@t1000/shared'
+import type {
+  CommandContext,
+  CompletionCandidate,
+  CompletionKind,
+  CompletionRequest,
+  CompletionResult,
+  CompletionSettings,
+  HistoryEntry,
+  MatchKind,
+} from '@t1000/shared'
+
+// 面向 UI 的形状（候选/上下文/请求/结果）唯一定义处已上移到 `@t1000/shared`，
+// 渲染层同样从那里取。这里再导出一次，保持既有 `./engine` import 路径可用。
+export type {
+  CommandContext,
+  CompletionCandidate,
+  CompletionKind,
+  CompletionRequest,
+  CompletionResult,
+  HistoryEntry,
+  MatchKind,
+}
 import { CompletionCorpus } from './corpus'
 import type { CommandIndexEntry, SpecOption } from './specs/types'
 
 // ── 类型 ──────────────────────────────────────────────────────────────────
 
-export type CompletionKind =
-  | 'command'
-  | 'subcommand'
-  | 'option'
-  | 'history'
-  | 'directory'
-  | 'argument'
-  | 'ai'
-
-export type MatchKind = 'exact' | 'prefix' | 'fuzzy'
-
-export interface CompletionCandidate {
-  /** 接受后插入的文本 */
-  value: string
-  /** 展示文本（缺省与 value 相同） */
-  label?: string
-  description?: string
-  kind: CompletionKind
-  icon?: string
-  /** 排序分（越大越靠前） */
-  score: number
-  matchKind: MatchKind
-}
-
-/** 命令行的语法解析结果 */
-export interface CommandContext {
-  /** 光标前的文本 */
-  before: string
-  /** 光标后的文本 */
-  after: string
-  /** 光标处的 token（引号内为引号内容） */
-  token: string
-  /** token 在整行中的起始偏移（引号内指向引号之后） */
-  tokenStart: number
-  /** 建议替换到的偏移（token 结尾） */
-  replaceEnd: number
-  /** 光标前已完成的 token（含分隔符） */
-  tokens: string[]
-  /** 光标是否处于引号内 */
-  quote: '"' | "'" | null
-  /** 是否处于「命令名」位置（行首，或管道/&&/; 之后） */
-  atCommandPosition: boolean
-  /** 当前命令名（命令位置时为 null） */
-  command: string | null
-  /** 已输入的非选项参数个数 */
-  argIndex: number
-  /** 语法层期待：命令名 / 选项 / 参数 */
-  expecting: 'command' | 'option' | 'argument'
-  /** 已出现的选项（用于去重候选） */
-  usedOptions: string[]
-  /** 是否 `??` 开头（AI 建议通道） */
-  aiPrefix: boolean
-}
-
-export interface HistoryEntry {
-  line: string
-  /** 频次（缺省 1） */
-  count?: number
-}
+// 候选/上下文/请求/结果等 UI 形状见 `@t1000/shared`（文件顶部已再导出）；
+// 下面这些是**引擎内部**的注入点与调度类型，不属于跨进程契约。
 
 export interface GeneratorRequest {
   /** 候选上限 */
@@ -96,30 +60,6 @@ export interface CompletionGenerator {
 /** AI 建议通道（TODO：接入 services/ai；当前默认实现返回空） */
 export interface AiSuggestionProvider {
   suggest(context: CommandContext, limit: number): Promise<CompletionCandidate[]>
-}
-
-export interface CompletionRequest {
-  line: string
-  cursor?: number
-  /** 历史命令（字符串或带频次的条目） */
-  history?: readonly (string | HistoryEntry)[]
-  /** 候选上限覆盖 */
-  limit?: number
-  /** 终端当前工作目录（目录补全用） */
-  cwd?: string
-}
-
-export interface CompletionResult {
-  candidates: CompletionCandidate[]
-  context: CommandContext
-  elapsedMs: number
-  /** 命中的命令 spec 名（未命中为 null） */
-  specName: string | null
-  /** 建议的输入防抖（ms），供 UI 直接使用 */
-  debounceMs: number
-  /** 是否走了 AI 通道 */
-  aiRequested: boolean
-  notes?: string[]
 }
 
 export const DEFAULT_COMPLETION_SETTINGS: CompletionSettings = {

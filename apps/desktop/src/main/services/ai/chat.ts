@@ -16,7 +16,15 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { AiProviderConfig, AiSettings, EventName, EventPayloads } from '@t1000/shared'
+import type {
+  AiProviderConfig,
+  AiSettings,
+  ChatSession,
+  EventName,
+  EventPayloads,
+  SendResult,
+  SessionSummary,
+} from '@t1000/shared'
 import { Events } from '@t1000/shared'
 import type { EventEmitterFn } from '../../ipc/router'
 import { AppError } from '../../errors'
@@ -46,12 +54,8 @@ const MAX_MESSAGES_PER_CHAT = 200
 /** 一次用户输入内最多进行多少次"模型 → 工具 → 模型"往返（同时受 guard.maxRounds 约束） */
 const MAX_TOOL_ITERATIONS = 8
 
-export interface SessionSummary {
-  sessionId: string
-  host: string
-  username: string
-  connectionId: string
-}
+// 会话/摘要/发送结果等 UI 形状见 `@t1000/shared`（下方再导出）
+export type { ChatSession, SendResult, SessionSummary }
 
 export interface ExecOutcome {
   stdout: string
@@ -76,22 +80,6 @@ export interface ChatDeps {
   /** 审计落盘（可选） */
   auditSink?: (entry: AuditEntry) => void
   now?: () => number
-}
-
-export interface ChatSession {
-  id: string
-  title: string
-  createdAt: string
-  updatedAt: string
-  messages: ChatMessage[]
-  usage: TokenUsage
-}
-
-export interface SendResult {
-  chatId: string
-  messageId: string
-  text: string
-  toolCalls: number
 }
 
 /** 保守默认：不执行、chat 模式、严格上限 */

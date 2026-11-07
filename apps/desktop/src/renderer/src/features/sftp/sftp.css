@@ -50,7 +50,17 @@
 }
 
 /* 列表 */
+/* wrapper：必须是 flex 容器，否则内部滚动容器 height:auto 会被内容撑高，
+   400 条目录一次性全渲染（与连接列表当年同一个坑） */
 .sftp-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 滚动容器本体 */
+.sftp-scroll {
   flex: 1;
   min-height: 0;
 }

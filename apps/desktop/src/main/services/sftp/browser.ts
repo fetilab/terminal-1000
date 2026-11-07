@@ -11,6 +11,14 @@
  */
 
 import type { SFTPWrapper } from 'ssh2'
+import type {
+  RemoteEntry,
+  RemoteEntryType,
+  RemoteFileInfo,
+  RemoteTextFile,
+  RemoteTree,
+  RemoteWriteResult,
+} from '@t1000/shared'
 import { AppError } from '../../errors'
 import {
   basenameRemotePath,
@@ -150,26 +158,9 @@ export const sftpFs = {
 // 业务级操作
 // ---------------------------------------------------------------------------
 
-export type RemoteEntryType = 'file' | 'directory' | 'symlink' | 'other'
-
-/** 列表项（IPC 返回给渲染层的形状） */
-export interface RemoteEntry {
-  /** 名字（不含目录部分） */
-  name: string
-  /** 规范化后的绝对路径 */
-  path: string
-  type: RemoteEntryType
-  size: number
-  mtime: number
-  /** 数字权限位（低 12 位） */
-  mode: number
-  /** rwxr-xr-x 形式 */
-  permissions: string
-  uid: number
-  gid: number
-  /** ls -l 风格的长名称，UI 可直接展示 */
-  longname: string
-}
+// 这些形状的**唯一定义处**已上移到 `@t1000/shared`（渲染层同样从那里取类型，
+// 不再各写一份镜像声明）。这里再导出一次，保持既有 `./browser` import 路径可用。
+export type { RemoteEntry, RemoteEntryType, RemoteFileInfo, RemoteTextFile, RemoteTree, RemoteWriteResult }
 
 export function entryTypeOf(stats: SftpStats): RemoteEntryType {
   if (stats.isDirectory()) return 'directory'
@@ -402,7 +393,7 @@ export async function readRemoteTextFile(
   sftp: SftpLike,
   remotePath: string,
   options: { maxBytes?: number } = {},
-): Promise<{ path: string; content: string; size: number; mtime: number; mode: number }> {
+): Promise<RemoteTextFile> {
   const p = normalizeRemotePath(remotePath)
   const max = options.maxBytes ?? MAX_REMOTE_READ_BYTES
   const stats = await sftpFs.stat(sftp, p)
@@ -428,7 +419,7 @@ export async function writeRemoteTextFile(
   sftp: SftpLike,
   remotePath: string,
   content: string | Buffer,
-): Promise<{ path: string; size: number }> {
+): Promise<RemoteWriteResult> {
   const p = normalizeRemotePath(remotePath)
   const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content
   await sftpFs.writeFile(sftp, p, data)
@@ -444,28 +435,6 @@ export async function remoteHome(sftp: SftpLike): Promise<string> {
   } catch {
     return '/'
   }
-}
-
-/** 递归扫描出的一棵远端文件树 */
-export interface RemoteTree {
-  /** 根目录（规范化后的绝对路径） */
-  root: string
-  /** 所有待传输文件（相对 root 的相对路径 + 元信息） */
-  files: RemoteFileInfo[]
-  /** 需要创建的目录（相对 root，按深度升序） */
-  dirs: string[]
-  filesTotal: number
-  bytesTotal: number
-}
-
-export interface RemoteFileInfo {
-  /** 相对 root 的相对路径（POSIX 分隔符，无前导斜杠） */
-  relativePath: string
-  /** 绝对路径 */
-  absolutePath: string
-  size: number
-  mtime: number
-  mode: number
 }
 
 /**

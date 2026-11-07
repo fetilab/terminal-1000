@@ -18,39 +18,24 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
+import type {
+  ExecutionPolicy,
+  McpPolicy,
+  McpToolDef,
+  PublicMcpClient,
+  SudoPolicy,
+  ToolGroup,
+  WorkspacePolicy,
+} from '@t1000/shared'
 import { AppError } from '../../errors'
 
 // ---------------------------------------------------------------------------
 // 策略
 // ---------------------------------------------------------------------------
 
-/** 普通 SSH 命令 / 远程文件操作的执行策略 */
-export type ExecutionPolicy = 'confirm' | 'direct'
-/** sudo 独立策略 */
-export type SudoPolicy = 'deny' | 'confirm' | 'direct'
-/** 工作区（连接/笔记等）管理策略 */
-export type WorkspacePolicy = 'deny' | 'confirm' | 'direct'
-
-export type ToolGroup = 'workspace' | 'ssh' | 'files' | 'transfer'
-
-export interface McpPolicy {
-  /** 监听地址；默认回环 */
-  listenHost: string
-  port: number
-  executionPolicy: ExecutionPolicy
-  sudoPolicy: SudoPolicy
-  workspacePolicy: WorkspacePolicy
-  /** 允许访问的 SSH 服务器 id；'all' 表示全部（不推荐） */
-  allowedServerIds: string[] | 'all'
-  /** 允许访问的本地目录白名单（绝对路径） */
-  allowedLocalDirs: string[]
-  /** 命令默认超时 */
-  defaultTimeoutMs: number
-  /** 命令超时上限 */
-  maxTimeoutMs: number
-  /** 启用的工具名；至少要保留一个 */
-  enabledTools: string[]
-}
+// 策略与工具形状的**唯一定义处**已上移到 `@t1000/shared`（渲染层同样从那里取），
+// 这里再导出一次保持既有 `./policy` import 路径可用。
+export type { ExecutionPolicy, McpPolicy, McpToolDef, PublicMcpClient, SudoPolicy, ToolGroup, WorkspacePolicy }
 
 export const DEFAULT_MCP_POLICY: McpPolicy = {
   listenHost: '127.0.0.1',
@@ -225,7 +210,7 @@ export interface McpClient {
   revoked: boolean
 }
 
-export type PublicMcpClient = Omit<McpClient, 'tokenDigest'>
+// PublicMcpClient 见 shared（= 去掉 tokenDigest 摘要的公开视图）
 
 export function digestToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex')
@@ -311,18 +296,7 @@ function stripDigest(client: McpClient): PublicMcpClient {
 // 工具注册表
 // ---------------------------------------------------------------------------
 
-export interface McpToolDef {
-  name: string
-  group: ToolGroup
-  description: string
-  parameters: Record<string, unknown>
-  /** 需要 sudo 授权（全局 sudoPolicy + 令牌权限都要允许） */
-  requiresSudo?: boolean
-  /** 需要工作区授权 */
-  requiresWorkspace?: boolean
-  /** 需要本地目录白名单 */
-  needsLocalDirs?: boolean
-}
+// McpToolDef 见 shared（工具注册表条目）
 
 const obj = (
   properties: Record<string, unknown>,

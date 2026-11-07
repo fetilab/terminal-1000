@@ -474,7 +474,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           <VirtualList
             items={sorted}
             rowHeight={30}
-            className="sftp-list"
+            className="sftp-scroll"
             getKey={(e) => e.path}
             renderRow={(entry) => {
               const kind = entryIconType(entry)

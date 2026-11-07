@@ -16,6 +16,7 @@
 
 import { z } from 'zod'
 import type { SFTPWrapper } from 'ssh2'
+import type { McpStatus, McpToolsResult } from '@t1000/shared'
 import { AppError, parseInput } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { listSessions as listLiveSessions, requireSession } from '../session-registry'
@@ -261,7 +262,9 @@ function applyPolicyPatch(patch: McpPolicyPatch): McpPolicy {
 export const mcpHandlers: Record<string, IpcHandler> = {
   status: () => {
     const s = requireServer()
-    return { ...s.status(), clients: tokens.list() }
+    // 显式标注 shared 契约：UI 视图里 clients 是列表，而内部状态里是数量
+    const view: McpStatus = { ...s.status(), clients: tokens.list() }
+    return view
   },
 
   start: async (payload) => {
@@ -272,7 +275,8 @@ export const mcpHandlers: Record<string, IpcHandler> = {
     }
     await requireServer().setRuntime(runtime)
     const status = await requireServer().start()
-    return { ...status, clients: tokens.list() }
+    const view: McpStatus = { ...status, clients: tokens.list() }
+    return view
   },
 
   stop: async () => {
@@ -282,7 +286,7 @@ export const mcpHandlers: Record<string, IpcHandler> = {
 
   listTools: () => {
     const enabled = new Set(enabledToolDefs(policy).map((t) => t.name))
-    return {
+    const view: McpToolsResult = {
       tools: MCP_TOOLS.map((t) => ({
         name: t.name,
         group: t.group,
@@ -295,6 +299,7 @@ export const mcpHandlers: Record<string, IpcHandler> = {
       // 至少要保留一个工具：这里告诉 UI 当前生效的那一个
       effective: [...enabled],
     }
+    return view
   },
 
   setPolicy: (payload) => {

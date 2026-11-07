@@ -12,7 +12,7 @@
  */
 
 import { z } from 'zod'
-import type { AiProviderConfig, AiSettings, EventName, EventPayloads } from '@t1000/shared'
+import type { AiProviderConfig, AiSettings, EventName, EventPayloads, PublicProvider } from '@t1000/shared'
 import { AppError, parseInput } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { listSessions as listLiveSessions, requireSession } from '../session-registry'
@@ -175,8 +175,13 @@ const cancelSchema = z.object({ chatId })
 const deleteChatSchema = z.object({ chatId })
 const setProviderSchema = z.object({ providerId: z.string().min(1) })
 
-/** 对外暴露的供应商信息（**不含 apiKey**） */
-function publicProvider(p: AiProviderConfig): Record<string, unknown> {
+/**
+ * 对外暴露的供应商信息（**不含 apiKey**）。
+ *
+ * 返回类型显式标注为 shared 的 `PublicProvider`：UI 契约在 shared 里定义，
+ * 这里少一个字段或多带一个密钥都会在编译期报错。
+ */
+function publicProvider(p: AiProviderConfig): PublicProvider {
   return {
     id: p.id,
     name: p.name,

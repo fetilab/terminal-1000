@@ -53,7 +53,35 @@ export function registerSession(handle: SshSessionHandle): void {
 }
 
 export function unregisterSession(sessionId: string): void {
-  sessions.delete(sessionId)
+  const existed = sessions.delete(sessionId)
+  // 会话注销即广播"已关闭"：订阅方（如会话日志）据此自动收尾，
+  // 不需要 ssh 服务反过来调用日志服务（那样两个服务就互相依赖了）。
+  if (existed) publishSessionClosed(sessionId)
+}
+
+/**
+ * 会话关闭订阅 —— 与数据订阅同属中立契约：
+ * 生产者只 publish，消费者只 subscribe，双方互不感知。
+ */
+const closedListeners = new Set<(sessionId: string) => void>()
+
+export function subscribeSessionClosed(listener: (sessionId: string) => void): () => void {
+  closedListeners.add(listener)
+  return () => {
+    closedListeners.delete(listener)
+  }
+}
+
+export function publishSessionClosed(sessionId: string): void {
+  // 数据订阅一并清掉，避免监听器悬挂
+  dataListeners.delete(sessionId)
+  for (const listener of closedListeners) {
+    try {
+      listener(sessionId)
+    } catch {
+      /* 单个订阅者出错不影响其它 */
+    }
+  }
 }
 
 export function getSession(sessionId: string): SshSessionHandle | undefined {
@@ -75,7 +103,55 @@ export function listSessions(): SshSessionHandle[] {
   return [...sessions.values()]
 }
 
+/**
+ * 会话输出订阅（会话日志 / 录制用）。
+ *
+ * 放在中立契约里而不是让日志服务 import ssh 服务内部：
+ * 生产者（ssh 会话）只负责 publish，消费者（sessionlog）只负责 subscribe，
+ * 双方都不需要知道对方的存在。
+ *
+ * 与渲染层的 SSH_DATA 事件是**两条独立通道** ——
+ * 录制不能依赖"界面恰好订阅了"，界面关掉时也要能继续记。
+ */
+const dataListeners = new Map<string, Set<(chunk: string) => void>>()
+
+/** 订阅某会话的输出；返回取消订阅函数 */
+export function subscribeSessionData(sessionId: string, listener: (chunk: string) => void): () => void {
+  let set = dataListeners.get(sessionId)
+  if (!set) {
+    set = new Set()
+    dataListeners.set(sessionId, set)
+  }
+  set.add(listener)
+
+  return () => {
+    const current = dataListeners.get(sessionId)
+    if (!current) return
+    current.delete(listener)
+    if (current.size === 0) dataListeners.delete(sessionId)
+  }
+}
+
+/** 由会话生产者调用：把输出分发给所有订阅者 */
+export function publishSessionData(sessionId: string, chunk: string): void {
+  const set = dataListeners.get(sessionId)
+  if (!set || set.size === 0) return
+  for (const listener of set) {
+    try {
+      listener(chunk)
+    } catch {
+      // 单个订阅者出错不应影响会话本身或其它订阅者
+    }
+  }
+}
+
+/** 该会话当前有多少订阅者（测试与诊断用） */
+export function sessionDataListenerCount(sessionId: string): number {
+  return dataListeners.get(sessionId)?.size ?? 0
+}
+
 /** 测试用：清空注册表 */
 export function clearSessions(): void {
   sessions.clear()
+  dataListeners.clear()
 }

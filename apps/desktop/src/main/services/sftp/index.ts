@@ -19,6 +19,7 @@ import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { z } from 'zod'
 import type { SFTPWrapper } from 'ssh2'
+import type { OpenEditorResult } from '@t1000/shared'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { AppError } from '../../errors'
 import { requireSession } from '../session-registry'
@@ -36,6 +37,9 @@ import {
   type SftpLike,
 } from './browser'
 import { TransferEngine } from './transfer'
+
+// 编辑器相关形状的唯一定义处在 shared；这里再导出一次保持既有路径可用
+export type { OpenEditorResult, RemoteTextFile, RemoteWriteResult } from '@t1000/shared'
 
 // ---------------------------------------------------------------------------
 // 参数校验
@@ -241,7 +245,8 @@ export const sftpHandlers: Record<string, IpcHandler> = {
     const localPath = join(dir, basename(file.path))
     await writeFile(localPath, file.content, 'utf8')
 
-    return {
+    // 显式标注为 shared 契约：主进程返回值与 UI 类型对不上时编译期就会报错
+    const result: OpenEditorResult = {
       remotePath: file.path,
       localPath,
       size: file.size,
@@ -250,6 +255,7 @@ export const sftpHandlers: Record<string, IpcHandler> = {
       /** 每次编辑会话一个 id，供上层关联保存动作 */
       editId: randomUUID(),
     }
+    return result
   },
 }
 

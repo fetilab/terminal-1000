@@ -95,7 +95,14 @@ export interface McpServerOptions {
   log?: (message: string) => void
 }
 
-export interface McpStatus {
+/**
+ * **服务器内部**状态。
+ *
+ * 与 shared 的同名类型区分：shared 的 `McpStatus` 是 `mcp.status` 返回给 UI 的视图，
+ * 其中 `clients` 是**客户端列表**；这里是内部状态，`clients` 只是**数量**。
+ * 为避免两处同名混用，内部类型显式命名为 `McpServerStatus`。
+ */
+export interface McpServerStatus {
   running: boolean
   host: string
   port: number
@@ -174,7 +181,7 @@ export class McpServer {
     this.policy = policy
   }
 
-  status(): McpStatus {
+  status(): McpServerStatus {
     const port = this.server ? this.boundPort : this.policy.port
     return {
       running: this.server !== null,
@@ -191,7 +198,7 @@ export class McpServer {
    * 启动 HTTP 服务。
    * 端口被占用时抛 CONFLICT 且**不自动换端口**（与参考实现一致，避免用户连错地址）。
    */
-  async start(): Promise<McpStatus> {
+  async start(): Promise<McpServerStatus> {
     if (this.server) return this.status()
 
     const server = createServer((req, res) => {

@@ -15,7 +15,7 @@
  * 已在反馈中提出上移（同 PingResult / GroupTreeNode / RemoteEntry）。
  */
 
-import { useSyncExternalStore } from 'react'
+import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { Events } from '@t1000/shared'
 import { invoke, subscribe } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
@@ -132,12 +132,38 @@ function snapshot(): AiState {
   return state
 }
 
-export function useAi<S>(selector: (s: AiState) => S): S {
-  return useSyncExternalStore(
-    subscribeStore,
-    () => selector(snapshot()),
-    () => selector(snapshot()),
-  )
+/**
+ * 订阅 AI 状态切片。
+ *
+ * ⚠️ 必须做快照缓存：`useSyncExternalStore` 要求 getSnapshot 在状态未变时
+ * 返回**同一个引用**。如果选择器返回新对象（`s => ({a: s.a, b: s.b})`），
+ * 每次调用都是新引用 → React 判定"状态一直在变" → 无限重渲染直至整棵树崩掉
+ * （表现出来是整个界面变空白）。这与 lib/store 里 useStore 的做法一致。
+ */
+export function useAi<S>(
+  selector: (s: AiState) => S,
+  isEqual: (a: S, b: S) => boolean = Object.is,
+): S {
+  const cache = useRef<{ state: AiState; value: S } | null>(null)
+  const selectorRef = useRef(selector)
+  const equalRef = useRef(isEqual)
+  selectorRef.current = selector
+  equalRef.current = isEqual
+
+  const getSnapshot = useCallback(() => {
+    const current = snapshot()
+    const cached = cache.current
+    if (cached && cached.state === current) return cached.value
+    const value = selectorRef.current(current)
+    if (cached && equalRef.current(cached.value, value)) {
+      cache.current = { state: current, value: cached.value }
+      return cached.value
+    }
+    cache.current = { state: current, value }
+    return value
+  }, [])
+
+  return useSyncExternalStore(subscribeStore, getSnapshot, getSnapshot)
 }
 
 export function aiState(): AiState {
