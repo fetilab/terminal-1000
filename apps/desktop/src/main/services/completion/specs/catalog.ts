@@ -220,7 +220,7 @@ const ROWS: readonly CatalogRow[] = [
   ['objdump', '反汇编目标文件', 'package'],
   ['gdb', 'GNU 调试器', 'package'],
   ['valgrind', '内存与性能分析', 'package'],
-  ['perf', 'Linux 性能分析工具', 'package'],
+  ['perf', 'Linux 性能分析工具', 'package', true],
 
   // ── 容器与虚拟化 ──────────────────────────────────────────────────────────
   ['docker', '容器管理', 'container', true],
@@ -246,7 +246,8 @@ const ROWS: readonly CatalogRow[] = [
   ['ssh-agent', 'SSH 密钥代理', 'security'],
   ['ssh-copy-id', '把公钥安装到远端', 'security'],
   ['ssh-keyscan', '收集远端主机公钥', 'security'],
-  ['gpg', 'GnuPG 加解密与签名', 'security', true],
+  // gpg 的操作是长选项而非子命令（--list-keys 等），因此不标 hasSubcommands
+  ['gpg', 'GnuPG 加解密与签名', 'security'],
   ['openssl', '加密工具箱', 'security', true],
   ['passwd', '修改账户密码', 'security'],
   ['usermod', '修改用户账户属性', 'security'],

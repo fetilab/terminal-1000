@@ -27,7 +27,7 @@ import { Events } from '@t1000/shared'
 import { Icon } from '../../components/Icon'
 import { IconButton } from '../../components/Button'
 import { invoke, subscribe } from '../../lib/ipc'
-import type { TerminalTab } from '../../lib/store'
+import { useStoreShallow, type TerminalTab } from '../../lib/store'
 import './terminal.css'
 
 /** 积压上限：超过就丢弃并在终端里明确告知，绝不无声无息地胀内存 */
@@ -122,6 +122,16 @@ const TERMINAL_THEME = {
   brightWhite: '#f2f4f8',
 } as const
 
+/** 浅色下的终端配色：底色与整体主题一致，前景用深色保证对比度 */
+const TERMINAL_THEME_LIGHT = {
+  ...TERMINAL_THEME,
+  background: '#fbfcfe',
+  foreground: '#1b2029',
+  cursor: '#12909e',
+  cursorAccent: '#fbfcfe',
+  selectionBackground: 'rgba(18, 144, 158, 0.24)',
+} as const
+
 export interface TerminalPaneProps {
   tab: TerminalTab
   /** 该窗格当前是否可见（不可见的窗格只保留状态，不渲染尺寸） */
@@ -144,6 +154,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const [dims, setDims] = useState<{ cols: number; rows: number } | null>(null)
 
   // 首次可见前不创建 xterm：隐藏容器尺寸为 0，此时 open() 会得到畸形布局
+  const resolvedTheme = useStoreShallow((s) => ({ resolvedTheme: s.resolvedTheme })).resolvedTheme
   const [everVisible, setEverVisible] = useState(visible)
   useEffect(() => {
     if (visible) setEverVisible(true)
@@ -181,7 +192,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
           allowProposedApi: true,
           convertEol: false,
           macOptionIsMeta: true,
-          theme: TERMINAL_THEME,
+          theme: resolvedTheme === 'light' ? TERMINAL_THEME_LIGHT : TERMINAL_THEME,
         })
         const fit = new Fit()
         const search = new Search()
@@ -260,6 +271,14 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       /* xterm 在极端尺寸下会抛，忽略即可，下一次 resize 会纠正 */
     }
   }
+
+  /* ── 主题热切换 ───────────────────────────────── */
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    // 只换主题，不重建实例 —— 重建会丢掉滚动回看与远端状态
+    term.options.theme = resolvedTheme === 'light' ? TERMINAL_THEME_LIGHT : TERMINAL_THEME
+  }, [resolvedTheme, ready])
 
   /* ── 尺寸跟踪 ─────────────────────────────────── */
   useEffect(() => {

@@ -26,8 +26,14 @@ export type CommandRisk = 'read-only' | 'unknown' | 'dangerous'
 
 /** 一次命令评估的结果 */
 export interface CommandEvaluation {
-  /** 整条命令的风险（取所有分段的最高） */
+  /** 整条命令的风险（取所有分段的最高；含 sudo 提权带来的升级） */
   risk: CommandRisk
+  /**
+   * **去掉 sudo 提权影响后**的基础风险。
+   * 用途：sudo 单独由 allowSudo/confirmSudo 把关；已授权时按基础风险决定
+   * 是直接执行（如 `sudo systemctl status`）还是仍需按危险命令拒绝（如 `sudo rm -rf`）。
+   */
+  baseRisk: CommandRisk
   /** 按 shell 控制符拆出的分段（已去空白） */
   segments: string[]
   /** 命中危险的具体原因，供 UI 展示"为什么被拦" */
@@ -155,28 +161,40 @@ export const READ_ONLY_PREFIXES: readonly string[] = [
 ]
 
 /** 命令名本身即危险（无安全子命令可谈） */
+/**
+ * 命令名本身即危险 —— **只放单 token 的命令名**。
+ * 多词条目（曾误写 'cargo install'、'usermod -aG'）永远不会被命令名匹配到，
+ * 那种情况必须走 SUBCOMMAND_RULES 或 DANGEROUS_PATTERNS。
+ */
 const DANGEROUS_COMMANDS: ReadonlySet<string> = new Set([
-  'rm', 'rmdir', 'shred', 'truncate', 'dd', 'mkfs', 'mke2fs', 'mkfs.ext2', 'mkfs.ext3',
-  'mkfs.ext4', 'mkfs.xfs', 'mkfs.btrfs', 'mkfs.vfat', 'fdisk', 'sfdisk', 'cfdisk', 'parted',
-  'gdisk', 'sgdisk', 'wipefs', 'blkdiscard', 'hdparm',
+  // 删除 / 磁盘 / 分区
+  'rm', 'rmdir', 'shred', 'truncate', 'dd', 'mkfs', 'mke2fs', 'fdisk', 'sfdisk', 'cfdisk',
+  'parted', 'gdisk', 'sgdisk', 'wipefs', 'blkdiscard', 'hdparm', 'tune2fs','losetup',
+  // 网络与防火墙
   'iptables', 'ip6tables', 'nft', 'ufw', 'firewall-cmd', 'ebtables', 'arptables',
+  'nc', 'netcat', 'ncat', 'socat', 'telnet', 'ssh', 'scp', 'sftp', 'rsync', 'rdesktop', 'nmap',
+  'masscan', 'hydra', 'john', 'aircrack-ng',
+  // 电源与内核
   'shutdown', 'reboot', 'poweroff', 'halt', 'init', 'telinit', 'kexec',
-  'chmod', 'chown', 'chgrp', 'chattr', 'setfacl', 'setfattr', 'usermod', 'shadowconfig',
-  'useradd', 'adduser', 'userdel', 'deluser', 'groupadd', 'groupdel', 'gpasswd', 'passwd',
-  'chpasswd', 'chsh', 'chfn', 'vipw', 'vigr', 'visudo',
-  'kill', 'killall', 'pkill', 'renice', 'systemd-run', 'systemctl daemon-reload',
-  'mount', 'umount', 'swapon', 'swapoff', 'losetup', 'quotaon', 'quotaoff', 'tune2fs',
-  'modprobe', 'insmod', 'rmmod', 'depmod', 'insmod', 'kmod',
-  'crontab', 'at', 'batch', 'systemd-analyze security',
-  'apt', 'apt-get', 'aptitude', 'dpkg', 'yum', 'dnf', 'rpm', 'pacman', 'zypper', 'snap',
-  'pip', 'pip3', 'npm', 'yarn', 'pnpm', 'gem', 'composer', 'cargo install', 'go install',
-  'docker', 'podman', 'nerdctl', 'kubectl', 'helm', 'terraform', 'ansible-playbook',
-  'nc', 'netcat', 'ncat', 'socat', 'telnet', 'ssh', 'scp', 'sftp', 'rsync', 'rdesktop',
-  'eval', 'exec', 'source', 'bash', 'sh', 'zsh', 'dash', 'ksh', 'csh', 'fish', 'python -c',
-  'python3 -c', 'perl -e', 'ruby -e', 'node -e', 'lua -e', 'php -r',
-  'setenforce', 'selinuxenabled', 'aa-disable', 'aa-complain', 'usermod -aG',
-  'aclocal', 'nmap', 'masscan', 'hydra', 'john', 'aircrack-ng',
+  'modprobe', 'insmod', 'rmmod', 'depmod', 'kmod', 'swapon', 'swapoff', 'umount',
+  // 权限与账户
+  'chmod', 'chown', 'chgrp', 'chattr', 'setfacl', 'setfattr', 'usermod', 'useradd', 'adduser',
+  'userdel', 'deluser', 'groupadd', 'groupdel', 'gpasswd', 'passwd', 'chpasswd', 'chsh',
+  'chfn', 'vipw', 'vigr', 'visudo', 'shadowconfig', 'setenforce', 'aa-disable',
+  'aa-complain', 'nologin',
+  // 进程与调度
+  'kill', 'killall', 'pkill', 'renice', 'systemd-run', 'crontab', 'at', 'batch',
+  // 任意代码执行 / 解释器内联
+  'eval', 'exec', 'source', 'bash', 'sh', 'zsh', 'dash', 'ksh', 'csh', 'fish', 'caffeinate',
+  // 容器与编排（无粒度规则的，保守当危险）
+  'nerdctl', 'ansible-playbook', 'vboxmanage', 'virsh', 'docker-compose',
 ])
+
+/**
+ * 注意：**有粒度规则**的命令（docker/git/kubectl/apt/systemctl/mount/sysctl…）
+ * 绝不能放进 DANGEROUS_COMMANDS —— 那会让 `docker ps`、`git status` 这类只读用法
+ * 被一刀切拦掉。它们统一交给 SUBCOMMAND_RULES：危险子命令拦，其余落白名单/未知。
+ */
 
 /** 有"只读子命令"但其它子命令危险：未列出的子命令按 unknown 处理 */
 const SUBCOMMAND_RULES: Record<string, { dangerous: readonly string[] }> = {
@@ -224,6 +242,22 @@ const SUBCOMMAND_RULES: Record<string, { dangerous: readonly string[] }> = {
   pip: { dangerous: ['install', 'uninstall', 'download'] },
   pip3: { dangerous: ['install', 'uninstall', 'download'] },
   gem: { dangerous: ['install', 'uninstall', 'update'] },
+  podman: {
+    dangerous: [
+      'run', 'exec', 'rm', 'rmi', 'stop', 'kill', 'restart', 'start', 'create', 'build', 'push',
+      'pull', 'commit', 'tag', 'save', 'load', 'system prune', 'volume rm', 'network rm',
+      'compose', 'pod', 'generate', 'update', 'pause', 'unpause', 'attach', 'cp',
+    ],
+  },
+  dpkg: { dangerous: ['-i', '--install', '-r', '--remove', '-P', '--purge', '-x', '--unpack', '--configure', '--unpack'] },
+  rpm: { dangerous: ['-i', '-U', '-e', '-F', '--install', '--upgrade', '--erase', '--freshen'] },
+  snap: { dangerous: ['install', 'remove', 'refresh', 'revert', 'disable', 'enable', 'set'] },
+  yarn: { dangerous: ['install', 'add', 'remove', 'upgrade', 'publish', 'run', 'create', 'global'] },
+  zypper: { dangerous: ['install', 'remove', 'update', 'dup', 'in', 'rm', 'up', 'addrepo', 'removerepo'] },
+  composer: { dangerous: ['install', 'require', 'update', 'remove', 'global'] },
+  cargo: { dangerous: ['install', 'uninstall', 'publish', 'add', 'remove', 'update', 'run'] },
+  go: { dangerous: ['install', 'get', 'run', 'generate', 'clean'] },
+  ansible: { dangerous: ['-m', '--module-name', 'run'] },
 }
 
 /** 危险构造（正则，对每个分段匹配） */
@@ -249,9 +283,13 @@ const DANGEROUS_PATTERNS: ReadonlyArray<{ re: RegExp; reason: string }> = [
   { re: /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|d)?sh\b/, reason: '下载内容直接交给 shell 执行' },
   { re: /\b(curl|wget)\b.*\s(-o|--output|-O)\b/, reason: 'curl/wget 写出文件' },
   // 提权与任意执行
-  { re: /(^|\s)sudo(\s|$)/, reason: 'sudo 提权' },
+  // 注意：sudo 本身不作为危险模式 —— 它由 allowSudo/confirmSudo 单独把关
+  // （否则 `sudo systemctl status` 这种只读提权会被 allowDangerous 二次拦住）。
   { re: /\bsu\s+(-|root)\b/, reason: 'su 切换用户' },
   { re: /\bdoas\b/, reason: 'doas 提权' },
+  // 解释器内联执行：等于任意代码执行
+  { re: /\b(python3?|perl|ruby|node|lua|php)\s+-[ce]\b/, reason: '解释器内联执行（-c/-e）' },
+  { re: /\b(bash|sh|zsh|dash|ksh)\s+-c\b/, reason: 'shell -c 内联执行' },
   // 危险系统操作
   { re: /\bkill\s+-(9|KILL)\b/, reason: '强制杀掉进程（kill -9）' },
   { re: /\b(poweroff|reboot|shutdown|halt)\b/, reason: '关机/重启' },
@@ -334,7 +372,8 @@ export function scanShell(command: string): ShellScan {
 
     if (ch === '`') hasSubstitution = true
     if (ch === '$' && command[i + 1] === '(') hasSubstitution = true
-    if (ch === '>' && command[i - 1] !== '>') hasRedirection = true
+    // `N>&M`（fd 复制，如 2>&1）不是文件写入；其余 `>` / `>>` 都是
+    if (ch === '>' && command[i + 1] !== '&') hasRedirection = true
 
     if (ch === '\n' || ch === ';') {
       push()
@@ -361,8 +400,12 @@ export function scanShell(command: string): ShellScan {
   return { segments, hasRedirection, hasSubstitution, hasBackground }
 }
 
-/** 取分段里的命令名（跳过环境变量赋值与前缀 `command`/`builtin`） */
-function commandNameOf(segment: string): { name: string; rest: string[]; sudo: boolean } {
+/**
+ * 取分段里的命令名（跳过环境变量赋值与前缀 `command`/`builtin`/`sudo`）。
+ * `tail` 是去掉这些前缀后的命令文本 —— 白名单必须匹配 tail，
+ * 否则 `sudo systemctl status` 会因为开头多了 `sudo ` 而匹配不上 `systemctl status`。
+ */
+function commandNameOf(segment: string): { name: string; rest: string[]; sudo: boolean; tail: string } {
   const tokens = segment.trim().split(/\s+/).filter((t) => t !== '')
   let i = 0
   let sudo = false
@@ -390,7 +433,7 @@ function commandNameOf(segment: string): { name: string; rest: string[]; sudo: b
     break
   }
   const name = tokens[i] ?? ''
-  return { name, rest: tokens.slice(i + 1), sudo }
+  return { name, rest: tokens.slice(i + 1), sudo, tail: tokens.slice(i).join(' ') }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +470,7 @@ function classifySegment(segment: string, policy: EffectivePolicy): { risk: Comm
     }
   }
 
-  const { name, rest, sudo } = commandNameOf(segment)
+  const { name, rest, sudo, tail } = commandNameOf(segment)
   const normalized = segment.trim().replace(/\s+/g, ' ')
 
   // 用户自定义黑名单：子串命中即危险（比前缀匹配更严）
@@ -463,12 +506,15 @@ function classifySegment(segment: string, policy: EffectivePolicy): { risk: Comm
 
   if (reasons.length > 0) return { risk: 'dangerous', reasons, sudo, alwaysDeny: false }
 
-  // 只读白名单：整词前缀匹配（用户追加项同样参与）
+  // 只读白名单：整词前缀匹配（用户追加项同样参与）。
+  // 匹配的是**去掉 sudo/环境变量前缀后的 tail**，这样 `sudo systemctl status`
+  // 能命中 `systemctl status`；sudo 本身仍由 plan 里的独立闸门把关。
+  const candidate = tail.trim().replace(/\s+/g, ' ')
   const prefixes = [...policy.extraReadOnly, ...READ_ONLY_PREFIXES]
   for (const prefix of prefixes) {
     const p = prefix.trim()
     if (p === '') continue
-    if (normalized === p || normalized.startsWith(`${p} `)) {
+    if (candidate === p || candidate.startsWith(`${p} `)) {
       return { risk: 'read-only', reasons: [], sudo, alwaysDeny: false }
     }
   }
@@ -482,7 +528,15 @@ function classifySegment(segment: string, policy: EffectivePolicy): { risk: Comm
 export function evaluateCommand(command: string, policy: EffectivePolicy): CommandEvaluation {
   const trimmed = command.trim()
   if (trimmed === '') {
-    return { risk: 'unknown', segments: [], reasons: ['空命令'], sudo: false, alwaysDeny: false, unsafeConstruct: false }
+    return {
+      risk: 'unknown',
+      baseRisk: 'unknown',
+      segments: [],
+      reasons: ['空命令'],
+      sudo: false,
+      alwaysDeny: false,
+      unsafeConstruct: false,
+    }
   }
 
   const scan = scanShell(trimmed)
@@ -496,6 +550,16 @@ export function evaluateCommand(command: string, policy: EffectivePolicy): Comma
     if (rank[next] > rank[risk]) risk = next
   }
 
+  // 先对**整条命令**跑永久禁止规则：fork 炸弹之类会被 shell 控制符拆散，
+  // 只看分段会漏掉（`:(){ :|:& };:`）。
+  for (const { re, reason } of ALWAYS_DENY_PATTERNS) {
+    if (re.test(trimmed)) {
+      alwaysDeny = true
+      risk = 'dangerous'
+      if (!reasons.includes(reason)) reasons.push(reason)
+    }
+  }
+
   for (const segment of scan.segments) {
     const r = classifySegment(segment, policy)
     sudo = sudo || r.sudo || /(^|\s)sudo(\s|$)/.test(segment)
@@ -503,6 +567,10 @@ export function evaluateCommand(command: string, policy: EffectivePolicy): Comma
     for (const reason of r.reasons) if (!reasons.includes(reason)) reasons.push(reason)
     bump(r.risk)
   }
+
+  // baseRisk = 不含 sudo 升级的风险。sudo 由 allowSudo/confirmSudo 单独把关，
+  // 已授权时按 baseRisk 决定"直接执行还是按危险命令拒绝"。
+  const baseRisk = alwaysDeny ? 'dangerous' : risk
 
   const unsafeConstruct = scan.hasRedirection || scan.hasSubstitution || scan.hasBackground
   if (unsafeConstruct) {
@@ -513,7 +581,10 @@ export function evaluateCommand(command: string, policy: EffectivePolicy): Comma
     if (scan.hasBackground) reasons.push('包含后台执行（&）')
   }
 
-  return { risk, segments: scan.segments, reasons, sudo, alwaysDeny, unsafeConstruct }
+  // sudo 提权本身把整条命令抬到 dangerous（但 baseRisk 保留底层风险）
+  if (sudo) bump('dangerous')
+
+  return { risk, baseRisk, segments: scan.segments, reasons, sudo, alwaysDeny, unsafeConstruct }
 }
 
 /**
@@ -564,12 +635,16 @@ export function planCommandExecution(args: {
     }
   }
 
-  switch (evaluation.risk) {
+  // sudo 已授权且无需额外确认时，按**去掉提权影响的基础风险**决策：
+  // `sudo systemctl status`（基础只读）可直接执行，`sudo rm -rf`（基础危险）仍被拒。
+  const risk = evaluation.sudo ? evaluation.baseRisk : evaluation.risk
+
+  switch (risk) {
     case 'dangerous':
       if (policy.allowDangerous) {
         return policy.mode === 'confirm'
           ? { action: 'confirm', risk: 'dangerous', reason: '危险命令（已放开黑名单）仍需确认', alwaysDeny: false }
-          : { action: 'execute', risk: 'dangerous', reason: '用户已显式放开危险黑名单', alwaysDeny: false }
+          : { action: 'execute', risk: 'dangerous', reason: '用户已显式放开危险黑名单' }
       }
       return {
         action: 'deny',
@@ -589,7 +664,7 @@ export function planCommandExecution(args: {
       if (policy.mode === 'confirm') {
         return { action: 'confirm', risk: 'read-only', reason: 'confirm 模式：每步都确认', alwaysDeny: false }
       }
-      return { action: 'execute', risk: 'read-only', reason: '只读命令，已放行', alwaysDeny: false }
+      return { action: 'execute', risk: 'read-only', reason: '只读命令，已放行' }
   }
 }
 
@@ -656,8 +731,8 @@ export class AiGuard {
         this.limits,
       )
     }
-    if (target !== '') this.targets.add(target)
-    if (this.targets.size > this.limits.maxTargets) {
+    // 先判后加：被上限拒绝的目标不应计入用量，否则状态被"没执行过的目标"污染
+    if (target !== '' && !this.targets.has(target) && this.targets.size >= this.limits.maxTargets) {
       throw new AiLimitError(
         'targets',
         `已达涉及主机数上限（${this.limits.maxTargets}），已停止`,
@@ -665,6 +740,7 @@ export class AiGuard {
         this.limits,
       )
     }
+    if (target !== '') this.targets.add(target)
   }
 
   usage(): GuardUsage {

@@ -17,7 +17,15 @@ import { Suspense, lazy, useEffect } from 'react'
 import { Icon, type IconName } from './components/Icon'
 import { Loading } from './components/Feedback'
 import { ToastHost } from './components/Toast'
-import { actions, loadConnections, useStoreShallow, wireEvents, type ViewId } from './lib/store'
+import {
+  actions,
+  loadConnections,
+  loadInitialSettings,
+  useStoreShallow,
+  watchSystemTheme,
+  wireEvents,
+  type ViewId,
+} from './lib/store'
 import './styles/global.css'
 import './styles/components.css'
 
@@ -138,7 +146,10 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     // 事件接线与应用同生命周期；loadConnections 内部对并发调用做了去重
     wireEvents()
+    // 主题要在首屏就位，否则会先闪一下深色再切浅色
+    void loadInitialSettings()
     void loadConnections()
+    return watchSystemTheme()
   }, [])
 
   useEffect(() => {

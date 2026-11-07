@@ -269,6 +269,29 @@ export function getSettings(): Settings {
   return cache
 }
 
+/** 允许部分更新的设置补丁类型 */
+export type SettingsPatch = {
+  [K in keyof Settings]?: Settings[K] extends readonly unknown[]
+    ? Settings[K]
+    : Settings[K] extends object
+      ? Partial<Settings[K]>
+      : Settings[K]
+}
+
+/**
+ * 以补丁方式更新设置（深合并 + 持久化 + 刷新缓存）。
+ *
+ * 供其它服务使用（如 sync 保存服务地址与令牌）。
+ * 之所以不直接读写 KV：设置文档的形状（item_id、`{version, data}` 包装）
+ * 是 settings 域的私有知识，暴露出去会让两处实现各自漂移。
+ */
+export function updateSettings(patch: SettingsPatch): Settings {
+  const next = deepMerge(getSettings(), patch)
+  writeDoc(next)
+  cache = next
+  return next
+}
+
 /** 测试用：清掉内存缓存，强制从磁盘重读 */
 export function resetSettingsCache(): void {
   cache = null

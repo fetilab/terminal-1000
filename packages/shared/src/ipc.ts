@@ -186,7 +186,17 @@ export const Actions = {
 
   ai: ['listChats', 'getChat', 'send', 'cancel', 'deleteChat', 'listProviders', 'setProvider'] as const,
 
-  mcp: ['status', 'start', 'stop', 'listTools', 'setPolicy'] as const,
+  mcp: [
+    'status',
+    'start',
+    'stop',
+    'listTools',
+    'setPolicy',
+    // 客户端令牌管理：明文令牌只在 createClient 返回一次，之后只有摘要
+    'listClients',
+    'createClient',
+    'revokeClient',
+  ] as const,
 
   sessionlog: ['start', 'stop', 'list', 'read', 'delete'] as const,
 

@@ -2,286 +2,386 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 /**
- * 设置视图。
+ * 设置面板（接真实 settings 域）。
  *
- * 这一版只放**能拿到真实数据**的部分：运行环境、数据目录、存储后端状态、
- * 以及设计令牌的速览（方便后续做主题时对照）。
- * 其余设置分区（终端外观、补全、AI、同步…）需要 settings 服务支撑，
- * 这里给出明确说明而不是渲染一堆点了没反应的开关。
+ * 三个要点：
+ * 1. 写入用 `settings.set({ path, value })` —— 主进程做**深合并**，
+ *    只传一个字段不会把整棵设置树覆盖掉。所以这里可以放心「改哪个字段就发哪个字段」。
+ * 2. 文本/数字输入**防抖**后再提交，避免每敲一个字符一次 IPC + 一次落盘。
+ * 3. 所有分区都可写（含补全/AI/传输/同步），靠声明式字段表 + 一个通用渲染器实现，
+ *    不是只读展示。
  */
 
-import { useEffect, useState } from 'react'
-import { Events } from '@t1000/shared'
-import { Badge, Banner, Loading } from '../../components/Feedback'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Settings } from '@t1000/shared'
 import { Button, IconButton, Section } from '../../components/Button'
+import { Badge, Banner, Loading } from '../../components/Feedback'
+import { Field, Select, Switch, TextInput } from '../../components/Form'
 import { Icon, type IconName } from '../../components/Icon'
+import { toast } from '../../components/Toast'
 import { invoke } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
-import { useStoreShallow } from '../../lib/store'
+import { actions, applyTheme, useStoreShallow } from '../../lib/store'
+import {
+  SECTION_META,
+  SETTINGS_FIELDS,
+  readPath,
+  summarizeAi,
+  type FieldDef,
+  type SettingsSection,
+} from './settingsFields'
+import { HighlightsEditor } from './HighlightsEditor'
+import { HotkeysEditor } from './HotkeysEditor'
+import './settings.css'
 
-interface AppInfo {
-  name: string
-  version: string
-  electron: string
-  chrome: string
-  node: string
-  platform: string
-  arch: string
-  locale: string
-}
-
-interface AppPaths {
-  userData: string
-  dbFile: string
-  notesDir: string
-  sessionLogDir: string
-  watchDir: string
-  bgImagesDir: string
-  backupDir: string
-  logDir: string
-}
-
-const NAV: Array<{ id: string; label: string; icon: IconName; ready: boolean }> = [
-  { id: 'about', label: '关于与运行环境', icon: 'info', ready: true },
-  { id: 'storage', label: '存储与备份', icon: 'server', ready: true },
-  { id: 'appearance', label: '外观与主题', icon: 'eye', ready: false },
-  { id: 'terminal', label: '终端行为', icon: 'terminal', ready: false },
-  { id: 'sync', label: '同步与云端', icon: 'cloud', ready: false },
-  { id: 'hotkeys', label: '快捷键', icon: 'zap', ready: false },
+export const SETTINGS_SECTIONS: SettingsSection[] = [
+  'app',
+  'terminal',
+  'highlights',
+  'hotkeys',
+  'completion',
+  'ai',
+  'transfer',
+  'sync',
 ]
 
-const TOKENS: Array<[string, string]> = [
-  ['--t1000-bg', '#12141a'],
-  ['--t1000-bg-panel', '#1e222b'],
-  ['--t1000-bg-raised', '#191c24'],
-  ['--t1000-accent', '#3ec9d6'],
-  ['--t1000-accent-strong', '#22b3c1'],
-  ['--t1000-danger', '#e5484d'],
-  ['--t1000-warn', '#d9a441'],
-  ['--t1000-ok', '#46b17b'],
-  ['--t1000-fg', '#e4e7ee'],
-  ['--t1000-fg-muted', '#9aa3b2'],
-]
+/* ── 数据 ──────────────────────────────────────── */
+
+function useSettings(): {
+  settings: Settings | null
+  error: string | null
+  loading: boolean
+  update: (path: string, value: unknown) => Promise<void>
+  resetSection: (section: SettingsSection) => Promise<void>
+  reload: () => Promise<void>
+} {
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const reload = useCallback(async () => {
+    setLoading(true)
+    try {
+      const all = await invoke<'settings', 'getAll', Record<string, never>, Settings>(
+        'settings',
+        'getAll',
+        {},
+      )
+      setSettings(all)
+      setError(null)
+      applyTheme(all.app.theme)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  const update = useCallback(
+    async (path: string, value: unknown) => {
+      try {
+        // 主进程返回写入后的**完整设置文档**，直接整体替换，
+        // 不在渲染层自己拼合并逻辑（避免与主进程的深合并规则产生两套语义）
+        const next = await invoke<'settings', 'set', { path: string; value: unknown }, Settings>(
+          'settings',
+          'set',
+          { path, value },
+        )
+        setSettings(next)
+        if (path === 'app.theme') applyTheme(next.app.theme)
+      } catch (err) {
+        toast.error(`设置保存失败：${errorText(err)}`)
+        void reload()
+      }
+    },
+    [reload],
+  )
+
+  const resetSection = useCallback(async (section: SettingsSection) => {
+    try {
+      const next = await invoke<'settings', 'reset', { section: string }, Settings>(
+        'settings',
+        'reset',
+        { section },
+      )
+      setSettings(next)
+      applyTheme(next.app.theme)
+      toast.ok(`「${SECTION_META[section].label}」已恢复默认值`)
+    } catch (err) {
+      toast.error(`重置失败：${errorText(err)}`)
+    }
+  }, [])
+
+  return { settings, error, loading, update, resetSection, reload }
+}
+
+/* ── 防抖输入 ──────────────────────────────────── */
+
+function useDebounced<T>(value: T, commit: (v: T) => void, delay = 450): [T, (v: T) => void] {
+  const [draft, setDraft] = useState(value)
+  const dirty = useRef(false)
+  const timer = useRef<number | undefined>(undefined)
+
+  useEffect(() => {
+    if (!dirty.current) setDraft(value)
+  }, [value])
+
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+
+  const onChange = useCallback(
+    (v: T) => {
+      setDraft(v)
+      dirty.current = true
+      window.clearTimeout(timer.current)
+      timer.current = window.setTimeout(() => {
+        dirty.current = false
+        commit(v)
+      }, delay)
+    },
+    [commit, delay],
+  )
+
+  return [draft, onChange]
+}
+
+/* ── 通用字段渲染 ──────────────────────────────── */
+
+function FieldControl({
+  def,
+  value,
+  onChange,
+}: {
+  def: FieldDef
+  value: unknown
+  onChange: (v: unknown) => void
+}): React.JSX.Element {
+  const str = value === undefined || value === null ? '' : String(value)
+  const [text, setText] = useDebounced(str, (v) => {
+    if (def.kind === 'number') {
+      const n = Number(v)
+      onChange(Number.isFinite(n) && v.trim() !== '' ? n : 0)
+    } else {
+      onChange(v)
+    }
+  })
+
+  switch (def.kind) {
+    case 'switch':
+      return <Switch checked={value === true} onChange={(v) => onChange(v)} label={def.label} />
+    case 'select':
+      return <Select value={str} options={def.options ?? []} onChange={(e) => onChange(e.target.value)} />
+    case 'number':
+      return (
+        <TextInput
+          type="number"
+          mono
+          value={text}
+          min={def.min}
+          max={def.max}
+          step={def.step}
+          onChange={(e) => setText(e.target.value)}
+        />
+      )
+    default:
+      return <TextInput value={text} mono={def.path.includes('font')} onChange={(e) => setText(e.target.value)} />
+  }
+}
+
+function FieldsGrid({
+  defs,
+  settings,
+  update,
+}: {
+  defs: readonly FieldDef[]
+  settings: Settings
+  update: (path: string, value: unknown) => void
+}): React.JSX.Element {
+  return (
+    <div className="t-grid t-grid--2 settings-grid">
+      {defs.map((def) => {
+        const value = readPath(settings, def.path)
+        if (def.kind === 'switch') {
+          return (
+            <div className="settings-switch-row" key={def.path}>
+              <FieldControl def={def} value={value} onChange={(v) => update(def.path, v)} />
+              <div className="t-field__hint">
+                {def.hint ?? def.path}
+                {def.caution ? <Badge tone="warn">谨慎</Badge> : null}
+              </div>
+            </div>
+          )
+        }
+        return (
+          <Field
+            key={def.path}
+            label={def.label}
+            hint={def.hint}
+            className={def.wide ? 't-grid__span2' : undefined}
+            aside={def.caution ? <Badge tone="warn">谨慎</Badge> : undefined}
+          >
+            <FieldControl def={def} value={value} onChange={(v) => update(def.path, v)} />
+          </Field>
+        )
+      })}
+    </div>
+  )
+}
+
+function ReadonlyRows({ rows }: { rows: Array<[string, React.ReactNode]> }): React.JSX.Element {
+  return (
+    <div className="kv" style={{ gridTemplateColumns: '160px minmax(0, 1fr)' }}>
+      {rows.map(([k, v]) => (
+        <div key={k} style={{ display: 'contents' }}>
+          <span className="kv__k">{k}</span>
+          <span className="kv__v">{v}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/* ── 侧栏 ──────────────────────────────────────── */
 
 export function SettingsSidebar(): React.JSX.Element {
+  const section = useStoreShallow((s) => ({ section: s.settingsSection })).section
   return (
     <aside className="panel" aria-label="设置">
       <header className="panel-header">
         <span className="panel-title">设置</span>
       </header>
       <div className="panel-body">
-        <div className="sessions">
-          {NAV.map((item, i) => (
-            <div
-              key={item.id}
-              className={`session-item${i === 0 ? ' session-item--active' : ''}`}
-              role="button"
-              tabIndex={0}
-              title={item.ready ? item.label : `${item.label}（待接入）`}
+        <nav className="settings-nav-list">
+          {SETTINGS_SECTIONS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              className={`settings-nav${id === section ? ' settings-nav--active' : ''}`}
+              aria-current={id === section || undefined}
+              onClick={() => actions.setSettingsSection(id)}
             >
-              <Icon name={item.icon} size={14} />
-              <div className="session-item__body">
-                <div className="session-item__title">{item.label}</div>
-                {!item.ready ? <div className="session-item__meta">待接入</div> : null}
-              </div>
-            </div>
+              <Icon name={SECTION_META[id].icon as IconName} size={14} />
+              <span className="settings-nav__body">
+                <span className="settings-nav__title">{SECTION_META[id].label}</span>
+                <span className="settings-nav__desc">{SECTION_META[id].blurb}</span>
+              </span>
+            </button>
           ))}
-        </div>
+        </nav>
       </div>
     </aside>
   )
 }
 
+/* ── 主视图 ────────────────────────────────────── */
+
 export default function SettingsView(): React.JSX.Element {
-  const [info, setInfo] = useState<AppInfo | null>(null)
-  const [paths, setPaths] = useState<AppPaths | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const backend = useStoreShallow((s) => ({
-    ready: s.backendReady,
-    message: s.backendError,
-    connections: s.connections.length,
-    groups: s.groups.length,
-  }))
+  const section = useStoreShallow((s) => ({ section: s.settingsSection })).section
+  const { settings, error, loading, update, resetSection, reload } = useSettings()
+  const backend = useStoreShallow((s) => ({ ready: s.backendReady, message: s.backendError }))
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const [i, p] = await Promise.all([
-          invoke<'app', 'getInfo', undefined, AppInfo>('app', 'getInfo', undefined),
-          invoke<'app', 'getPaths', undefined, AppPaths>('app', 'getPaths', undefined),
-        ])
-        if (cancelled) return
-        setInfo(i)
-        setPaths(p)
-      } catch (err) {
-        if (!cancelled) setError(errorText(err))
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const meta = SECTION_META[section]
+  const defs = useMemo(
+    () => (section === 'highlights' || section === 'hotkeys' ? [] : SETTINGS_FIELDS[section]),
+    [section],
+  )
 
-  const rows: Array<[string, React.ReactNode]> = info
-    ? [
-        ['应用', `${info.name} ${info.version}`],
-        ['Electron', info.electron],
-        ['Chromium', info.chrome],
-        ['Node', info.node],
-        ['平台', `${info.platform} / ${info.arch}`],
-        ['语言区域', info.locale],
-      ]
-    : []
+  if (loading && !settings) {
+    return (
+      <main className="content" aria-label="设置">
+        <Loading text="正在读取设置…" />
+      </main>
+    )
+  }
 
-  const pathRows: Array<[string, string]> = paths
-    ? [
-        ['数据目录', paths.userData],
-        ['数据库', paths.dbFile],
-        ['备份目录', paths.backupDir],
-        ['日志目录', paths.logDir],
-        ['笔记目录', paths.notesDir],
-        ['会话录制', paths.sessionLogDir],
-      ]
-    : []
+  if (error && !settings) {
+    return (
+      <main className="content" aria-label="设置">
+        <div className="content-scroll" style={{ padding: 18 }}>
+          <Banner
+            tone="error"
+            actions={
+              <Button size="sm" onClick={() => void reload()}>
+                重试
+              </Button>
+            }
+          >
+            无法读取设置：{error}
+          </Banner>
+        </div>
+      </main>
+    )
+  }
+
+  if (!settings) return <main className="content" />
 
   return (
     <main className="content" aria-label="设置">
       <div className="t-toolbar">
-        <Icon name="settings" size={15} />
-        <span className="panel-title">设置</span>
+        <Icon name={meta.icon as IconName} size={15} />
+        <span className="panel-title">{meta.label}</span>
+        <span className="term-toolbar__meta">{meta.blurb}</span>
         <div className="t-toolbar__spacer" />
-        <Badge tone={backend.ready ? 'ok' : 'warn'}>
-          存储后端 {backend.ready ? '正常' : '不可用'}
-        </Badge>
+        <Badge tone={backend.ready ? 'ok' : 'warn'}>{backend.ready ? '已持久化' : '存储不可用'}</Badge>
+        <IconButton icon="refresh" label="重新读取" onClick={() => void reload()} />
+        <Button size="sm" variant="ghost" icon="chevron-left" onClick={() => void resetSection(section)}>
+          本页恢复默认
+        </Button>
       </div>
 
-      <div className="content-scroll" style={{ padding: 18, maxWidth: 900 }}>
-        {error ? (
-          <div style={{ marginBottom: 14 }}>
-            <Banner tone="error">读取运行环境失败：{error}</Banner>
-          </div>
-        ) : null}
-
-        <Section>运行环境</Section>
-        {info ? (
-          <div className="kv" style={{ gridTemplateColumns: '120px minmax(0, 1fr)' }}>
-            {rows.map(([k, v]) => (
-              <div key={k} style={{ display: 'contents' }}>
-                <span className="kv__k">{k}</span>
-                <span className="kv__v">{v}</span>
-              </div>
-            ))}
-          </div>
+      <div className="content-scroll settings-body">
+        {section === 'highlights' ? (
+          <HighlightsEditor rules={settings.highlights} onChange={(rules) => void update('highlights', rules)} />
+        ) : section === 'hotkeys' ? (
+          <HotkeysEditor bindings={settings.hotkeys} onChange={(list) => void update('hotkeys', list)} />
         ) : (
-          <Loading text="读取运行环境…" />
+          <FieldsGrid defs={defs} settings={settings} update={(p, v) => void update(p, v)} />
         )}
 
-        <Section>数据位置</Section>
-        {paths ? (
-          <div className="kv" style={{ gridTemplateColumns: '120px minmax(0, 1fr)' }}>
-            {pathRows.map(([k, v]) => (
-              <div key={k} style={{ display: 'contents' }}>
-                <span className="kv__k">{k}</span>
-                <span className="kv__v mono" style={{ fontSize: 12, wordBreak: 'break-all' }}>
-                  {v}
-                </span>
-              </div>
-            ))}
-          </div>
+        {section === 'ai' ? (
+          <>
+            <Section>供应商与名单（只读）</Section>
+            <ReadonlyRows
+              rows={[
+                ['供应商', summarizeAi(settings)],
+                [
+                  '只读白名单',
+                  settings.ai.riskPolicy.readOnlyAllowlist.length === 0
+                    ? '使用内置默认名单'
+                    : `${settings.ai.riskPolicy.readOnlyAllowlist.length} 条`,
+                ],
+                [
+                  '危险黑名单',
+                  settings.ai.riskPolicy.dangerousDenylist.length === 0
+                    ? '使用内置默认名单'
+                    : `${settings.ai.riskPolicy.dangerousDenylist.length} 条`,
+                ],
+              ]}
+            />
+            <p className="t-field__hint">
+              供应商配置（endpoint / API key / 模型）需要单独表单，且密钥只存本机；这一版先只读展示。
+            </p>
+          </>
         ) : null}
 
-        <Section>存储现状</Section>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <Badge tone="accent">连接 {backend.connections}</Badge>
-          <Badge tone="accent">分组 {backend.groups}</Badge>
-          <Badge>库类型 SQLite (WAL)</Badge>
-          <Badge>加密 AES-256-GCM</Badge>
-        </div>
-        {!backend.ready && backend.message ? (
-          <div style={{ marginTop: 10 }}>
-            <Banner tone="warn">存储服务报错：{backend.message}</Banner>
-          </div>
+        {section === 'sync' ? (
+          <>
+            <Section>零知识说明</Section>
+            <p className="t-field__hint">
+              服务端只保存密文块，密钥不离开本机。代价是服务端无法索引你的数据、忘记主密码也无法找回——
+              这是设计取舍，不是缺陷。
+            </p>
+            <ReadonlyRows
+              rows={[
+                ['令牌', settings.sync.token ? '已保存（仅本机）' : '未配置'],
+                ['后端', settings.sync.endpoint || '未设置'],
+              ]}
+            />
+          </>
         ) : null}
-
-        <Section>设计令牌</Section>
-        <p className="t-field__hint" style={{ marginTop: 0 }}>
-          自研视觉的基准色。色板刻意选择青色强调而非同类产品惯用的绿色，
-          中性色偏冷灰蓝，层级用「底色深浅 + 1px 描边」而不是重投影。
-        </p>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-          {TOKENS.map(([name, hex]) => (
-            <div
-              key={name}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '6px 10px',
-                border: '1px solid var(--t1000-border)',
-                borderRadius: 'var(--t1000-radius)',
-                background: 'var(--t1000-bg-raised)',
-              }}
-            >
-              <span
-                aria-hidden
-                style={{
-                  width: 18,
-                  height: 18,
-                  borderRadius: 5,
-                  background: hex,
-                  border: '1px solid var(--t1000-border-strong)',
-                }}
-              />
-              <span className="mono" style={{ fontSize: 11.5 }}>
-                {name}
-              </span>
-              <span className="metric__sub mono">{hex}</span>
-            </div>
-          ))}
-        </div>
-
-        <Section>尚未接入的分区</Section>
-        <p className="t-field__hint">
-          外观主题、终端行为、补全、AI 助手、同步与快捷键都需要 settings / completion / ai / sync
-          服务提供读写接口。界面在此明确标注，而不是渲染一批点了没反应的开关。
-        </p>
-
-        <Section>诊断</Section>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button
-            size="sm"
-            variant="outline"
-            icon="copy"
-            onClick={() => {
-              const text = JSON.stringify({ info, paths, events: Object.keys(Events).length }, null, 2)
-              void navigator.clipboard.writeText(text)
-            }}
-          >
-            复制环境信息
-          </Button>
-          <IconButton
-            icon="refresh"
-            label="重新读取"
-            onClick={() => {
-              setInfo(null)
-              setPaths(null)
-              setError(null)
-              void (async () => {
-                try {
-                  const [i, p] = await Promise.all([
-                    invoke<'app', 'getInfo', undefined, AppInfo>('app', 'getInfo', undefined),
-                    invoke<'app', 'getPaths', undefined, AppPaths>('app', 'getPaths', undefined),
-                  ])
-                  setInfo(i)
-                  setPaths(p)
-                } catch (err) {
-                  setError(errorText(err))
-                }
-              })()
-            }}
-          />
-        </div>
       </div>
     </main>
   )

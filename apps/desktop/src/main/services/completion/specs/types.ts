@@ -86,7 +86,9 @@ export interface SpecRows {
 export function normalizeSpec(name: string, rows: SpecRows): CommandSpec {
   const options: SpecOption[] = (rows.opts ?? []).map((row) => {
     const [optName, description, arg] = row
-    return arg === undefined ? { name: optName, description } : { name: optName, description, arg }
+    // 空/纯空白的占位符视为「该选项不带参数」，避免手写语料时的空字符串漏进产物
+    if (arg === undefined || arg.trim().length === 0) return { name: optName, description }
+    return { name: optName, description, arg }
   })
 
   const spec: CommandSpec = { name, options }

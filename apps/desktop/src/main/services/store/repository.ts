@@ -61,6 +61,30 @@ export class Repository {
     this.db.put(storeKey, itemId, JSON.stringify(payload), now)
   }
 
+  // ------------------------------------------- 字段编解码入口（备份/同步复用）
+
+  /**
+   * 用**显式指定的密钥**解开 payload 里的敏感字段。
+   *
+   * 用途：跨设备迁移时，导出侧先用本机主密钥解开、再用备份口令派生的密钥重新加密；
+   * 导入侧反向。内部直接复用下面 `decryptSensitiveWith` 那套按
+   * `ENCRYPTED_FIELD_NAMES` 的递归扫描，**不另造字段清单** ——
+   * 跳板链每一跳的 password/passphrase、代理密码、凭证、AI apiKey 全部自动覆盖。
+   *
+   * 解不开（密钥不匹配 / 数据损坏）会抛出，由调用方决定降级策略。
+   */
+  decryptFields(payload: unknown, key: Buffer): unknown {
+    return this.decryptSensitiveWith(payload, key)
+  }
+
+  /**
+   * 用显式指定的密钥加密 payload 里的敏感字段。
+   * 已是密文的字段原样保留（避免二次加密）；`__LOCKED__` 掩码会被丢弃（掩码不是密码）。
+   */
+  encryptFields(payload: unknown, key: Buffer): unknown {
+    return this.encryptSensitive(payload, key)
+  }
+
   // ------------------------------------------------------------ 加解密核心
 
   /**

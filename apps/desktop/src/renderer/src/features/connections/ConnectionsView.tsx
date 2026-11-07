@@ -10,6 +10,7 @@ import { Segmented } from '../../components/Segmented'
 import {
   actions,
   loadConnections,
+  probeLatency,
   selectProtocolCounts,
   selectVisibleConnections,
   useStore,
@@ -39,7 +40,7 @@ const PROTOCOLS: ReadonlyArray<{ value: ConnectionKind; label: string }> = [
 ]
 
 export default function ConnectionsView(): React.JSX.Element {
-  const { query, filter, showInfo, protocol, loading, loaded, backendReady, backendError, editing, busy } =
+  const { query, filter, showInfo, protocol, loading, loaded, backendReady, backendError, editing, busy, pingBusy } =
     useStoreShallow((s) => ({
       query: s.query,
       filter: s.filter,
@@ -51,6 +52,7 @@ export default function ConnectionsView(): React.JSX.Element {
       backendError: s.backendError,
       editing: s.editing,
       busy: s.busy,
+      pingBusy: s.pingBusy,
     }))
 
   // 派生结果整体订阅：它本身就是「列表要渲染什么」的最小描述
@@ -110,9 +112,22 @@ export default function ConnectionsView(): React.JSX.Element {
         <Button
           size="sm"
           variant="ghost"
+          icon="activity"
+          loading={pingBusy}
+          title="对当前列表做一次延迟探测（15 秒内不会重复探测）"
+          onClick={() => void probeLatency(undefined, true)}
+        >
+          探测延迟
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
           icon="refresh"
           loading={loading}
-          onClick={() => void loadConnections(true)}
+          onClick={() => {
+            void loadConnections(true)
+            void probeLatency()
+          }}
         >
           刷新
         </Button>

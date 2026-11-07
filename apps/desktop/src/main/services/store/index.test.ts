@@ -17,6 +17,7 @@ import { AppError } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { StoreService, setStoreService, storeHandlers } from './index'
 import { LOCKED_MASK } from './crypto'
+import { BackupDecryptError, parseBackup } from './backup'
 
 /** 最小 IpcContext（真实实现依赖 Electron，这里只提供 store 用到的字段） */
 function makeCtx(backupDir: string): IpcContext {
@@ -440,13 +441,44 @@ describe('storeHandlers 端到端', () => {
     await expectAppError('exportBackup', {}, ctx, 'UNAUTHORIZED')
   })
 
-  it('锁定时用备份口令仍可导出（口令优先于主密码）', async () => {
+  /**
+   * 新语义（task-12）：带口令的备份要先把敏感字段用**本机主密钥**解密、
+   * 再用备份口令派生的字段密钥重加密，锁定态拿不到主密钥 → 只能明确报错。
+   *
+   * 安全含义：锁定状态不应能产出「可换机还原明文凭据」的备份 —— 那等于绕过主密码保护。
+   */
+  it('锁定时带口令导出会明确报错（并告知先解锁）', async () => {
     await call('setMasterPassword', { newPassword: 'master-pass-1' }, ctx)
     await call('saveConnection', conn(), ctx)
     await call('lock', {}, ctx)
 
-    const exported = await call<{ bytes: number }>('exportBackup', { passphrase: 'backup-pass-1' }, ctx)
+    const err = await expectAppError(
+      'exportBackup',
+      { passphrase: 'backup-pass-1' },
+      ctx,
+      'UNAUTHORIZED',
+    )
+    expect(err.message).toContain('未解锁')
+    expect(err.message).toContain('请先解锁')
+  })
+
+  it('已解锁时备份口令优先于主密码（信封用口令而不是主密钥）', async () => {
+    await call('setMasterPassword', { newPassword: 'master-pass-1' }, ctx)
+    await call('saveConnection', conn(), ctx)
+
+    const exported = await call<{ bytes: number; filePath: string }>(
+      'exportBackup',
+      { passphrase: 'backup-pass-1' },
+      ctx,
+    )
     expect(exported.bytes).toBeGreaterThan(0)
+
+    const raw = readFileSync(exported.filePath)
+    // 备份口令能打开
+    const parsed = parseBackup(raw, { passphrase: 'backup-pass-1' })
+    expect(Object.keys(parsed.content.entities).length).toBeGreaterThan(0)
+    // 主密码打不开 → 证明信封用的是备份口令，而不是本机主密钥
+    expect(() => parseBackup(raw, { passphrase: 'master-pass-1' })).toThrow(BackupDecryptError)
   })
 
   // ------------------------------------------------------------ 锁定态写入

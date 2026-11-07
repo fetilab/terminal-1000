@@ -361,6 +361,115 @@
   height: 14px;
 }
 
+/* ── 树形导航（连接分组树 / 笔记分类共用） ──────────────
+ *
+ * 放在全局 components.css 而不是某个 feature 里：
+ * 它被两个以上 feature 使用，而 feature 级 CSS 只在对应 chunk 加载时才生效——
+ * 那样「先打开 A 再打开 B」和「直接打开 B」会渲染成两个样子。
+ * 共享原语必须进一直加载的那份样式表。 */
+
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px 10px;
+}
+
+.tree__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: var(--t1000-radius-sm);
+  background: transparent;
+  color: var(--t1000-fg-muted);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t1000-fast) var(--t1000-ease),
+    color var(--t1000-fast) var(--t1000-ease);
+}
+
+.tree__row:hover {
+  background: var(--t1000-bg-hover);
+  color: var(--t1000-fg);
+}
+
+.tree__row--active {
+  background: var(--t1000-accent-softer);
+  color: var(--t1000-accent);
+  font-weight: 600;
+}
+
+.tree__row--drop {
+  background: var(--t1000-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--t1000-accent);
+}
+
+.tree__twisty {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: var(--t1000-fg-faint);
+  transition: transform var(--t1000-fast) var(--t1000-ease);
+}
+
+.tree__twisty--open {
+  transform: rotate(90deg);
+}
+
+.tree__twisty--leaf {
+  visibility: hidden;
+}
+
+.tree__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree__count {
+  flex: 0 0 auto;
+  color: var(--t1000-fg-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tree__children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tree__group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tree__section {
+  padding: 12px 10px 4px;
+  color: var(--t1000-fg-faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.tree__empty {
+  padding: 10px;
+  color: var(--t1000-fg-faint);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
 /* ── 分段控件（协议标签） ───────────────────────── */
 .t-segmented {
   display: inline-flex;

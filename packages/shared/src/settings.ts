@@ -162,6 +162,15 @@ export interface SyncSettings {
   endpoint?: string
   /** 访问令牌（本地加密存放） */
   token?: string
+  /**
+   * 同步口令（即「仓库密码」）。
+   *
+   * **必须与访问口令分开**：添加了新设备时，新设备只需要这个口令就能解密
+   * 云端数据，而不需要知道登录口令；反之重置登录口令也不影响已有数据。
+   *
+   * 它同样以主密码加密后存放（不要明文落盘）。
+   */
+  passphrase?: string
   /** 自动同步 */
   autoSync: boolean
   /** 冲突策略 */

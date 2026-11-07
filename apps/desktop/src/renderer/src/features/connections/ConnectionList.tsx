@@ -7,7 +7,7 @@ import { Button, IconButton, StatusDot } from '../../components/Button'
 import { Badge } from '../../components/Feedback'
 import { Checkbox } from '../../components/Form'
 import { VirtualList } from '../../components/VirtualList'
-import { formatLatency, formatRelativeTime } from '../../lib/format'
+import { formatRelativeTime } from '../../lib/format'
 import {
   actions,
   connectTo,
@@ -16,8 +16,10 @@ import {
   deleteConnections,
   duplicateConnections,
   isFavorite,
+  pingLabel,
   toggleFavorite,
   useStoreShallow,
+  type PingEntry,
   type SortKey,
   type UiConnection,
 } from '../../lib/store'
@@ -105,6 +107,7 @@ interface RowProps {
   conn: UiConnection
   selected: boolean
   showInfo: boolean
+  ping: PingEntry | undefined
   sessionState: string | undefined
 }
 
@@ -112,7 +115,7 @@ interface RowProps {
  * 单行。用 memo 包住：列表滚动时只有进入视口的行会重建，
  * 已渲染行的 props 不变则完全跳过渲染。
  */
-const Row = memo(function Row({ conn, selected, showInfo, sessionState }: RowProps): React.JSX.Element {
+const Row = memo(function Row({ conn, selected, showInfo, ping, sessionState }: RowProps): React.JSX.Element {
   const favorite = isFavorite(conn)
   const user = connectionUsername(conn)
   const canConnect = conn.kind === 'ssh'
@@ -158,8 +161,19 @@ const Row = memo(function Row({ conn, selected, showInfo, sessionState }: RowPro
           </>
         ) : (
           <>
-            <StatusDot tone="muted" label="空闲" />
-            <span title="延迟探测需要主进程提供 ping 动作">{formatLatency(conn.lastLatencyMs)}</span>
+            <StatusDot
+              tone={ping ? (ping.reachable ? 'ok' : 'danger') : 'muted'}
+              label={ping ? pingLabel(ping) : '未探测'}
+            />
+            <span
+              title={
+                ping
+                  ? `${ping.method.toUpperCase()}${ping.reason ? ` · ${ping.reason}` : ''}`
+                  : '空闲。点工具条「探测延迟」测量'
+              }
+            >
+              {pingLabel(ping)}
+            </span>
           </>
         )}
       </div>
@@ -222,7 +236,11 @@ export interface ConnectionListProps {
 }
 
 export function ConnectionList({ items, showInfo }: ConnectionListProps): React.JSX.Element {
-  const { selected, tabs } = useStoreShallow((s) => ({ selected: s.selected, tabs: s.tabs }))
+  const { selected, tabs, pings } = useStoreShallow((s) => ({
+    selected: s.selected,
+    tabs: s.tabs,
+    pings: s.pings,
+  }))
   const selectedSet = new Set(selected)
   const allSelected = items.length > 0 && items.every((c) => selectedSet.has(c.id))
   const someSelected = selected.length > 0
@@ -288,6 +306,7 @@ export function ConnectionList({ items, showInfo }: ConnectionListProps): React.
               conn={conn}
               selected={selectedSet.has(conn.id)}
               showInfo={showInfo}
+              ping={pings[conn.id]}
               sessionState={sessionStateOf(conn.id)}
             />
           )}

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 terminal-1000 contributors
 
-import type {
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
-  TextareaHTMLAttributes,
+import {
+  forwardRef,
+  useId,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
 } from 'react'
-import { useId } from 'react'
 import { Icon } from './Icon'
 
 /* ──────────────────────────────────────────────────── 字段容器 */
@@ -73,38 +74,33 @@ export interface TextInputProps extends InputHTMLAttributes<HTMLInputElement> {
   mono?: boolean
 }
 
-export function TextInput({
-  invalid = false,
-  mono = false,
-  className,
-  type = 'text',
-  ...rest
-}: TextInputProps): React.JSX.Element {
+/** forwardRef：笔记编辑器等场景需要直接操作 DOM（光标位置、Tab 缩进） */
+export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(function TextInput(
+  { invalid = false, mono = false, className, type = 'text', ...rest },
+  ref,
+) {
   const classes = ['t-input']
   if (invalid) classes.push('t-input--invalid')
   if (mono) classes.push('t-input--mono')
   if (className) classes.push(className)
-  return <input {...rest} type={type} className={classes.join(' ')} />
-}
+  return <input {...rest} ref={ref} type={type} className={classes.join(' ')} />
+})
 
 export interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   invalid?: boolean
   mono?: boolean
 }
 
-export function TextArea({
-  invalid = false,
-  mono = false,
-  className,
-  rows = 4,
-  ...rest
-}: TextAreaProps): React.JSX.Element {
+export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(function TextArea(
+  { invalid = false, mono = false, className, rows = 4, ...rest },
+  ref,
+) {
   const classes = ['t-textarea']
   if (invalid) classes.push('t-textarea--invalid')
   if (mono) classes.push('t-textarea--mono')
   if (className) classes.push(className)
-  return <textarea {...rest} rows={rows} className={classes.join(' ')} />
-}
+  return <textarea {...rest} ref={ref} rows={rows} className={classes.join(' ')} />
+})
 
 /* ──────────────────────────────────────────────────── 下拉 */
 

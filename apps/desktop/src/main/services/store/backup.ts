@@ -20,9 +20,16 @@
  *   "iv": "<b64>",
  *   "tag": "<b64>",
  *   "payload": "<b64(密文)>",
- *   "meta": { "counts": {...} }
+ *   "meta": { "counts": {...}, "fieldSalt": "<b64>", "portableFields": true }
  * }
  * ```
+ *
+ * **字段级可迁移性（带口令备份）**
+ * - 不带口令（本机主密钥）的备份：敏感字段仍是本机主密钥的字段级密文，只在本机可解 —— 行为与旧版一致。
+ * - 带口令的备份：导出时先用**本机主密钥**解开敏感字段，再用**备份口令派生的字段密钥**
+ *   重新加密；`meta.fieldSalt` 记录字段密钥的盐，导入侧据此用备份口令还原，
+ *   最后用**本机主密钥**重新加密落库。这样同一份备份在任意设备都能还原凭据。
+ * - 没有 `meta.fieldSalt` 的旧备份按原样导入（字段保持原密文），兼容不破坏。
  *
  * **明确不兼容任何第三方备份格式**：只认 magic + version，解析失败一律拒绝，
  * 不做任何"猜测式"兼容解析（参考实现被 `sourceUserId` 字符串比较卡死跨机器恢复，
@@ -72,6 +79,19 @@ export interface BackupContent {
   entities: Record<string, Array<{ itemId: string; payload: unknown; updatedAt: number; createdAt: number }>>
 }
 
+/**
+ * 字段级编解码器（由 `Repository` 实现）。
+ *
+ * 备份层只依赖这两个操作，不直接依赖 repository —— 从而**复用**既有的
+ * 「按 ENCRYPTED_FIELD_NAMES 递归扫描」实现，而不是再造一套字段清单。
+ */
+export interface FieldCodec {
+  /** 用 key 解开 payload 里的敏感字段（密钥不对时抛错） */
+  decryptFields(payload: unknown, key: Buffer): unknown
+  /** 用 key 加密 payload 里的敏感字段（已是密文的原样保留） */
+  encryptFields(payload: unknown, key: Buffer): unknown
+}
+
 /** 导出选项 */
 export interface ExportOptions {
   /** 备份口令（不传则用当前主密码派生的密钥） */
@@ -82,12 +102,23 @@ export interface ExportOptions {
   entities?: readonly StoreEntity[]
   /** 用于文件名的时间戳 */
   now?: Date
+  /**
+   * 字段编解码器。**传入 + 有口令** 才会做跨设备字段迁移；
+   * 不传则保持旧行为（字段仍是本机主密钥密文），供底层调用方与旧测试使用。
+   */
+  fieldCodec?: FieldCodec
+  /** 本机主密钥（解开现有字段密文用）；带口令导出时必须提供 */
+  masterKey?: Buffer | null
 }
 
 /** 导入选项 */
 export interface ImportOptions {
   passphrase?: string
   key?: Buffer
+  /** 字段编解码器（见 ExportOptions.fieldCodec）；导入带字段迁移的备份时必须提供 */
+  fieldCodec?: FieldCodec
+  /** 本机主密钥（把凭据重新加密到本机用）；导入带字段迁移的备份且未解锁时缺失 */
+  masterKey?: Buffer | null
   /**
    * 冲突策略：
    * - `replace`：整库替换（默认，跨机器迁移语义最干净）
@@ -129,6 +160,26 @@ export function exportBackup(
     ? options.entities.map((entity) => STORE_KEYS[storeKeyAlias(entity)])
     : Object.values(STORE_KEYS)
 
+  // 「带口令 + 有编解码器」才是跨设备载体：敏感字段要迁到备份口令派生的密钥下。
+  // （不带口令的本地备份保持旧行为：字段仍是本机主密钥密文。）
+  const passphrase =
+    options.passphrase !== undefined && options.passphrase.length > 0 ? options.passphrase : undefined
+  const codec = options.fieldCodec
+  const masterKey = options.masterKey ?? null
+  let fieldKey: Buffer | null = null
+  let fieldSalt: Buffer | null = null
+  if (passphrase !== undefined && codec !== undefined) {
+    if (masterKey === null) {
+      // 安全含义：锁定态下绝不能产出「可换机还原明文凭据」的备份 ——
+      // 那等于绕过了主密码保护。明确报错，而不是写出一个凭据解不开的备份。
+      throw new BackupLockedError(
+        '未解锁：无法导出可跨设备使用的备份，请先解锁主密码库后再导出',
+      )
+    }
+    fieldSalt = randomBytes(SALT_BYTES)
+    fieldKey = deriveKey(passphrase, fieldSalt)
+  }
+
   const content: BackupContent = {
     exportedAt: new Date().toISOString(),
     entities: {},
@@ -137,12 +188,21 @@ export function exportBackup(
 
   for (const storeKey of storeKeys) {
     const rows = db.stmts.selectAllPayload.all(storeKey)
-    content.entities[storeKey] = rows.map((r) => ({
-      itemId: r.item_id,
-      payload: JSON.parse(r.payload) as unknown,
-      updatedAt: r.updated_at,
-      createdAt: r.created_at,
-    }))
+    content.entities[storeKey] = rows.map((r) => {
+      const parsed = JSON.parse(r.payload) as unknown
+      // 字段迁移在**这一遍遍历**里完成：不再整库反序列化第二遍。
+      // 代价是 O(敏感字段数)：decrypt/encrypt 的递归扫描只碰命中的字段。
+      const payload =
+        fieldKey !== null && codec !== undefined && masterKey !== null
+          ? codec.encryptFields(codec.decryptFields(parsed, masterKey), fieldKey)
+          : parsed
+      return {
+        itemId: r.item_id,
+        payload,
+        updatedAt: r.updated_at,
+        createdAt: r.created_at,
+      }
+    })
     counts[storeKey] = rows.length
   }
 
@@ -168,7 +228,13 @@ export function exportBackup(
     iv: iv.toString('base64'),
     tag: tag.toString('base64'),
     payload: ciphertext.toString('base64'),
-    meta: { counts },
+    meta: {
+      counts,
+      // 自描述：有 fieldSalt 就代表敏感字段是用备份口令加密的
+      ...(fieldSalt === null
+        ? {}
+        : { fieldSalt: fieldSalt.toString('base64'), portableFields: true }),
+    },
   }
 
   const json = Buffer.from(JSON.stringify(envelope), 'utf8')
@@ -274,8 +340,31 @@ export function importBackup(
   data: Buffer | string,
   options: ImportOptions = {},
 ): ImportResult {
-  const { content } = parseBackup(data, options)
+  const { envelope, content } = parseBackup(data, options)
   const mode = options.mode ?? 'replace'
+
+  // 信封自描述：带 fieldSalt 说明字段是「备份口令」加密的，落库前必须迁回本机主密钥，
+  // 否则就是「同步成功但凭据全废」的那种静默失效。
+  const fieldSaltB64 = envelope.meta?.fieldSalt
+  const codec = options.fieldCodec
+  let fieldKey: Buffer | null = null
+  let masterKey: Buffer | null = null
+  if (typeof fieldSaltB64 === 'string' && fieldSaltB64.length > 0) {
+    if (codec === undefined) {
+      throw new BackupConfigError('导入该备份需要字段编解码器（内部接线缺失）')
+    }
+    const passphrase = options.passphrase
+    if (passphrase === undefined || passphrase.length === 0) {
+      throw new BackupConfigError('备份中的凭据由备份口令加密，导入时必须提供该口令')
+    }
+    masterKey = options.masterKey ?? null
+    if (masterKey === null) {
+      throw new BackupLockedError(
+        '未解锁：无法导入可跨设备的备份（需要把凭据重新加密到本机），请先解锁主密码库后再导入',
+      )
+    }
+    fieldKey = deriveKey(passphrase, Buffer.from(fieldSaltB64, 'base64'))
+  }
 
   const imported: Record<string, number> = {}
   let skipped = 0
@@ -300,11 +389,23 @@ export function importBackup(
           }
         }
 
+        // 带字段迁移的备份：先用备份口令解开，再用本机主密钥重新加密
+        let payload = row.payload
+        if (fieldKey !== null && masterKey !== null && codec !== undefined) {
+          try {
+            payload = codec.encryptFields(codec.decryptFields(row.payload, fieldKey), masterKey)
+          } catch {
+            // 个别字段解不开（更早版本的备份字段仍是别机主密钥密文 / 数据损坏）：
+            // 原样保留，绝不写入半截数据，也不静默丢掉用户原有的密文
+            payload = row.payload
+          }
+        }
+
         // created_at 保留源库值：跨机器恢复后时间线不乱
         db.stmts.upsert.run(
           storeKey,
           row.itemId,
-          JSON.stringify(row.payload),
+          JSON.stringify(payload),
           row.updatedAt,
           row.createdAt,
         )
@@ -333,6 +434,24 @@ export class BackupDecryptError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'BackupDecryptError'
+  }
+}
+
+/** 需要先解锁才能安全完成（导出/导入带口令备份时拿不到本机主密钥） */
+export class BackupLockedError extends Error {
+  readonly kind = 'locked' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'BackupLockedError'
+  }
+}
+
+/** 调用方接线/用法错误（例如带字段迁移的备份却没有提供编解码器） */
+export class BackupConfigError extends Error {
+  readonly kind = 'config' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'BackupConfigError'
   }
 }
 

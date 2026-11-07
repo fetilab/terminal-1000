@@ -14,6 +14,10 @@ import { ptyHandlers } from '../services/pty'
 import { forwardHandlers } from '../services/forward'
 import { settingsHandlers } from '../services/settings'
 import { notesHandlers } from '../services/notes'
+import { syncHandlers } from '../services/sync'
+import { completionHandlers } from '../services/completion'
+import { aiHandlers } from '../services/ai'
+import { mcpHandlers } from '../services/mcp'
 
 const log = createLogger('ipc-setup')
 
@@ -31,6 +35,10 @@ export function registerAllHandlers(): void {
   registerDomain('forward', forwardHandlers)
   registerDomain('settings', settingsHandlers)
   registerDomain('notes', notesHandlers)
+  registerDomain('sync', syncHandlers)
+  registerDomain('completion', completionHandlers)
+  registerDomain('ai', aiHandlers)
+  registerDomain('mcp', mcpHandlers)
 
   log.info(`已注册 ${listRegistered().length} 个 IPC 动作`)
 }

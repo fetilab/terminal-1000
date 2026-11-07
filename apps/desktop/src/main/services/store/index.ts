@@ -22,10 +22,21 @@ import { AppError } from '../../errors'
 import type { IpcHandler } from '../../ipc/router'
 import { StoreDb } from './db'
 import { Repository } from './repository'
-import { Vault, createVerifier, decryptWithKey, isCiphertext, isLockedMask, verifyAndDerive, CIPHER_VERSION } from './crypto'
 import {
+  Vault,
+  createVerifier,
+  decryptWithKey,
+  encryptWithKey,
+  isCiphertext,
+  isLockedMask,
+  verifyAndDerive,
+  CIPHER_VERSION,
+} from './crypto'
+import {
+  BackupConfigError,
   BackupDecryptError,
   BackupFormatError,
+  BackupLockedError,
   backupFileName,
   exportBackup,
   importBackup,
@@ -340,21 +351,34 @@ export class StoreService {
     return { fileName, filePath: target, bytes: data.byteLength, counts }
   }
 
-  /** 生成备份字节（不落盘，测试与同步模块复用） */
+  /**
+   * 生成备份字节（不落盘，测试与同步模块复用）。
+   *
+   * 带口令时会把敏感字段从「本机主密钥」迁移到「备份口令派生的字段密钥」，
+   * 这样备份才能跨设备还原凭据（不带口令的本地备份行为不变）。
+   * 未解锁时无法完成字段迁移，直接报错而不是写出一个凭据解不开的备份。
+   */
   renderBackup(passphrase?: string): {
     data: Buffer
     fileName: string
     counts: Record<string, number>
   } {
     const key = this.resolveExportKey(passphrase)
-    const { data, fileName, envelope } = exportBackup(this.db, {
-      ...(passphrase === undefined ? {} : { passphrase }),
-      ...(passphrase === undefined && key ? { key } : {}),
-    })
-    return { data, fileName, counts: (envelope.meta?.counts ?? {}) as Record<string, number> }
+    try {
+      const { data, fileName, envelope } = exportBackup(this.db, {
+        ...(passphrase === undefined ? {} : { passphrase }),
+        ...(passphrase === undefined && key ? { key } : {}),
+        // 字段级编解码复用 repository 的递归扫描（不另造字段清单）
+        fieldCodec: this.repo,
+        masterKey: this.vault.currentKey(),
+      })
+      return { data, fileName, counts: (envelope.meta?.counts ?? {}) as Record<string, number> }
+    } catch (err) {
+      throw this.toBackupError(err)
+    }
   }
 
-  /** 导入备份 */
+  /** 导入备份（带口令的备份会把凭据重新加密到本机主密钥后再落库） */
   importBackup(data: Buffer | string, options: { passphrase?: string; mode?: 'replace' | 'merge' } = {}) {
     const key = this.resolveExportKey(options.passphrase)
     try {
@@ -362,17 +386,54 @@ export class StoreService {
         ...(options.passphrase === undefined ? {} : { passphrase: options.passphrase }),
         ...(options.passphrase === undefined && key ? { key } : {}),
         ...(options.mode === undefined ? {} : { mode: options.mode }),
+        fieldCodec: this.repo,
+        masterKey: this.vault.currentKey(),
       })
     } catch (err) {
-      if (err instanceof BackupFormatError) throw AppError.badRequest(err.message)
-      if (err instanceof BackupDecryptError) throw AppError.unauthorized(err.message)
-      throw err
+      throw this.toBackupError(err)
     }
+  }
+
+  /** 备份层错误 → 带语义的 IPC 错误码 */
+  private toBackupError(err: unknown): AppError {
+    if (err instanceof BackupFormatError) return AppError.badRequest(err.message)
+    if (err instanceof BackupDecryptError) return AppError.unauthorized(err.message)
+    // 未解锁 / 带口令备份缺少口令 —— 都需要用户先解锁或补口令
+    if (err instanceof BackupLockedError) return AppError.unauthorized(err.message)
+    if (err instanceof BackupConfigError) return AppError.internal(err.message)
+    if (err instanceof AppError) return err
+    return AppError.internal(err instanceof Error ? err.message : String(err))
   }
 
   /** 备份文件名（渲染层预览用） */
   suggestBackupFileName(): string {
     return backupFileName()
+  }
+
+  /**
+   * 用主密码密钥封装任意字符串。
+   *
+   * 用途：那些不属于「连接/凭证」实体、但同样是机密的少量数据
+   * （例如同步服务的访问令牌）。设置文档是无需解锁即可读的，
+   * 令牌绝不能明文躺在里面。
+   *
+   * 未解锁时抛错 —— 调用方应把它当作「需要用户解锁」处理，而不是降级明文存储。
+   */
+  sealValue(plain: string): string {
+    const key = this.vault.currentKey()
+    if (!key) throw AppError.unauthorized('未解锁，无法加密数据')
+    // 注意参数顺序：crypto 层的签名是 (key, plaintext)
+    return encryptWithKey(key, plain)
+  }
+
+  /** 解开 sealValue 的结果；未解锁或密文损坏都抛错（不返回空串，避免静默失败） */
+  openValue(sealed: string): string {
+    const key = this.vault.currentKey()
+    if (!key) throw AppError.unauthorized('未解锁，无法解密数据')
+    if (!isCiphertext(sealed)) {
+      throw AppError.badRequest('数据不是本机封装的密文')
+    }
+    return decryptWithKey(key, sealed)
   }
 
   /** 导出密钥：口令优先，否则用已解锁的主密码密钥；都没有则拒绝 */

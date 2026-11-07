@@ -18,10 +18,18 @@
 
 import {
   Events,
+  LATENCY_UNREACHABLE,
   type Connection,
   type ConnectionGroup,
   type ConnectionKind,
   type ConnectionState,
+  type GroupTreeNode,
+  type Note,
+  type NoteFolder,
+  type NoteSummary,
+  type PingResult,
+  type Settings,
+  type ThemeMode,
   type MonitorCardConfig,
   type MonitorSnapshot,
   type SshConnection,
@@ -44,13 +52,37 @@ export interface ConnectionUiMeta {
 
 export type UiConnection = Connection & ConnectionUiMeta
 
-/** 分组树节点。主进程 `store.listGroups` 返回的就是这个形状（含 children 与直属连接数）。 */
-export interface GroupNode extends ConnectionGroup {
-  children: GroupNode[]
-  connectionCount: number
+/** 渲染侧的探测缓存（PingResult 的 UI 视图，只留渲染需要的字段 + 探测时刻） */
+export interface PingEntry {
+  reachable: boolean
+  latencyMs: number
+  method: PingResult['method']
+  reason?: string
+  at: number
 }
 
+/**
+ * 分组树节点。
+ * 形状由 `@t1000/shared` 的 GroupTreeNode 统一定义（主进程 buildGroupTree 也返回它），
+ * 这里只是给个短别名，避免渲染层再维护一份重复声明。
+ */
+export type GroupNode = GroupTreeNode
+
 export type ViewId = 'connections' | 'console' | 'notes' | 'tools' | 'settings'
+
+/** 笔记面板的过滤条件：三个固定视图 + 任意文件夹 */
+export type NotesFilter = 'all' | 'favorites' | 'trash' | `folder:${string}`
+
+/** 设置面板分区。定义在这里作为唯一真源，features/settings 直接复用。 */
+export type SettingsSectionId =
+  | 'app'
+  | 'terminal'
+  | 'highlights'
+  | 'hotkeys'
+  | 'completion'
+  | 'ai'
+  | 'transfer'
+  | 'sync'
 
 /** 分组过滤器：前四个是固定视图，其余是分组 id */
 export const FILTER_ALL = '__all__'
@@ -92,6 +124,30 @@ export interface AppState {
   view: ViewId
   protocol: ConnectionKind
 
+  /** 设置面板当前分区 */
+  settingsSection: SettingsSectionId
+
+  /* ── 笔记 ── */
+  notes: NoteSummary[]
+  noteFolders: NoteFolder[]
+  notesFilter: NotesFilter
+  notesQuery: string
+  notesLoading: boolean
+  /** notes 域是否可用（未挂载时面板给出明确空状态而不是空白） */
+  notesReady: boolean
+  notesError: string | null
+  /** 当前打开的笔记全文（含正文）；新建时为一份未落库的草稿 */
+  noteDraft: Note | null
+  /** 草稿相对库中版本是否已改动 */
+  noteDirty: boolean
+  noteSaving: boolean
+  /** 侧栏计数：一次刷新算好，避免每个文件夹各发一次 list */
+  noteStats: { all: number; favorites: number; trash: number; byFolder: Record<string, number> }
+  /** 用户选择的主题（可能是 system） */
+  theme: ThemeMode
+  /** 实际生效的主题（把 system 解析后的结果），用于给 xterm 等自绘区域选配色 */
+  resolvedTheme: 'light' | 'dark'
+
   connections: UiConnection[]
   groups: GroupNode[]
   loading: boolean
@@ -106,6 +162,9 @@ export interface AppState {
   sortDir: SortDir
   showInfo: boolean
   selected: string[]
+  /** 连接 id → 最近一次延迟探测结果 */
+  pings: Record<string, PingEntry>
+  pingBusy: boolean
 
   editing: EditingTarget | null
   saving: boolean
@@ -139,6 +198,20 @@ export const DEFAULT_MONITOR_CARDS: MonitorCardConfig[] = [
 const initialState: AppState = {
   view: 'connections',
   protocol: 'ssh',
+  settingsSection: 'app',
+  notes: [],
+  noteFolders: [],
+  notesFilter: 'all',
+  notesQuery: '',
+  notesLoading: false,
+  notesReady: true,
+  notesError: null,
+  noteDraft: null,
+  noteDirty: false,
+  noteSaving: false,
+  noteStats: { all: 0, favorites: 0, trash: 0, byFolder: {} },
+  theme: 'system',
+  resolvedTheme: 'dark',
   connections: [],
   groups: [],
   loading: false,
@@ -151,6 +224,8 @@ const initialState: AppState = {
   sortDir: 'asc',
   showInfo: true,
   selected: [],
+  pings: {},
+  pingBusy: false,
   editing: null,
   saving: false,
   tabs: [],
@@ -380,8 +455,18 @@ export function selectVisibleConnections(s: AppState): VisibleResult {
         return a.name.localeCompare(b.name, 'zh-CN') * dir
       case 'address':
         return connectionAddress(a).localeCompare(connectionAddress(b)) * dir
-      case 'latency':
-        return ((a.lastLatencyMs ?? Number.MAX_SAFE_INTEGER) - (b.lastLatencyMs ?? Number.MAX_SAFE_INTEGER)) * dir
+      case 'latency': {
+        // 不可达/未探测统一排到最后，再按真实时延比较
+        const rank = (c: UiConnection): [number, number] => {
+          const p = state.pings[c.id]
+          if (!p) return [2, Number.MAX_SAFE_INTEGER]
+          if (!p.reachable || p.latencyMs >= LATENCY_UNREACHABLE) return [1, Number.MAX_SAFE_INTEGER]
+          return [0, p.latencyMs]
+        }
+        const [ra, la] = rank(a)
+        const [rb, lb] = rank(b)
+        return (ra - rb || la - lb) * dir
+      }
       case 'status':
         return (statusOf(a) - statusOf(b)) * dir
       case 'updated':
@@ -413,6 +498,19 @@ export function tabStateForConnection(connectionId: string): ConnectionState | u
 export const actions = {
   setView(view: ViewId) {
     setState({ view })
+  },
+
+  setSettingsSection(section: SettingsSectionId) {
+    setState({ settingsSection: section })
+  },
+
+  setNotesFilter(filter: NotesFilter) {
+    // 切分类时关掉当前详情：它可能不属于新分类，留着会让人误以为还在同一个列表里
+    setState({ notesFilter: filter, noteDraft: null, noteDirty: false })
+  },
+
+  setNotesQuery(query: string) {
+    setState({ notesQuery: query })
   },
 
   setProtocol(protocol: ConnectionKind) {
@@ -484,6 +582,53 @@ export const actions = {
   setBusy(busy: AppState['busy']) {
     setState({ busy })
   },
+}
+
+/* ────────────────────────────────────────────── 主题 */
+
+/**
+ * 应用主题。
+ *
+ * 用 `data-theme` 属性切换一整套 CSS 令牌，而不是到处写条件类名——
+ * 组件只认令牌，主题切换对它们完全透明。
+ * `system` 会跟随系统的 prefers-color-scheme，并监听它的变化。
+ */
+export function applyTheme(theme: ThemeMode): void {
+  const resolved: 'light' | 'dark' =
+    theme === 'system'
+      ? window.matchMedia('(prefers-color-scheme: light)').matches
+        ? 'light'
+        : 'dark'
+      : theme
+  setState({ theme, resolvedTheme: resolved })
+  document.documentElement.dataset.theme = resolved
+}
+
+/** 跟随系统主题变化（只在 theme === 'system' 时生效） */
+export function watchSystemTheme(): () => void {
+  const mq = window.matchMedia('(prefers-color-scheme: light)')
+  const onChange = (): void => {
+    if (state.theme === 'system') applyTheme('system')
+  }
+  mq.addEventListener('change', onChange)
+  return () => mq.removeEventListener('change', onChange)
+}
+
+/**
+ * 启动时读一次设置，把主题应用到根节点。
+ * 设置域不可用**不影响启动**：静默回退到默认深色。
+ */
+export async function loadInitialSettings(): Promise<void> {
+  try {
+    const settings = await invoke<'settings', 'getAll', Record<string, never>, Settings>(
+      'settings',
+      'getAll',
+      {},
+    )
+    applyTheme(settings.app.theme)
+  } catch {
+    applyTheme('dark')
+  }
 }
 
 /* ────────────────────────────────────────────── 数据加载 */
@@ -730,6 +875,212 @@ export async function deleteGroup(id: string): Promise<void> {
   }
 }
 
+/* ────────────────────────────────────────────── 笔记 */
+
+/** 过滤条件 → notes.list 的参数 */
+function notesListParams(filter: NotesFilter, keyword: string): Record<string, unknown> {
+  const params: Record<string, unknown> = {}
+  if (filter === 'trash') params.trashed = true
+  if (filter === 'favorites') params.favoritesOnly = true
+  if (filter.startsWith('folder:')) params.folderId = filter.slice('folder:'.length)
+  if (keyword.trim()) params.keyword = keyword.trim()
+  return params
+}
+
+let notesLoadSeq = 0
+
+/**
+ * 拉取笔记列表。
+ *
+ * 用递增序号丢弃过期响应：快速切文件夹时，先发的请求可能后到，
+ * 不做处理就会出现"列表和选中的文件夹对不上"。
+ */
+export async function loadNotes(): Promise<void> {
+  const seq = ++notesLoadSeq
+  setState({ notesLoading: true })
+  try {
+    const list = await invoke<'notes', 'list', Record<string, unknown>, NoteSummary[]>(
+      'notes',
+      'list',
+      notesListParams(state.notesFilter, state.notesQuery),
+    )
+    if (seq !== notesLoadSeq) return
+    setState({ notes: Array.isArray(list) ? list : [], notesLoading: false, notesReady: true, notesError: null })
+    void loadNoteStats()
+  } catch (err) {
+    if (seq !== notesLoadSeq) return
+    setState({ notesLoading: false, notesReady: false, notesError: errorText(err) })
+  }
+}
+
+/**
+ * 侧栏计数。
+ *
+ * 单独拉两批摘要（在用的 + 废纸篓）在渲染层算全部计数，
+ * 而不是给每个文件夹各发一次 list —— 文件夹多了会把 IPC 打成一串。
+ * 摘要不含正文，所以这两次调用很轻。
+ */
+async function loadNoteStats(): Promise<void> {
+  try {
+    const [live, trashed] = await Promise.all([
+      invoke<'notes', 'list', Record<string, unknown>, NoteSummary[]>('notes', 'list', {}),
+      invoke<'notes', 'list', Record<string, unknown>, NoteSummary[]>('notes', 'list', {
+        trashed: true,
+      }),
+    ])
+    const byFolder: Record<string, number> = {}
+    let favorites = 0
+    for (const n of live) {
+      if (n.favorite) favorites += 1
+      if (n.folderId) byFolder[n.folderId] = (byFolder[n.folderId] ?? 0) + 1
+    }
+    setState({
+      noteStats: { all: live.length, favorites, trash: trashed.length, byFolder },
+    })
+  } catch {
+    // 计数失败不影响列表
+  }
+}
+
+export async function loadNoteFolders(): Promise<void> {
+  try {
+    const folders = await invoke<'notes', 'listFolders', Record<string, never>, NoteFolder[]>(
+      'notes',
+      'listFolders',
+      {},
+    )
+    setState({ noteFolders: Array.isArray(folders) ? folders : [] })
+  } catch {
+    // 文件夹不可用不影响笔记列表
+  }
+}
+
+/** 打开一条笔记：列表只给了摘要，正文要单独 get */
+export async function openNote(id: string): Promise<void> {
+  try {
+    const note = await invoke<'notes', 'get', { id: string }, Note>('notes', 'get', { id })
+    setState({ noteDraft: note, noteDirty: false })
+  } catch (err) {
+    toast.error(`打开笔记失败：${errorText(err)}`)
+  }
+}
+
+export function newNote(folderId?: string): void {
+  const now = new Date().toISOString()
+  setState({
+    noteDraft: {
+      id: '',
+      title: '',
+      content: '',
+      ...(folderId ? { folderId } : {}),
+      favorite: false,
+      trashed: false,
+      createdAt: now,
+      updatedAt: now,
+    },
+    noteDirty: true,
+  })
+}
+
+export function updateNoteDraft(patch: Partial<Note>): void {
+  setState((s) => (s.noteDraft ? { noteDraft: { ...s.noteDraft, ...patch }, noteDirty: true } : {}))
+}
+
+/** 保存草稿（id 为空则新建）。返回是否成功。 */
+export async function saveNoteDraft(): Promise<boolean> {
+  const draft = state.noteDraft
+  if (!draft) return false
+  setState({ noteSaving: true })
+  try {
+    const payload: Record<string, unknown> = {
+      title: draft.title.trim() || '未命名笔记',
+      content: draft.content,
+      favorite: draft.favorite === true,
+    }
+    if (draft.id) payload.id = draft.id
+    if (draft.folderId) payload.folderId = draft.folderId
+    if (draft.connectionId) payload.connectionId = draft.connectionId
+    if (draft.groupId) payload.groupId = draft.groupId
+    if (draft.tags) payload.tags = draft.tags
+
+    const saved = await invoke<'notes', 'save', Record<string, unknown>, Note>('notes', 'save', payload)
+    setState({ noteDraft: saved, noteDirty: false, noteSaving: false, notesReady: true })
+    await loadNotes()
+    return true
+  } catch (err) {
+    setState({ noteSaving: false })
+    toast.error(`保存笔记失败：${errorText(err)}`)
+    return false
+  }
+}
+
+/** 软删：移入废纸篓（可恢复） */
+export async function trashNote(id: string): Promise<void> {
+  try {
+    await invoke<'notes', 'delete', { id: string }, unknown>('notes', 'delete', { id })
+    if (state.noteDraft?.id === id) setState({ noteDraft: null, noteDirty: false })
+    await loadNotes()
+    toast.ok('已移入废纸篓')
+  } catch (err) {
+    toast.error(`移入废纸篓失败：${errorText(err)}`)
+  }
+}
+
+export async function restoreNote(id: string): Promise<void> {
+  try {
+    await invoke<'notes', 'restore', { id: string }, unknown>('notes', 'restore', { id })
+    await loadNotes()
+    toast.ok('已从废纸篓恢复')
+  } catch (err) {
+    toast.error(`恢复失败：${errorText(err)}`)
+  }
+}
+
+/** 彻底删除，不可恢复 —— 调用方必须先二次确认 */
+export async function purgeNote(id: string): Promise<void> {
+  try {
+    await invoke<'notes', 'purge', { id: string }, unknown>('notes', 'purge', { id })
+    if (state.noteDraft?.id === id) setState({ noteDraft: null, noteDirty: false })
+    await loadNotes()
+    toast.ok('已彻底删除')
+  } catch (err) {
+    toast.error(`彻底删除失败：${errorText(err)}`)
+  }
+}
+
+export async function saveNoteFolder(name: string, parentId?: string): Promise<void> {
+  try {
+    await invoke<'notes', 'saveFolder', Record<string, unknown>, unknown>('notes', 'saveFolder', {
+      name,
+      ...(parentId ? { parentId } : {}),
+    })
+    await loadNoteFolders()
+    toast.ok(`已创建文件夹「${name}」`)
+  } catch (err) {
+    toast.error(`创建文件夹失败：${errorText(err)}`)
+  }
+}
+
+/**
+ * 删除文件夹。
+ * 主进程的语义是**笔记不删，只解除归属**，所以这里要把这件事明确告诉用户，
+ * 否则用户会以为笔记跟着没了。
+ */
+export async function removeNoteFolder(id: string): Promise<void> {
+  try {
+    const res = await invoke<
+      'notes',
+      'deleteFolder',
+      { id: string },
+      { deletedFolders: string[]; detachedNotes: number }
+    >('notes', 'deleteFolder', { id })
+    await Promise.all([loadNoteFolders(), loadNotes()])
+    toast.ok(`已删除 ${res.deletedFolders.length} 个文件夹，${res.detachedNotes} 条笔记回到未分类（未删除）`)
+  } catch (err) {
+    toast.error(`删除文件夹失败：${errorText(err)}`)
+  }
+}
+
 /* ────────────────────────────────────────────── 终端标签 */
 
 let tabSeq = 0
@@ -850,6 +1201,70 @@ export async function openLocalTerminal(shell?: string): Promise<void> {
     updateTab(tab.tabId, { state: 'failed', message: errorText(err) })
     toast.warn(`本地终端不可用：${errorText(err)}`)
   }
+}
+
+/* ────────────────────────────────────────────── 延迟探测 */
+
+/** 节流窗口：列表刷新不该每次都打一轮探测（探测是真实网络 IO） */
+const PING_THROTTLE_MS = 15_000
+let lastProbeAt = 0
+
+/**
+ * 探测连接延迟。
+ *
+ * 走 `app.pingMany` **一次 IPC 拿整批**，而不是循环调 ping：
+ * 1000 条连接循环调用会产生 1000 次 IPC 往返，批量接口一次就够。
+ * 默认带节流，多次触发（刷新、排序、切分组）不会把网络打满。
+ *
+ * 刻意**不在启动时自动探测**：应用启动不该产生用户没要求的网络流量。
+ * 由工具条的「探测延迟」按钮或刷新动作显式触发。
+ */
+export async function probeLatency(ids?: string[], force = false): Promise<void> {
+  const now = Date.now()
+  if (!force && now - lastProbeAt < PING_THROTTLE_MS) return
+
+  // tunnel 没有单一 host，不参与探测
+  const targets = state.connections
+    .filter((c) => c.kind !== 'tunnel' && (ids === undefined || ids.includes(c.id)))
+    .filter((c): c is UiConnection & { host: string; port: number } => 'host' in c && 'port' in c)
+
+  if (targets.length === 0) return
+  lastProbeAt = now
+  setState({ pingBusy: true })
+
+  try {
+    const results = await invoke<'app', 'pingMany', { targets: Array<{ host: string; port?: number }> }, PingResult[]>(
+      'app',
+      'pingMany',
+      { targets: targets.map((t) => ({ host: t.host, port: t.port })) },
+    )
+    const list = Array.isArray(results) ? results : []
+    // 优先按 host:port 配对；对不上再退回下标（接口约定是同序返回）
+    const byKey = new Map(list.map((r) => [`${r.host}:${r.port ?? ''}`, r]))
+    const next: Record<string, PingEntry> = { ...state.pings }
+    targets.forEach((t, i) => {
+      const r = byKey.get(`${t.host}:${t.port}`) ?? list[i]
+      if (!r) return
+      next[t.id] = {
+        reachable: r.reachable,
+        latencyMs: r.latencyMs,
+        method: r.method,
+        ...(r.reason === undefined ? {} : { reason: r.reason }),
+        at: Date.now(),
+      }
+    })
+    setState({ pings: next, pingBusy: false })
+  } catch (err) {
+    setState({ pingBusy: false })
+    toast.warn(`延迟探测不可用：${errorText(err)}`)
+  }
+}
+
+/** 探测结果 → 展示文案。不可达（哨兵 9999）显示为「超时」而不是一个巨大的数字。 */
+export function pingLabel(entry: PingEntry | undefined): string {
+  if (!entry) return '—'
+  if (!entry.reachable || entry.latencyMs >= LATENCY_UNREACHABLE) return '超时'
+  return `${Math.round(entry.latencyMs)} ms`
 }
 
 /* ────────────────────────────────────────────── 监控 */

@@ -370,3 +370,48 @@ a {
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * 浅色主题。
+ *
+ * 只覆盖令牌，不动任何组件样式 —— 组件全部只认令牌，
+ * 所以主题切换对它们是透明的（这也是前面坚持"不硬编码颜色"的回报）。
+ * 青色强调在浅底上要压暗一档才够对比度，所以 accent 不是同一支色值。
+ */
+:root[data-theme='light'] {
+  --t1000-bg: #f4f6f9;
+  --t1000-bg-sunken: #e9edf3;
+  --t1000-bg-raised: #ffffff;
+  --t1000-bg-panel: #f9fafc;
+  --t1000-bg-hover: #eef1f6;
+  --t1000-bg-active: #e2e8f1;
+  --t1000-bg-input: #ffffff;
+  --t1000-overlay: rgba(28, 34, 44, 0.34);
+
+  --t1000-border: #dde3ec;
+  --t1000-border-strong: #c3ccda;
+  --t1000-border-accent: rgba(20, 154, 168, 0.45);
+
+  --t1000-fg: #1b2029;
+  --t1000-fg-muted: #5a6474;
+  --t1000-fg-dim: #7d8798;
+  --t1000-fg-faint: #a4aebd;
+
+  --t1000-accent: #12909e;
+  --t1000-accent-strong: #0d7481;
+  --t1000-accent-fg: #ffffff;
+  --t1000-accent-soft: rgba(18, 144, 158, 0.13);
+  --t1000-accent-softer: rgba(18, 144, 158, 0.06);
+
+  --t1000-danger: #c62f34;
+  --t1000-danger-soft: rgba(198, 47, 52, 0.12);
+  --t1000-warn: #9a6f14;
+  --t1000-warn-soft: rgba(154, 111, 20, 0.13);
+  --t1000-ok: #217a4d;
+  --t1000-ok-soft: rgba(33, 122, 77, 0.13);
+  --t1000-info: #3f5fd0;
+
+  --t1000-shadow-1: 0 1px 2px rgba(24, 32, 44, 0.08);
+  --t1000-shadow-2: 0 8px 24px -10px rgba(24, 32, 44, 0.22);
+  --t1000-shadow-3: 0 24px 64px -20px rgba(24, 32, 44, 0.3);
+}
