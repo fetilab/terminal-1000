@@ -1,14 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 terminal-1000 contributors
 
-import { app, shell } from 'electron'
+import { app, BrowserWindow, dialog, shell } from 'electron'
 import { z } from 'zod'
 import { AppError, parseInput } from '../../errors'
 import type { IpcHandler } from '../router'
 import { pingMany, pingTarget } from '../../services/net/ping'
+import { getMainWindow } from '../../window'
 
 const openExternalSchema = z.object({
   url: z.string().url(),
+})
+
+const pickLocalPathSchema = z.object({
+  mode: z.enum(['file', 'directory']).default('file'),
+  multiple: z.boolean().optional(),
+  /** 对话框标题（本地化文案由渲染层给） */
+  title: z.string().max(200).optional(),
+  /** 初始目录；越权/不存在时由系统自行回退 */
+  defaultPath: z.string().max(4096).optional(),
+  /** 文件过滤，如 [{name:'文本', extensions:['txt']}] */
+  filters: z
+    .array(z.object({ name: z.string().max(100), extensions: z.array(z.string().max(20)).max(50) }))
+    .max(20)
+    .optional(),
+})
+
+const openPathSchema = z.object({
+  path: z.string().min(1),
 })
 
 const showItemSchema = z.object({
@@ -91,6 +110,53 @@ export const appHandlers: Record<string, IpcHandler> = {
       ...(concurrency !== undefined ? { concurrency } : {}),
     }
     return pingMany(targets, options)
+  },
+
+  /**
+   * 打开本机文件/目录选择对话框，返回**绝对路径**。
+   *
+   * 为什么必须由主进程做：Electron 32+ 移除了 `File.path`，
+   * 渲染层拿到 `File` 对象也读不出本地绝对路径（安全收紧），
+   * 于是"选择上传文件"这类操作在渲染层无法自行完成。
+   *
+   * 返回 `canceled` 而不是抛错：用户取消是正常操作，不该当异常处理。
+   */
+  pickLocalPath: async (payload) => {
+    const input = parseInput(pickLocalPathSchema, payload ?? {})
+    const parent = getMainWindow()
+
+    const properties: Array<'openFile' | 'openDirectory' | 'multiSelections'> = [
+      input.mode === 'directory' ? 'openDirectory' : 'openFile',
+    ]
+    if (input.multiple && input.mode === 'file') properties.push('multiSelections')
+
+    const options = {
+      properties,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.defaultPath !== undefined ? { defaultPath: input.defaultPath } : {}),
+      ...(input.filters !== undefined ? { filters: input.filters } : {}),
+    }
+
+    const result = parent
+      ? await dialog.showOpenDialog(parent, options)
+      : await dialog.showOpenDialog(options)
+
+    return {
+      canceled: result.canceled,
+      paths: result.filePaths,
+    }
+  },
+
+  /**
+   * 用系统默认程序打开一个本地路径。
+   * SFTP 的"在线编辑"把远端文件物化到临时文件后，用它直接打开编辑器。
+   * 返回失败原因（`shell.openPath` 用非空字符串表示错误，不抛异常）。
+   */
+  openPath: async (payload) => {
+    const { path } = parseInput(openPathSchema, payload)
+    const error = await shell.openPath(path)
+    if (error) throw AppError.badRequest(`无法打开该路径：${error}`)
+    return { opened: true, path }
   },
 
   quit: () => {

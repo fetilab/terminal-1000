@@ -104,6 +104,9 @@ export const Actions = {
     // 延迟探测：ping 单个目标；pingMany 一次探一批（列表刷新用，避免 N 次 IPC 往返）
     'ping',
     'pingMany',
+    // 本机文件对话框与默认程序打开（Electron 32+ 渲染层拿不到 File.path，必须主进程做）
+    'pickLocalPath',
+    'openPath',
   ] as const,
 
   store: [
