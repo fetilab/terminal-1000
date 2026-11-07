@@ -32,6 +32,7 @@ export const IPC_DOMAINS = [
   'sessionlog',
   'settings',
   'sync',
+  'hotkey',
 ] as const
 
 export type IpcDomain = (typeof IPC_DOMAINS)[number]
@@ -203,6 +204,17 @@ export const Actions = {
   settings: ['getAll', 'get', 'set', 'reset'] as const,
 
   sync: ['status', 'login', 'logout', 'push', 'pull', 'resolveConflict'] as const,
+
+  hotkey: [
+    /** 列出全部绑定及其实时注册状态（是否被别的程序占用等） */
+    'list',
+    /** 重新从设置读取并注册（设置里改完快捷键后调用） */
+    'reload',
+    /** 只改一条绑定并立即生效 */
+    'setBinding',
+    /** 恢复默认快捷键 */
+    'reset',
+  ] as const,
 } as const
 
 export type DomainAction<D extends IpcDomain> = (typeof Actions)[D][number]

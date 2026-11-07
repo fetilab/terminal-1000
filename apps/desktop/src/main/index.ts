@@ -3,13 +3,14 @@
 
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { IPC_CHANNEL } from '@t1000/shared'
-import { createIpcContext, dispatch } from './ipc/router'
+import { createIpcContext, dispatch, type IpcContext } from './ipc/router'
 import { registerAllHandlers } from './ipc'
 import { createLogger } from './logger'
 import { getAppPaths } from './paths'
 import { broadcast, createWindow, getMainWindow } from './window'
 import { shutdownSsh } from './services/ssh'
 import { shutdownForwards } from './services/forward'
+import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
 
 const log = createLogger('bootstrap')
 
@@ -27,8 +28,7 @@ if (!gotLock) {
   })
 }
 
-function installIpcBridge(): void {
-  const ctx = createIpcContext(broadcast)
+function installIpcBridge(ctx: IpcContext): void {
   ipcMain.handle(IPC_CHANNEL, async (_event, raw: unknown) => {
     return dispatch(raw, ctx)
   })
@@ -40,13 +40,33 @@ async function bootstrap(): Promise<void> {
   const paths = getAppPaths()
   log.info(`数据目录: ${paths.userData}`)
 
-  installIpcBridge()
+  // 上下文建成一份，IPC 与需要主动广播的服务（如快捷键）共用
+  const ctx = createIpcContext(broadcast)
+  installIpcBridge(ctx)
   registerAllHandlers()
 
   createWindow()
 
+  // 窗口就绪后按设置注册快捷键。
+  // 放在窗口之后：应用内快捷键要挂到窗口的 before-input-event 上。
+  try {
+    registerFromSettings(ctx)
+  } catch (err) {
+    // 快捷键注册失败不应阻止应用启动
+    log.warn('快捷键初始化失败', err)
+  }
+
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      const win = createWindow()
+      // 新窗口也要挂上应用内快捷键，否则新建窗口里快捷键失效
+      try {
+        registerFromSettings(ctx)
+      } catch (err) {
+        log.warn('新窗口快捷键注册失败', err)
+      }
+      void win
+    }
   })
 }
 
@@ -62,6 +82,12 @@ app.whenReady().then(bootstrap).catch((err) => {
  * 再断 SSH 会话（隧道依赖会话）。
  */
 function shutdownServices(): void {
+  try {
+    // 先注销快捷键：全局热键会占用系统级按键，不注销会留给下一个进程一个"死键"
+    shutdownHotkeys()
+  } catch (err) {
+    log.warn('注销快捷键时出错', err)
+  }
   try {
     shutdownForwards()
   } catch (err) {

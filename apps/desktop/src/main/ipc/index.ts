@@ -18,6 +18,7 @@ import { syncHandlers } from '../services/sync'
 import { completionHandlers } from '../services/completion'
 import { aiHandlers } from '../services/ai'
 import { mcpHandlers } from '../services/mcp'
+import { hotkeyHandlers } from '../services/hotkey'
 
 const log = createLogger('ipc-setup')
 
@@ -39,6 +40,7 @@ export function registerAllHandlers(): void {
   registerDomain('completion', completionHandlers)
   registerDomain('ai', aiHandlers)
   registerDomain('mcp', mcpHandlers)
+  registerDomain('hotkey', hotkeyHandlers)
 
   log.info(`已注册 ${listRegistered().length} 个 IPC 动作`)
 }

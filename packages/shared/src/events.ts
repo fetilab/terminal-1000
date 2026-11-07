@@ -47,6 +47,10 @@ export const Events = {
   MONITOR_STATUS: 'MONITOR_STATUS',
   MONITOR_ERROR: 'MONITOR_ERROR',
 
+  // 快捷键
+  HOTKEY_TRIGGERED: 'HOTKEY_TRIGGERED',
+  HOTKEY_STATUS: 'HOTKEY_STATUS',
+
   // AI
   AI_DELTA: 'AI_DELTA',
   AI_TOOL_CALL: 'AI_TOOL_CALL',
@@ -126,6 +130,16 @@ export interface EventPayloads {
   [Events.FORWARD_WARN]: { forwardId: string; message: string }
   [Events.FORWARD_ERROR]: { forwardId: string; message: string }
 
+  /** 快捷键被触发：渲染层据此执行对应命令 */
+  [Events.HOTKEY_TRIGGERED]: {
+    bindingId: string
+    command: string
+    /** 触发来源：全局快捷键（应用未聚焦也生效）还是应用内按键 */
+    source: 'global' | 'in-app'
+  }
+  /** 注册状态变更（占用冲突等），用于设置界面如实展示 */
+  [Events.HOTKEY_STATUS]: { registrations: HotkeyRegistration[] }
+
   [Events.PTY_DATA]: { ptyId: string; data: string }
   [Events.PTY_EXIT]: { ptyId: string; exitCode: number; signal?: number }
 
@@ -141,6 +155,25 @@ export interface EventPayloads {
 
   [Events.SYNC_STATE]: { state: 'idle' | 'syncing' | 'offline' | 'error'; message?: string }
   [Events.SYNC_PROGRESS]: { phase: 'push' | 'pull'; done: number; total: number }
+}
+
+/** 快捷键注册状态（供设置界面如实显示，而不是假装成功） */
+export interface HotkeyRegistration {
+  /** HotkeyBinding.id */
+  bindingId: string
+  /** 命令 id，如 terminal.newTab */
+  command: string
+  accelerator?: string
+  global: boolean
+  enabled: boolean
+  /** 是否已成功注册到系统/应用 */
+  registered: boolean
+  /**
+   * 注册失败原因。
+   * 最常见的是 `accelerator 已被其它程序占用` —— 必须如实告知，
+   * 否则用户会以为按了没反应是自己按错了。
+   */
+  error?: string
 }
 
 /** 应用数据目录（由主进程解析后告知渲染进程） */

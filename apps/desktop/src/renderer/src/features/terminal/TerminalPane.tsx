@@ -28,7 +28,15 @@ import { Icon } from '../../components/Icon'
 import { IconButton } from '../../components/Button'
 import { invoke, subscribe } from '../../lib/ipc'
 import { useStoreShallow, type TerminalTab } from '../../lib/store'
+import {
+  LineTracker,
+  applyCandidate,
+  type CompletionCandidate,
+  type CompletionResult,
+} from './completion'
+import { CompletionPopup } from './CompletionPopup'
 import './terminal.css'
+import './completion.css'
 
 /** 积压上限：超过就丢弃并在终端里明确告知，绝不无声无息地胀内存 */
 const MAX_BUFFER_CHARS = 4 * 1024 * 1024
@@ -153,12 +161,92 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const [findText, setFindText] = useState('')
   const [dims, setDims] = useState<{ cols: number; rows: number } | null>(null)
 
+  /* ── 补全 ── */
+  const trackerRef = useRef(new LineTracker())
+  /** 已执行的命令行（回车提交的），作为历史补全的数据源 */
+  const historyRef = useRef<string[]>([])
+  const [completion, setCompletion] = useState<CompletionResult | null>(null)
+  const [selected, setSelected] = useState(0)
+  const completionSeq = useRef(0)
+  const debounceTimer = useRef<number | undefined>(undefined)
+  /** 防抖时长来自主进程返回的 debounceMs，不硬编码 */
+  const debounceMsRef = useRef(80)
+
   // 首次可见前不创建 xterm：隐藏容器尺寸为 0，此时 open() 会得到畸形布局
   const resolvedTheme = useStoreShallow((s) => ({ resolvedTheme: s.resolvedTheme })).resolvedTheme
   const [everVisible, setEverVisible] = useState(visible)
   useEffect(() => {
     if (visible) setEverVisible(true)
   }, [visible])
+
+  /* ── 补全 ─────────────────────────────────────── */
+
+  const closeCompletion = useCallback(() => {
+    window.clearTimeout(debounceTimer.current)
+    completionSeq.current += 1 // 让在途请求的结果作废
+    setCompletion(null)
+    setSelected(0)
+  }, [])
+
+  const requestCompletion = useCallback(async () => {
+    const tab = tabRef.current
+    if (!tab.sessionId) return
+    const tracker = trackerRef.current
+    const line = tracker.line
+    // 本地跟踪不可靠（出现过方向键等）或行为空时不弹
+    if (!tracker.isReliable || line.trim().length === 0) {
+      setCompletion(null)
+      return
+    }
+    const seq = ++completionSeq.current
+    try {
+      const res = await invoke<'completion', 'complete', Record<string, unknown>, CompletionResult>(
+        'completion',
+        'complete',
+        {
+          line,
+          cursor: tracker.cursor,
+          history: historyRef.current.slice(-200),
+        },
+      )
+      // 丢弃过期响应：快速输入时先发的可能后到
+      if (seq !== completionSeq.current) return
+      debounceMsRef.current = res.debounceMs ?? debounceMsRef.current
+      if (!res.candidates || res.candidates.length === 0) {
+        setCompletion(null)
+        return
+      }
+      setCompletion(res)
+      setSelected(0)
+    } catch {
+      // 补全服务不可用不该打断输入
+      if (seq === completionSeq.current) setCompletion(null)
+    }
+  }, [])
+
+  const scheduleCompletion = useCallback(() => {
+    window.clearTimeout(debounceTimer.current)
+    debounceTimer.current = window.setTimeout(() => void requestCompletion(), debounceMsRef.current)
+  }, [requestCompletion])
+
+  const acceptCandidate = useCallback(
+    (index: number) => {
+      const res = completion
+      const candidate: CompletionCandidate | undefined = res?.candidates[index]
+      const tab = tabRef.current
+      if (!res || !candidate || !tab.sessionId) return
+      const applied = applyCandidate(trackerRef.current.line, res.context, candidate)
+      // 本地跟踪缓冲与实际命令行对齐，否则下一次补全会基于旧的 token 计算
+      trackerRef.current.reset()
+      trackerRef.current.consume(applied.line)
+      closeCompletion()
+      const domain = tab.kind === 'ssh' ? 'ssh' : 'pty'
+      void invoke(domain, 'write', { sessionId: tab.sessionId, data: applied.payload }).catch(
+        () => undefined,
+      )
+    },
+    [completion, closeCompletion],
+  )
 
   /* ── 创建终端 ─────────────────────────────────── */
   useEffect(() => {
@@ -231,6 +319,22 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         // 键盘输入 → 会话
         const dataSub = term.onData((data) => {
           const current = tabRef.current
+          // 先更新本地命令行跟踪，再决定是否触发补全
+          const tracker = trackerRef.current
+          const before = tracker.line
+          tracker.consume(data)
+
+          if (data === '\r' || data === '\n') {
+            // 回车：提交的行进历史，并关掉弹窗
+            const submitted = before.trim()
+            if (submitted) {
+              historyRef.current = [...historyRef.current.filter((h) => h !== submitted), submitted].slice(-500)
+            }
+            closeCompletion()
+          } else if (data.length > 0) {
+            scheduleCompletion()
+          }
+
           if (!current.sessionId) return
           const domain = current.kind === 'ssh' ? 'ssh' : 'pty'
           void invoke(domain, 'write', { sessionId: current.sessionId, data }).catch(() => undefined)
@@ -253,6 +357,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     return () => {
       disposed = true
       for (const fn of cleanups) fn()
+      window.clearTimeout(debounceTimer.current)
       writer.detach()
       termRef.current?.dispose()
       termRef.current = null
@@ -321,6 +426,39 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   }, [tab.sessionId, tab.kind])
 
   /* ── 快捷键 ───────────────────────────────────── */
+  // 捕获阶段处理：这些键必须先被弹窗消费掉，否则会被 xterm 送进远端 shell
+  const onKeyDownCapture = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!completion) return
+      const count = completion.candidates.length
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault()
+          e.stopPropagation()
+          setSelected((i) => (count === 0 ? 0 : (i + 1) % count))
+          return
+        case 'ArrowUp':
+          e.preventDefault()
+          e.stopPropagation()
+          setSelected((i) => (count === 0 ? 0 : (i - 1 + count) % count))
+          return
+        case 'Tab':
+          e.preventDefault()
+          e.stopPropagation()
+          acceptCandidate(selected)
+          return
+        case 'Escape':
+          e.preventDefault()
+          e.stopPropagation()
+          closeCompletion()
+          return
+        default:
+          return
+      }
+    },
+    [completion, selected, acceptCandidate, closeCompletion],
+  )
+
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       const term = termRef.current
@@ -328,6 +466,12 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
         e.preventDefault()
         setFindOpen(true)
+        return
+      }
+      // Ctrl+Space：手动触发补全（终端用户的肌肉记忆）
+      if (e.ctrlKey && e.key === ' ') {
+        e.preventDefault()
+        void requestCompletion()
         return
       }
       if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
@@ -372,13 +516,25 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   }
 
   return (
-    <div className="term-pane" onKeyDown={onKeyDown}>
+    <div className="term-pane" onKeyDown={onKeyDown} onKeyDownCapture={onKeyDownCapture}>
       <div
         ref={hostRef}
         className="term-pane__surface"
         onClick={() => termRef.current?.focus()}
         data-testid="terminal-surface"
       />
+
+      {completion ? (
+        <CompletionPopup
+          candidates={completion.candidates}
+          selected={selected}
+          elapsedMs={completion.elapsedMs}
+          specName={completion.specName}
+          aiRequested={completion.aiRequested}
+          onHover={setSelected}
+          onAccept={acceptCandidate}
+        />
+      ) : null}
 
       {findOpen ? (
         <div className="term-find" role="search">
