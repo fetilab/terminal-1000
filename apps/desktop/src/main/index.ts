@@ -11,6 +11,7 @@ import { broadcast, createWindow, getMainWindow } from './window'
 import { shutdownSsh } from './services/ssh'
 import { shutdownForwards } from './services/forward'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
+import { shutdownTelnet } from './services/telnet'
 
 const log = createLogger('bootstrap')
 
@@ -98,6 +99,12 @@ function shutdownServices(): void {
     shutdownHotkeys()
   } catch (err) {
     log.warn('注销快捷键时出错', err)
+  }
+  try {
+    // Telnet 是裸 socket，不主动销毁会留下半开连接
+    shutdownTelnet()
+  } catch (err) {
+    log.warn('关闭 Telnet 会话时出错', err)
   }
   try {
     shutdownForwards()

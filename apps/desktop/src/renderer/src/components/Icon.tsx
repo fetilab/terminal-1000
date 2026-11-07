@@ -58,6 +58,8 @@ export type IconName =
   // 领域
   | 'server'
   | 'home'
+  | 'record'
+  | 'stop'
   | 'terminal'
   | 'split-h'
   | 'split-v'
@@ -271,6 +273,8 @@ const GLYPHS: Record<IconName, JSX.Element> = {
       <path {...S} d="M7.2 8.1v.1M7.2 15.9v.1" />
     </>
   ),
+  record: <circle {...F} cx="12" cy="12" r="5.5" />,
+  stop: <rect {...F} x="7" y="7" width="10" height="10" rx="1.6" />,
   home: (
     <>
       <path {...S} d="M4 10.6l8-6.2 8 6.2" />

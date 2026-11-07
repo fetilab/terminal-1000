@@ -196,6 +196,17 @@ export interface TelnetConnection {
   username?: string
   password?: string
   note?: string
+  /** 连接选项 */
+  options?: {
+    /** 连接超时（ms），默认 20000 */
+    timeoutMs?: number
+    /** 上报的终端类型（对端请求 TTYPE 时回答），默认 xterm-256color */
+    term?: string
+    /** 初始列数，默认 80 */
+    cols?: number
+    /** 初始行数，默认 24 */
+    rows?: number
+  }
   /** 按键映射（网络设备键位适配） */
   keyMapping?: {
     enabled: boolean

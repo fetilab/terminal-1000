@@ -234,6 +234,18 @@
   z-index: 2;
 }
 
+/* 录制指示：状态栏里用危险色，和"已就绪"这类中性状态区分开 */
+.term-pane__rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-danger-soft);
+  color: var(--t1000-danger);
+  font-weight: 600;
+}
+
 /* 查找条 */
 .term-find {
   position: absolute;

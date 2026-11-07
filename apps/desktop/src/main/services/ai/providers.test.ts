@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import type { AiProviderConfig } from '@t1000/shared'
+import type { AiProviderConfig, ChatMessage } from '@t1000/shared'
 import {
   SseParser,
   buildAnthropicBody,
@@ -61,6 +61,22 @@ function fetchReturning(res: FetchResponseLike, onCall?: (url: string, body: unk
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * 构造测试用消息。
+ *
+ * `ChatMessage` 的 `id`/`createdAt` 是必填的稳定标识（主进程追加消息时提供），
+ * 这里统一补齐，让用例只关心被测字段。
+ */
+let msgSeq = 0
+function msg(
+  role: ChatMessage['role'],
+  content: string,
+  extra: Omit<Partial<ChatMessage>, 'id' | 'role' | 'content' | 'createdAt'> = {},
+): ChatMessage {
+  msgSeq += 1
+  return { id: `m-${msgSeq}`, role, content, createdAt: '2026-01-01T00:00:00.000Z', ...extra }
+}
 
 describe('SseParser（跨 chunk 截断是重点）', () => {
   it('按空行切分事件', () => {
@@ -124,7 +140,7 @@ describe('OpenAI 兼容流', () => {
     const client = createProviderClient(config(), { fetch: fetchReturning(response(chunks)) })
 
     const result = await client.streamChat({
-      messages: [{ role: 'user', content: '看看磁盘' }],
+      messages: [msg('user', '看看磁盘')],
       callbacks: { onText: (t) => textDeltas.push(t) },
     })
 
@@ -148,7 +164,7 @@ describe('OpenAI 兼容流', () => {
     const usages: Array<{ inputTokens?: number }> = []
     const client = createProviderClient(config(), { fetch: fetchReturning(response(chunks)) })
     const result = await client.streamChat({
-      messages: [{ role: 'user', content: 'hi' }],
+      messages: [msg('user', 'hi')],
       callbacks: { onUsage: (u) => usages.push(u) },
     })
     expect(result.usage).toEqual({ inputTokens: 11, outputTokens: 5 })
@@ -158,7 +174,7 @@ describe('OpenAI 兼容流', () => {
   it('非 JSON 帧（心跳）被忽略而不抛错', async () => {
     const chunks = ['data: not-json\n\n', 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', 'data: [DONE]\n\n']
     const client = createProviderClient(config(), { fetch: fetchReturning(response(chunks)) })
-    const result = await client.streamChat({ messages: [{ role: 'user', content: 'x' }] })
+    const result = await client.streamChat({ messages: [msg('user', 'x')] })
     expect(result.text).toBe('ok')
   })
 
@@ -171,14 +187,10 @@ describe('OpenAI 兼容流', () => {
     })
     await client.streamChat({
       messages: [
-        { role: 'system', content: 'sys' },
-        { role: 'user', content: 'u' },
-        {
-          role: 'assistant',
-          content: '',
-          toolCalls: [{ id: 'c1', name: 't', arguments: '{"a":1}' }],
-        },
-        { role: 'tool', content: '结果', toolCallId: 'c1' },
+        msg('system', 'sys'),
+        msg('user', 'u'),
+        msg('assistant', '', { toolCalls: [{ id: 'c1', name: 't', arguments: '{"a":1}' }] }),
+        msg('tool', '结果', { toolCallId: 'c1' }),
       ],
       tools: [{ name: 't', description: 'd', parameters: { type: 'object' } }],
     })
@@ -210,7 +222,7 @@ describe('Anthropic 流', () => {
       fetch: fetchReturning(response(chunks)),
     })
 
-    const result = await client.streamChat({ messages: [{ role: 'user', content: 'uptime' }] })
+    const result = await client.streamChat({ messages: [msg('user', 'uptime')] })
     expect(result.text).toBe('查一下')
     expect(result.toolCalls).toEqual([
       { id: 'toolu_1', name: 't1000_ssh_exec', arguments: '{"command":"uptime"}' },
@@ -223,9 +235,9 @@ describe('Anthropic 流', () => {
     const body = buildAnthropicBody(
       config({ kind: 'anthropic' }),
       [
-        { role: 'system', content: 'S' },
-        { role: 'user', content: 'U' },
-        { role: 'tool', content: 'R', toolCallId: 'toolu_1' },
+        msg('system', 'S'),
+        msg('user', 'U'),
+        msg('tool', 'R', { toolCallId: 'toolu_1' }),
       ],
       [],
     )
@@ -241,7 +253,7 @@ describe('Anthropic 流', () => {
   })
 
   it('thinking 模式带上扩展思考参数', () => {
-    const body = buildAnthropicBody(config({ kind: 'anthropic' }), [{ role: 'user', content: 'x' }], [], 'thinking')
+    const body = buildAnthropicBody(config({ kind: 'anthropic' }), [msg('user', 'x')], [], 'thinking')
     expect(body['thinking']).toEqual({ type: 'enabled', budget_tokens: 2048 })
   })
 })
@@ -317,13 +329,13 @@ describe('parseToolArguments', () => {
 
 describe('buildOpenAiBody', () => {
   it('空 toolCalls 的 assistant 消息仍是普通文本消息', () => {
-    const body = buildOpenAiBody(config(), [{ role: 'assistant', content: 'hi', toolCalls: [] }], [])
+    const body = buildOpenAiBody(config(), [msg('assistant', 'hi', { toolCalls: [] })], [])
     const messages = body['messages'] as Array<Record<string, unknown>>
     expect(messages[0]).toEqual({ role: 'assistant', content: 'hi' })
   })
 
   it('thinking 模式带 reasoning_effort', () => {
-    const body = buildOpenAiBody(config(), [{ role: 'user', content: 'x' }], [], 'thinking')
+    const body = buildOpenAiBody(config(), [msg('user', 'x')], [], 'thinking')
     expect(body['reasoning_effort']).toBe('medium')
   })
 })

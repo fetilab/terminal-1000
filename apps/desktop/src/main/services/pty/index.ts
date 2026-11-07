@@ -21,6 +21,7 @@ import { Events } from '@t1000/shared'
 import { AppError } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { OutputBatcher } from '../output-batcher'
+import { publishSessionClosed, publishSessionData } from '../session-registry'
 import {
   DEFAULT_TERM,
   buildShellEnv,
@@ -373,6 +374,9 @@ function getManager(ctx: IpcContext): PtyManager {
     {
       onData: (ptyId, data) => {
         activeCtx?.emit(Events.PTY_DATA, { ptyId, data })
+        // 同时写入中立契约：会话日志/录制订阅的是这条通道。
+        // 只 emit 给渲染层的话，本地终端会"看起来在录、实际是空文件"。
+        publishSessionData(ptyId, data)
       },
       onExit: (ptyId, exitCode, signal) => {
         activeCtx?.emit(Events.PTY_EXIT, {
@@ -380,6 +384,8 @@ function getManager(ctx: IpcContext): PtyManager {
           exitCode,
           ...(signal === undefined ? {} : { signal }),
         })
+        // 广播关闭，让正在录制的日志自动收尾（否则写入流一直挂着）
+        publishSessionClosed(ptyId)
       },
     },
     { cwdExists: (path) => defaultCwdExists(path) },

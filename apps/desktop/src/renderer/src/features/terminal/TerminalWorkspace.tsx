@@ -64,7 +64,11 @@ const STATE_LABEL: Record<string, string> = {
 }
 
 export default function TerminalWorkspace(): React.JSX.Element {
-  const { tabs, activeTabId } = useStoreShallow((s) => ({ tabs: s.tabs, activeTabId: s.activeTabId }))
+  const { tabs, activeTabId, recordings } = useStoreShallow((s) => ({
+    tabs: s.tabs,
+    activeTabId: s.activeTabId,
+    recordings: s.activeRecordings,
+  }))
   const [secondaryTabId, setSecondaryTabId] = useState<string | null>(null)
 
   const active = tabs.find((t) => t.tabId === activeTabId) ?? null
@@ -127,6 +131,9 @@ export default function TerminalWorkspace(): React.JSX.Element {
             }}
           >
             <Icon name={tab.kind === 'local' ? 'console' : 'terminal'} size={13} />
+            {recordings.some((r) => r.sessionId === tab.sessionId) ? (
+              <span className="rec-dot" title="正在记录会话日志" />
+            ) : null}
             <span className="term-tab__label">{tab.title}</span>
             <button
               type="button"

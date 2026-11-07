@@ -35,6 +35,7 @@ const NotesView = lazy(() => import('./features/notes/NotesView'))
 const ToolsView = lazy(() => import('./features/tools/ToolsView'))
 const AiView = lazy(() => import('./features/ai/AiView'))
 const ServicesView = lazy(() => import('./features/services/ServicesView'))
+const SessionLogView = lazy(() => import('./features/sessionlog/SessionLogView'))
 const SettingsView = lazy(() => import('./features/settings/SettingsView'))
 
 const ConnectionsSidebar = lazy(() =>
@@ -56,6 +57,9 @@ const AiSidebar = lazy(() => import('./features/ai/AiView').then((m) => ({ defau
 const ServicesSidebar = lazy(() =>
   import('./features/services/ServicesView').then((m) => ({ default: m.ServicesSidebar })),
 )
+const SessionLogSidebar = lazy(() =>
+  import('./features/sessionlog/SessionLogView').then((m) => ({ default: m.SessionLogSidebar })),
+)
 
 interface RailEntry {
   view: ViewId
@@ -70,6 +74,7 @@ const RAIL: RailEntry[] = [
   { view: 'tools', icon: 'tools', label: '工具' },
   { view: 'ai', icon: 'activity', label: 'AI 助手' },
   { view: 'services', icon: 'cloud', label: '外部服务' },
+  { view: 'logs', icon: 'notes', label: '会话日志' },
 ]
 
 function Rail(): React.JSX.Element {
@@ -129,6 +134,8 @@ function Sidebar(): React.JSX.Element {
       return <AiSidebar />
     case 'services':
       return <ServicesSidebar />
+    case 'logs':
+      return <SessionLogSidebar />
     case 'settings':
       return <SettingsSidebar />
     default:
@@ -151,6 +158,8 @@ function View(): React.JSX.Element {
       return <AiView />
     case 'services':
       return <ServicesView />
+    case 'logs':
+      return <SessionLogView />
     case 'settings':
       return <SettingsView />
     default:
@@ -198,6 +207,7 @@ export function App(): React.JSX.Element {
         '4': 'tools',
         '5': 'ai',
         '6': 'services',
+        '7': 'logs',
       }
       const target = byNumber[e.key]
       if (target) {

@@ -51,6 +51,12 @@ export const Events = {
   HOTKEY_TRIGGERED: 'HOTKEY_TRIGGERED',
   HOTKEY_STATUS: 'HOTKEY_STATUS',
 
+  // Telnet
+  TELNET_DATA: 'TELNET_DATA',
+  TELNET_STATE: 'TELNET_STATE',
+  TELNET_CLOSED: 'TELNET_CLOSED',
+  TELNET_NEGOTIATION: 'TELNET_NEGOTIATION',
+
   // AI
   AI_DELTA: 'AI_DELTA',
   AI_TOOL_CALL: 'AI_TOOL_CALL',
@@ -129,6 +135,23 @@ export interface EventPayloads {
   [Events.FORWARD_INFO]: { forwardId: string; message: string }
   [Events.FORWARD_WARN]: { forwardId: string; message: string }
   [Events.FORWARD_ERROR]: { forwardId: string; message: string }
+
+  [Events.TELNET_DATA]: { sessionId: string; data: string }
+  [Events.TELNET_STATE]: { sessionId: string; state: ConnectionState; message?: string }
+  [Events.TELNET_CLOSED]: { sessionId: string; reason?: string }
+  /**
+   * 选项协商摘要（诊断用）。
+   * Telnet 的"连上却键盘无反应"绝大多数是协商没谈拢；
+   * 把协商过程暴露出来能直接定位，而不是靠猜。
+   */
+  [Events.TELNET_NEGOTIATION]: {
+    sessionId: string
+    option: number
+    optionName: string
+    direction: 'local' | 'remote'
+    accepted: boolean
+    detail?: string
+  }
 
   /** 快捷键被触发：渲染层据此执行对应命令 */
   [Events.HOTKEY_TRIGGERED]: {

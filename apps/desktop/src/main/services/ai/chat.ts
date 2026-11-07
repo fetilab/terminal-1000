@@ -182,7 +182,10 @@ export class ChatService {
   }
 
   getChat(id: string): ChatSession | undefined {
-    return this.chats.get(id)
+    const chat = this.chats.get(id)
+    // 读取路径就把身份补齐并固化：旧数据第一次读出来是什么 id，之后就一直是什么 id
+    if (chat) this.ensureMessageIdentity(chat)
+    return chat
   }
 
   deleteChat(id: string): boolean {
@@ -194,7 +197,7 @@ export class ChatService {
   }
 
   createChat(title = '新会话'): ChatSession {
-    const now = new Date(this.deps.now?.() ?? Date.now()).toISOString()
+    const now = this.timestamp()
     const chat: ChatSession = {
       id: randomUUID(),
       title,
@@ -257,6 +260,8 @@ export class ChatService {
     if (session.title === '新会话' && session.messages.length === 0) {
       session.title = text.slice(0, 40)
     }
+    // 追加任何新消息之前，先把历史消息（可能来自旧数据）的派生 id 固化
+    this.ensureMessageIdentity(session)
 
     const controller = new AbortController()
     this.active.set(session.id, controller)
@@ -265,10 +270,16 @@ export class ChatService {
     const guard = new AiGuard(policy.limits)
     const client = createProviderClient(provider, { fetch: this.deps.fetch ?? globalFetch })
 
-    const userMessage: ChatMessage = { role: 'user', content: text }
+    const userMessage: ChatMessage = {
+      id: randomUUID(),
+      role: 'user',
+      content: text,
+      createdAt: this.timestamp(),
+    }
     this.pushMessage(session, userMessage)
 
-    const messageId = randomUUID()
+    // 兜底 id：若一轮都没跑完（立刻被取消），AI_DONE 仍需要一个可引用的 id
+    let messageId = randomUUID()
     let answer = ''
     let toolCallCount = 0
 
@@ -277,6 +288,11 @@ export class ChatService {
 
       for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
         if (controller.signal.aborted) break
+
+        // 每次「模型 → 工具」迭代产出一条**独立的** assistant 消息；
+        // 事件里的 messageId 就是这条消息的 id —— UI 才能把流式文本与工具轨迹
+        // 挂到正确的消息上（也是渲染层 key={m.id} / toolTraces[m.id] 的依据）。
+        messageId = randomUUID()
 
         const result = await client.streamChat({
           messages: session.messages,
@@ -295,8 +311,10 @@ export class ChatService {
         })
 
         this.pushMessage(session, {
+          id: messageId,
           role: 'assistant',
           content: result.text,
+          createdAt: this.timestamp(),
           ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
         })
         if (result.text !== '') answer = result.text === answer ? answer : result.text
@@ -316,8 +334,10 @@ export class ChatService {
             isError: toolResult.isError,
           })
           this.pushMessage(session, {
+            id: randomUUID(),
             role: 'tool',
             content: toolResult.content,
+            createdAt: this.timestamp(),
             toolCallId: call.id,
             name: call.name,
           })
@@ -326,7 +346,7 @@ export class ChatService {
         guard.startRound() // 下一次模型调用算新一轮
       }
 
-      session.updatedAt = new Date(this.deps.now?.() ?? Date.now()).toISOString()
+      session.updatedAt = this.timestamp()
       this.emit(Events.AI_DONE, {
         chatId: session.id,
         messageId,
@@ -520,7 +540,37 @@ export class ChatService {
   }
 
 
+  /** 统一的时间戳来源（`deps.now` 可注入，便于测试固定时间） */
+  private timestamp(): string {
+    return new Date(this.deps.now?.() ?? Date.now()).toISOString()
+  }
+
+  /**
+   * 给历史消息补齐稳定身份（旧数据没有 id/createdAt）。
+   *
+   * 按 `chatId:序号` 派生并**就地固化**，因此：
+   * - 同一会话多次读取得到完全相同的 id（否则 UI 每次刷新 key 都在变，等于没修）；
+   * - 之后即使触及消息数上限被裁剪，已固化的 id 也不会漂移。
+   */
+  private ensureMessageIdentity(chat: ChatSession): void {
+    chat.messages.forEach((message, index) => {
+      if (typeof message.id !== 'string' || message.id.length === 0) {
+        message.id = `${chat.id}:${index}`
+      }
+      if (typeof message.createdAt !== 'string' || message.createdAt.length === 0) {
+        message.createdAt = chat.createdAt
+      }
+    })
+  }
+
   private pushMessage(session: ChatSession, message: ChatMessage): void {
+    // 先把历史消息的派生 id 固化，避免序号随追加/裁剪漂移
+    this.ensureMessageIdentity(session)
+    // 类型上 id/createdAt 已必填；这里只做运行期兜底（例如将来从存储反序列化）
+    if (typeof message.id !== 'string' || message.id.length === 0) message.id = randomUUID()
+    if (typeof message.createdAt !== 'string' || message.createdAt.length === 0) {
+      message.createdAt = this.timestamp()
+    }
     session.messages.push(message)
     if (session.messages.length > MAX_MESSAGES_PER_CHAT) {
       session.messages.splice(0, session.messages.length - MAX_MESSAGES_PER_CHAT)

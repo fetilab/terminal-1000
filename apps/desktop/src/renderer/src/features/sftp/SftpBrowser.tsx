@@ -4,12 +4,11 @@
 /**
  * SFTP 浏览器：面包屑 + 虚拟化列表 + 文件操作 + 传输队列。
  *
- * ## 关于本地路径选择
- * 上传/下载需要**本地绝对路径**，而渲染层的 `<input type="file">` 拿不到真实路径
- * （Electron 32+ 移除了 `File.path`，替代方案 `webUtils.getPathForFile` 需要 preload 暴露）。
- * 主进程目前也没有 dialog 动作，所以这里退化为「手填本地路径」，
- * 并把最近使用的目录记在 localStorage，避免每次都重填。
- * 已向 lead 申请 `app.pickLocalPath`，动作到位后把输入框换成选择按钮即可（其余逻辑不动）。
+ * ## 本地路径选择
+ * 上传/下载需要**本地绝对路径**，渲染层的 `<input type="file">` 拿不到（Electron 32+
+ * 移除了 `File.path`），所以走主进程的 `app.pickLocalPath`（原生对话框）。
+ * 用户取消返回 `{canceled:true}` 而不是抛错 —— 取消是正常操作，不弹错误。
+ * 仍保留手填输入框作为兜底（例如已知路径、或对话框在某些环境下不可用）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -248,7 +247,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   const [downloadTarget, setDownloadTarget] = useState<RemoteEntry | null>(null)
 
   const [localDir, setLocalDir] = useState(rememberedLocalDir)
-  const [localFile, setLocalFile] = useState('')
+  const [localFiles, setLocalFiles] = useState<string[]>([])
   const [recursive, setRecursive] = useState(true)
 
   const conflictPolicy = useStoreShallow((s) => ({ v: s.transferConflictPolicy })).v
@@ -326,23 +325,29 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   }
 
   const submitUpload = async (): Promise<void> => {
-    if (!sessionId || !localFile.trim()) return
-    const target = joinRemote(cwd, localFile.trim().split('/').filter(Boolean).pop() ?? '')
-    rememberLocalDir(localFile.trim().split('/').slice(0, -1).join('/'))
+    if (!sessionId || localFiles.length === 0) return
+    const paths = localFiles.slice()
+    rememberLocalDir(paths[0]?.split('/').slice(0, -1).join('/') ?? '')
     setUploadOpen(false)
-    try {
-      await invoke<'sftp', 'upload', Record<string, unknown>, unknown>('sftp', 'upload', {
-        sessionId,
-        direction: 'upload',
-        sourcePath: localFile.trim(),
-        targetPath: target,
-        recursive,
-        conflictPolicy,
-      })
-      toast.info(`已提交上传：${localFile.trim()}`)
-    } catch (err) {
-      toast.error(`上传提交失败：${errorText(err)}`)
+    let ok = 0
+    for (const src of paths) {
+      const name = src.split('/').filter(Boolean).pop() ?? ''
+      try {
+        await invoke<'sftp', 'upload', Record<string, unknown>, unknown>('sftp', 'upload', {
+          sessionId,
+          direction: 'upload',
+          sourcePath: src,
+          targetPath: joinRemote(cwd, name),
+          recursive,
+          conflictPolicy,
+        })
+        ok += 1
+      } catch (err) {
+        toast.error(`上传提交失败（${name}）：${errorText(err)}`)
+      }
     }
+    if (ok > 0) toast.info(`已提交 ${ok} 个上传任务`)
+    setLocalFiles([])
   }
 
   const submitDownload = async (dir: string): Promise<void> => {
@@ -365,6 +370,30 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     }
   }
 
+  /** 打开主进程原生文件/目录选择器。取消是正常返回，不当异常。 */
+  const pickLocal = async (mode: 'file' | 'directory', multiple: boolean): Promise<string[]> => {
+    try {
+      const res = await invoke<
+        'app',
+        'pickLocalPath',
+        Record<string, unknown>,
+        { canceled: boolean; paths: string[] }
+      >('app', 'pickLocalPath', {
+        mode,
+        multiple,
+        ...(mode === 'file'
+          ? { title: '选择要上传的本地文件' }
+          : { title: '选择下载保存目录' }),
+        ...(localDir ? { defaultPath: localDir } : {}),
+      })
+      if (res?.canceled) return []
+      return res?.paths ?? []
+    } catch (err) {
+      toast.error(`打开文件选择器失败：${errorText(err)}`)
+      return []
+    }
+  }
+
   const openRemoteEditor = async (entry: RemoteEntry): Promise<void> => {
     if (!sessionId) return
     try {
@@ -373,10 +402,12 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         'openEditor',
         { sessionId, path: entry.path },
       )
-      toast.ok(`已下载到本地副本：${res.localPath}`)
-      await invoke<'app', 'showItemInFolder', { path: string }, unknown>('app', 'showItemInFolder', {
+      // 物化到本地临时文件的用途就是「编辑」，所以直接交给系统默认程序打开，
+      // 不再让用户去文件管理器里自己双击
+      await invoke<'app', 'openPath', { path: string }, { opened: boolean }>('app', 'openPath', {
         path: res.localPath,
-      }).catch(() => undefined)
+      })
+      toast.ok(`已用系统编辑器打开：${res.localPath}`)
     } catch (err) {
       toast.error(`打开失败：${errorText(err)}`)
     }
@@ -409,7 +440,14 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         <IconButton icon="refresh" label="刷新" loading={loading} onClick={reload} />
         <div className="t-toolbar__divider" />
         <IconButton icon="folder" label="新建文件夹" onClick={() => setMkdir(true)} />
-        <IconButton icon="upload" label="上传" onClick={() => setUploadOpen(true)} />
+        <IconButton
+          icon="upload"
+          label="上传"
+          onClick={() => {
+            setLocalFiles([])
+            setUploadOpen(true)
+          }}
+        />
         <IconButton
           icon="download"
           label="下载"
@@ -658,7 +696,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
             <Button variant="ghost" onClick={() => setUploadOpen(false)}>
               取消
             </Button>
-            <Button variant="primary" icon="upload" disabled={!localFile.trim()} onClick={() => void submitUpload()}>
+            <Button variant="primary" icon="upload" disabled={localFiles.length === 0} onClick={() => void submitUpload()}>
               开始上传
             </Button>
           </>
@@ -666,12 +704,54 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
       >
         <div className="t-grid">
           <Field
-            label="本地路径"
+            label="本地文件"
             required
-            hint="需填写本机绝对路径。原生文件选择器需要主进程提供 app.pickLocalPath 动作（已申请），当前先手填。"
+            hint="用选择按钮挑文件（支持多选）；也可直接手填绝对路径后回车追加。"
+            aside={
+              <Button
+                size="sm"
+                variant="outline"
+                icon="folder"
+                onClick={() => {
+                  void pickLocal('file', true).then((paths) => {
+                    if (paths.length > 0) setLocalFiles((prev) => [...new Set([...prev, ...paths])])
+                  })
+                }}
+              >
+                选择文件
+              </Button>
+            }
           >
-            <TextInput value={localFile} mono placeholder="/home/you/app.tar.gz" onChange={(e) => setLocalFile(e.target.value)} />
+            <TextInput
+              mono
+              placeholder="选择文件，或粘贴路径后回车"
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                const v = e.currentTarget.value.trim()
+                if (!v) return
+                setLocalFiles((prev) => [...new Set([...prev, v])])
+                e.currentTarget.value = ''
+              }}
+            />
           </Field>
+          {localFiles.length > 0 ? (
+            <div className="sftp-picked">
+              {localFiles.map((f) => (
+                <div className="sftp-picked__row" key={f}>
+                  <Icon name="notes" size={12} />
+                  <span className="mono" title={f}>
+                    {f}
+                  </span>
+                  <IconButton
+                    icon="close"
+                    label={`移除 ${f}`}
+                    size={12}
+                    onClick={() => setLocalFiles((prev) => prev.filter((x) => x !== f))}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : null}
           <Field label="远端目标目录">
             <TextInput value={cwd} mono readOnly />
           </Field>
@@ -704,7 +784,21 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           <Field
             label="保存到本地目录"
             required
-            hint="需填写本机绝对路径；会被记住，下次不用重填。原生目录选择器见上一条说明。"
+            hint="用选择按钮挑目录；也会记住上次选择。"
+            aside={
+              <Button
+                size="sm"
+                variant="outline"
+                icon="folder"
+                onClick={() => {
+                  void pickLocal('directory', false).then((paths) => {
+                    if (paths[0]) setLocalDir(paths[0])
+                  })
+                }}
+              >
+                选择目录
+              </Button>
+            }
           >
             <TextInput value={localDir} mono placeholder="/home/you/Downloads" onChange={(e) => setLocalDir(e.target.value)} />
           </Field>

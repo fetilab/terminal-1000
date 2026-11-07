@@ -27,7 +27,16 @@ import { Events } from '@t1000/shared'
 import { Icon } from '../../components/Icon'
 import { IconButton } from '../../components/Button'
 import { invoke, subscribe } from '../../lib/ipc'
-import { useStoreShallow, type TerminalTab } from '../../lib/store'
+import {
+  actions,
+  loadSessionLogs,
+  recordingOf,
+  startSessionLog,
+  stopSessionLog,
+  useStoreShallow,
+  type TerminalTab,
+} from '../../lib/store'
+import { ContextMenu, type ContextMenuItem } from '../../components/ContextMenu'
 import {
   LineTracker,
   applyCandidate,
@@ -158,6 +167,8 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const [ready, setReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [findOpen, setFindOpen] = useState(false)
+  /** 右键菜单位置；null 表示关闭 */
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [findText, setFindText] = useState('')
   const [dims, setDims] = useState<{ cols: number; rows: number } | null>(null)
 
@@ -174,6 +185,10 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
 
   // 首次可见前不创建 xterm：隐藏容器尺寸为 0，此时 open() 会得到畸形布局
   const resolvedTheme = useStoreShallow((s) => ({ resolvedTheme: s.resolvedTheme })).resolvedTheme
+  // 录制状态来自全局 store（低频），终端标签/状态栏据此显示红点
+  const recording = useStoreShallow((s) => ({
+    rec: s.activeRecordings.find((r) => r.sessionId === tab.sessionId),
+  })).rec
   const [everVisible, setEverVisible] = useState(visible)
   useEffect(() => {
     if (visible) setEverVisible(true)
@@ -497,6 +512,68 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     [],
   )
 
+  /** 终端右键菜单。录制启停放在这里，和参考产品的位置一致，用户有肌肉记忆。 */
+  const menuItems = (): ContextMenuItem[] => {
+    const term = termRef.current
+    const hasSelection = Boolean(term?.getSelection())
+    return [
+      {
+        id: 'copy',
+        label: '复制',
+        icon: 'copy',
+        hint: 'Ctrl+Shift+C',
+        disabled: !hasSelection,
+        onSelect: () => {
+          const sel = term?.getSelection()
+          if (sel) void navigator.clipboard.writeText(sel)
+        },
+      },
+      {
+        id: 'paste',
+        label: '粘贴',
+        icon: 'download',
+        hint: 'Ctrl+Shift+V',
+        onSelect: () => {
+          void navigator.clipboard.readText().then((text) => {
+            if (text) termRef.current?.paste(text)
+          })
+        },
+      },
+      { id: 'find', label: '查找', icon: 'search', hint: 'Ctrl+Shift+F', onSelect: () => setFindOpen(true) },
+      { id: 'clear', label: '清屏', icon: 'close', onSelect: () => termRef.current?.clear() },
+      {
+        id: 'record',
+        separatorBefore: true,
+        // 本地终端目前录不到内容：主进程的 pty 服务只把数据发给渲染层，
+        // 没有 publishSessionData 到 session-registry，而录制模块只订阅后者。
+        // 与其让用户以为在录、事后发现日志是空的，不如直接说清楚。
+        label:
+          tab.kind === 'local' && !recording
+            ? '开始记录日志（本地终端暂不支持）'
+            : recording
+              ? '停止记录日志'
+              : '开始记录日志',
+        icon: recording ? 'stop' : 'record',
+        danger: Boolean(recording),
+        disabled: !tab.sessionId || (tab.kind === 'local' && !recording),
+        onSelect: () => {
+          if (!tab.sessionId) return
+          if (recording) void stopSessionLog(tab.sessionId)
+          else void startSessionLog(tab.sessionId, tab.title)
+        },
+      },
+      {
+        id: 'logs',
+        label: recording ? '查看日志列表' : '查看已有日志',
+        icon: 'notes',
+        onSelect: () => {
+          void loadSessionLogs()
+          actions.setView('logs')
+        },
+      },
+    ]
+  }
+
   const onFind = (direction: 'next' | 'prev'): void => {
     const search = searchRef.current
     if (!search || !findText) return
@@ -516,12 +593,29 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   }
 
   return (
-    <div className="term-pane" onKeyDown={onKeyDown} onKeyDownCapture={onKeyDownCapture}>
+    <div
+      className="term-pane"
+      onKeyDown={onKeyDown}
+      onKeyDownCapture={onKeyDownCapture}
+      onContextMenu={(e) => {
+        // 接管右键：xterm 没有自带的上下文菜单，这里给出终端该有的操作
+        e.preventDefault()
+        setMenu({ x: e.clientX, y: e.clientY })
+      }}
+    >
       <div
         ref={hostRef}
         className="term-pane__surface"
         onClick={() => termRef.current?.focus()}
         data-testid="terminal-surface"
+      />
+
+      <ContextMenu
+        open={menu !== null}
+        x={menu?.x ?? 0}
+        y={menu?.y ?? 0}
+        items={menuItems()}
+        onClose={() => setMenu(null)}
       />
 
       {completion ? (
@@ -594,6 +688,12 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       ) : null}
 
       <div className="term-pane__status">
+        {recording ? (
+          <span className="term-pane__rec" title={`正在记录日志（${recording.logId}）`}>
+            <span className="rec-dot" />
+            录制中
+          </span>
+        ) : null}
         <span>{stateLabel[tab.state] ?? tab.state}</span>
         {tab.message ? <span title={tab.message}>· {tab.message}</span> : null}
         <div style={{ flex: 1 }} />

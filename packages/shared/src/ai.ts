@@ -26,12 +26,23 @@ export interface ToolCallRequest {
 /**
  * 一条对话消息。
  *
- * 注意：这是主进程实际存取与返回的形状 —— **没有 `id` / `createdAt` 字段**。
- * 早期渲染层镜像多声明了这两个字段，运行期恒为 undefined（典型静默漂移）。
+ * `id` / `createdAt` 由**主进程**提供（追加消息时生成；历史数据在读取路径派生），
+ * 作为 UI 的稳定标识：
+ * - React `key` 需要稳定标识（用下标在追加/重排时会错位复用 DOM）；
+ * - 工具轨迹用它做关联键（`AI_TOOL_CALL` / `AI_TOOL_RESULT` 事件带的就是它）；
+ * - 乐观消息与落库消息要能对账（同一条消息不该因重新加载而"换身份"）。
+ *
+ * 旧数据的兜底规则（主进程 `ChatService.ensureMessageIdentity`）：
+ * - 缺 `id` → 派生 `chatId + ':' + 序号` 并就地固化，保证**多次读取结果一致**；
+ * - 缺 `createdAt` → 用会话的 `createdAt` 兜底。
  */
 export interface ChatMessage {
+  /** 稳定标识：追加时用 `randomUUID()`；旧数据按 `chatId:序号` 派生 */
+  id: string
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** 消息创建时间（ISO8601）；旧数据缺失时回落到会话创建时间 */
+  createdAt: string
   /** tool 角色回填时对应哪次调用 */
   toolCallId?: string
   /** assistant 消息里模型发起的工具调用 */

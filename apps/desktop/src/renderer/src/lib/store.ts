@@ -68,7 +68,55 @@ export interface PingEntry {
  */
 export type GroupNode = GroupTreeNode
 
-export type ViewId = 'connections' | 'console' | 'notes' | 'tools' | 'ai' | 'services' | 'settings'
+export type ViewId =
+  | 'connections'
+  | 'console'
+  | 'notes'
+  | 'tools'
+  | 'ai'
+  | 'services'
+  | 'logs'
+  | 'settings'
+
+/**
+ * 会话日志类型。
+ * ⚠️ 定义在主进程 `services/sessionlog/index.ts`（`LogMeta` / `read()` 返回），
+ * shared 里没有，故镜像于此；已随其它镜像类型一并反馈上移。
+ */
+export interface SessionLogMeta {
+  logId: string
+  sessionId: string
+  title: string
+  startedAt: string
+  stoppedAt?: string
+  /** 元信息里记录的字节数（写入时累计） */
+  bytes: number
+  /** 停止原因：用户停止 / 达到上限 / 会话断开 */
+  stopReason?: string
+  /** 磁盘上 .log 的实际大小 */
+  sizeBytes: number
+  hasTiming: boolean
+}
+
+export interface ActiveRecording {
+  sessionId: string
+  logId: string
+  title: string
+  bytes: number
+  startedAt: string
+}
+
+export interface LogReadResult {
+  logId: string
+  content: string
+  offset: number
+  totalBytes: number
+  /** 本次窗口之前还有内容（向上翻） */
+  hasMoreBefore: boolean
+  /** 本次窗口之后还有内容（向下翻） */
+  hasMoreAfter: boolean
+  hasMore: boolean
+}
 
 /** 笔记面板的过滤条件：三个固定视图 + 任意文件夹 */
 export type NotesFilter = 'all' | 'favorites' | 'trash' | `folder:${string}`
@@ -134,6 +182,14 @@ export interface AppState {
   aiMode: 'chat' | 'assistant' | 'confirm' | 'thinking'
   /** 外部服务面板当前分区 */
   servicesSection: 'sync' | 'mcp'
+
+  /* ── 会话日志 ── */
+  sessionLogs: SessionLogMeta[]
+  /** 正在录制的会话（终端要据此显示红点指示） */
+  activeRecordings: ActiveRecording[]
+  logsLoading: boolean
+  logsReady: boolean
+  logsError: string | null
 
   /* ── 笔记 ── */
   notes: NoteSummary[]
@@ -210,6 +266,11 @@ const initialState: AppState = {
   transferConflictPolicy: 'ask',
   aiMode: 'chat',
   servicesSection: 'sync',
+  sessionLogs: [],
+  activeRecordings: [],
+  logsLoading: false,
+  logsReady: true,
+  logsError: null,
   notes: [],
   noteFolders: [],
   notesFilter: 'all',
@@ -1097,6 +1158,127 @@ export async function removeNoteFolder(id: string): Promise<void> {
     toast.ok(`已删除 ${res.deletedFolders.length} 个文件夹，${res.detachedNotes} 条笔记回到未分类（未删除）`)
   } catch (err) {
     toast.error(`删除文件夹失败：${errorText(err)}`)
+  }
+}
+
+/* ────────────────────────────────────────────── 会话日志 */
+
+/**
+ * 拉取日志列表与正在录制的会话。
+ *
+ * 录制中会有实时字节数，但没有对应事件，所以录制期间用一个 2s 的轮询刷新指示器
+ * （只在真的有录制时轮询，平时零开销）。
+ */
+export async function loadSessionLogs(): Promise<void> {
+  setState({ logsLoading: true })
+  try {
+    const res = await invoke<
+      'sessionlog',
+      'list',
+      Record<string, never>,
+      { logs: SessionLogMeta[]; active: ActiveRecording[] }
+    >('sessionlog', 'list', {})
+    setState({
+      sessionLogs: Array.isArray(res?.logs) ? res.logs : [],
+      activeRecordings: Array.isArray(res?.active) ? res.active : [],
+      logsLoading: false,
+      logsReady: true,
+      logsError: null,
+    })
+    syncLogPolling()
+  } catch (err) {
+    setState({ logsLoading: false, logsReady: false, logsError: errorText(err) })
+  }
+}
+
+let logPollTimer: number | undefined
+
+/** 有录制才轮询，停止后立刻收掉定时器 */
+function syncLogPolling(): void {
+  const need = state.activeRecordings.length > 0
+  if (need && logPollTimer === undefined) {
+    logPollTimer = window.setInterval(() => {
+      void refreshActiveRecordings()
+    }, 2000)
+  } else if (!need && logPollTimer !== undefined) {
+    window.clearInterval(logPollTimer)
+    logPollTimer = undefined
+  }
+}
+
+async function refreshActiveRecordings(): Promise<void> {
+  try {
+    const res = await invoke<
+      'sessionlog',
+      'list',
+      Record<string, never>,
+      { logs: SessionLogMeta[]; active: ActiveRecording[] }
+    >('sessionlog', 'list', {})
+    setState({ activeRecordings: Array.isArray(res?.active) ? res.active : [] })
+    syncLogPolling()
+  } catch {
+    /* 轮询失败静默，不打扰用户 */
+  }
+}
+
+/** 某个会话是否正在录制 */
+export function recordingOf(sessionId: string | undefined): ActiveRecording | undefined {
+  if (!sessionId) return undefined
+  return state.activeRecordings.find((r) => r.sessionId === sessionId)
+}
+
+export async function startSessionLog(sessionId: string, title?: string): Promise<void> {
+  try {
+    await invoke<'sessionlog', 'start', Record<string, unknown>, { logId: string }>(
+      'sessionlog',
+      'start',
+      title === undefined ? { sessionId } : { sessionId, title },
+    )
+    await loadSessionLogs()
+    toast.warn('已开始记录会话日志 —— 命令中的密码、token 会原样落盘，注意文件安全')
+  } catch (err) {
+    toast.error(`开始记录失败：${errorText(err)}`)
+  }
+}
+
+export async function stopSessionLog(sessionId?: string): Promise<void> {
+  try {
+    const res = await invoke<'sessionlog', 'stop', Record<string, unknown>, { stopped: string[] }>(
+      'sessionlog',
+      'stop',
+      sessionId === undefined ? {} : { sessionId },
+    )
+    await loadSessionLogs()
+    toast.ok(sessionId ? '已停止记录该会话' : `已停止 ${res?.stopped?.length ?? 0} 个会话的录制`)
+  } catch (err) {
+    toast.error(`停止记录失败：${errorText(err)}`)
+  }
+}
+
+export async function deleteSessionLog(logId: string): Promise<void> {
+  try {
+    await invoke<'sessionlog', 'delete', { logId: string }, unknown>('sessionlog', 'delete', { logId })
+    await loadSessionLogs()
+    toast.ok('日志已删除')
+  } catch (err) {
+    toast.error(`删除失败：${errorText(err)}`)
+  }
+}
+
+/** 分页读取。默认从尾部读（最新内容），向上翻页用返回的 offset。 */
+export async function readSessionLog(
+  logId: string,
+  opts: { offset?: number; limit?: number; fromEnd?: boolean } = {},
+): Promise<LogReadResult | null> {
+  try {
+    return await invoke<'sessionlog', 'read', Record<string, unknown>, LogReadResult>(
+      'sessionlog',
+      'read',
+      { logId, ...opts },
+    )
+  } catch (err) {
+    toast.error(`读取日志失败：${errorText(err)}`)
+    return null
   }
 }
 

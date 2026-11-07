@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import type { AiProviderConfig, AiSettings } from '@t1000/shared'
+import type { AiProviderConfig, AiSettings, ChatMessage } from '@t1000/shared'
 import { Events } from '@t1000/shared'
 import type { EventEmitterFn } from '../../ipc/router'
 import { ChatService, chatPolicyFrom, type ChatDeps, type SessionSummary } from './chat'
@@ -76,6 +76,8 @@ function harness(options: {
   sessions?: SessionSummary[]
   exec?: ChatDeps['exec']
   readRemoteFile?: ChatDeps['readRemoteFile']
+  /** 注入时钟：让消息 createdAt 可断言（默认真实时间） */
+  now?: () => number
 }): Harness {
   const events: Emitted[] = []
   const executed: Harness['executed'] = []
@@ -116,6 +118,7 @@ function harness(options: {
         return { stdout: 'ok', stderr: '', code: 0 }
       }),
     ...(options.readRemoteFile ? { readRemoteFile: options.readRemoteFile } : {}),
+    ...(options.now ? { now: options.now } : {}),
   }
   return { deps, events, executed, eventsOf: (e) => events.filter((x) => x.event === e) }
 }
@@ -427,5 +430,92 @@ describe('读远端文件工具', () => {
     ]) })
     await new ChatService(bad.deps).send({ text: '缺 path' })
     expect(bad.eventsOf(Events.AI_TOOL_RESULT)[0]?.payload['isError']).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 消息的稳定身份（task-15）：渲染层 key={m.id} 与 toolTraces[m.id] 依赖它
+// ---------------------------------------------------------------------------
+
+const FIXED_MS = 1_760_000_000_000
+const FIXED_ISO = new Date(FIXED_MS).toISOString()
+
+describe('消息的稳定身份（id / createdAt）', () => {
+  it('追加的消息都有唯一 id 与 createdAt', async () => {
+    const h = harness({ fetch: scriptedFetch([textChunks('好的')]), now: () => FIXED_MS })
+    const service = new ChatService(h.deps)
+    const result = await service.send({ text: '第一条' })
+
+    const chat = service.getChat(result.chatId)
+    expect(chat?.messages.map((m) => m.role)).toEqual(['user', 'assistant'])
+
+    const ids = chat?.messages.map((m) => m.id) ?? []
+    expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true)
+    expect(new Set(ids).size).toBe(ids.length) // 唯一
+    expect(chat?.messages.every((m) => m.createdAt === FIXED_ISO)).toBe(true)
+  })
+
+  it('assistant 消息的 id 就是本次 send 的 messageId（工具轨迹能挂上）', async () => {
+    const h = harness({ fetch: scriptedFetch([textChunks('答案')]) })
+    const service = new ChatService(h.deps)
+    const result = await service.send({ text: 'q' })
+
+    const assistant = service.getChat(result.chatId)?.messages.find((m) => m.role === 'assistant')
+    expect(assistant?.id).toBe(result.messageId)
+    // 事件里的 messageId 与落库消息一致，UI 才能把流式内容挂到同一条消息上
+    expect(h.eventsOf(Events.AI_DONE)[0]?.payload['messageId']).toBe(result.messageId)
+  })
+
+  it('★ 多次读取同一会话，消息 id 完全一致（刷新不换身份）', async () => {
+    const h = harness({ fetch: scriptedFetch([textChunks('hi')]) })
+    const service = new ChatService(h.deps)
+    const { chatId } = await service.send({ text: 'hello' })
+
+    const first = service.getChat(chatId)?.messages.map((m) => m.id)
+    const second = service.getChat(chatId)?.messages.map((m) => m.id)
+    const third = service.getChat(chatId)?.messages.map((m) => m.id)
+
+    expect(first).toBeDefined()
+    expect(second).toEqual(first)
+    expect(third).toEqual(first)
+  })
+
+  it('旧数据缺 id/createdAt：读取时派生 chatId:序号，且多次读取一致', () => {
+    const h = harness({ fetch: scriptedFetch([textChunks('x')]) })
+    const service = new ChatService(h.deps)
+    const chat = service.createChat('旧会话')
+
+    // 模拟从旧持久化数据反序列化出来的消息（没有 id/createdAt）
+    chat.messages.push(
+      { role: 'user', content: '旧问题' } as unknown as ChatMessage,
+      { role: 'assistant', content: '旧回答' } as unknown as ChatMessage,
+    )
+
+    const expectedIds = [`${chat.id}:0`, `${chat.id}:1`]
+    const first = service.getChat(chat.id)?.messages
+    expect(first?.map((m) => m.id)).toEqual(expectedIds)
+    expect(first?.every((m) => m.createdAt === chat.createdAt)).toBe(true)
+
+    // 核心防线：再读两次必须一模一样（否则每次刷新 key 都在变）
+    expect(service.getChat(chat.id)?.messages.map((m) => m.id)).toEqual(expectedIds)
+    expect(service.getChat(chat.id)?.messages.map((m) => m.id)).toEqual(expectedIds)
+  })
+
+  it('派生 id 在随后追加新消息后不漂移（先固化再追加）', async () => {
+    const h = harness({ fetch: scriptedFetch([textChunks('新回答')]) })
+    const service = new ChatService(h.deps)
+    const chat = service.createChat('旧会话')
+    chat.messages.push({ role: 'user', content: '旧问题' } as unknown as ChatMessage)
+
+    // 先读一次把派生 id 固化
+    expect(service.getChat(chat.id)?.messages[0]?.id).toBe(`${chat.id}:0`)
+
+    await service.send({ chatId: chat.id, text: '新问题' })
+
+    const messages = service.getChat(chat.id)?.messages ?? []
+    expect(messages[0]?.id).toBe(`${chat.id}:0`) // 旧消息身份不变
+    const ids = messages.map((m) => m.id)
+    expect(new Set(ids).size).toBe(ids.length) // 新消息仍是唯一 id
+    expect(messages.slice(1).every((m) => !m.id.startsWith(`${chat.id}:`))).toBe(true)
   })
 })
