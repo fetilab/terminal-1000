@@ -125,6 +125,33 @@ export interface LogReadResult {
 /** 笔记面板的过滤条件：三个固定视图 + 任意文件夹 */
 export type NotesFilter = 'all' | 'favorites' | 'trash' | `folder:${string}`
 
+/**
+ * 广播组成员。
+ * `writable === false` 表示后端**不会**往这个会话写（例如只读会话），
+ * 但它仍会被计入 send 的 `skipped` —— UI 必须标灰并说明，否则用户以为都收到了。
+ */
+export interface BroadcastMember {
+  sessionId: string
+  kind: 'ssh' | 'pty' | 'telnet'
+  title: string
+  writable: boolean
+}
+
+export interface BroadcastGroupView {
+  groupId: string
+  name: string
+  mode: 'independent' | 'broadcast'
+  createdAt: string
+  members: BroadcastMember[]
+}
+
+/** send 的返回：不能只显示"已发送"，要能看出 N 台里有几台没收到 */
+export interface BroadcastSendResult {
+  delivered: number
+  skipped: number
+  details: Array<{ sessionId: string; title: string; message: string }>
+}
+
 /** 一条 Telnet 选项协商摘要（诊断"连上但键盘没反应"的关键证据） */
 export interface NegotiationEntry {
   option: number
@@ -208,6 +235,13 @@ export interface AppState {
   /** 会话 id → 最近的协商记录（只对 telnet 有值；低频，放全局无压力） */
   negotiations: Record<string, NegotiationEntry[]>
 
+  /* ── 广播组 ── */
+  broadcastGroups: BroadcastGroupView[]
+  /** 最近一次广播发送的结果（每个组一条），用于"5 台里 2 台没收到"的即时反馈 */
+  broadcastLastSend: Record<string, BroadcastSendResult>
+  /** 逐条上报的发送失败 */
+  broadcastErrors: Array<{ groupId: string; sessionId: string; title: string; message: string; at: number }>
+
   /* ── 笔记 ── */
   notes: NoteSummary[]
   noteFolders: NoteFolder[]
@@ -284,6 +318,9 @@ const initialState: AppState = {
   aiMode: 'chat',
   servicesSection: 'sync',
   negotiations: {},
+  broadcastGroups: [],
+  broadcastLastSend: {},
+  broadcastErrors: [],
   sessionLogs: [],
   activeRecordings: [],
   logsLoading: false,
@@ -1300,6 +1337,140 @@ export async function readSessionLog(
   }
 }
 
+/* ────────────────────────────────────────────── 广播组 */
+
+export async function loadBroadcastGroups(): Promise<void> {
+  try {
+    const groups = await invoke<'broadcast', 'list', Record<string, never>, BroadcastGroupView[]>(
+      'broadcast',
+      'list',
+      {},
+    )
+    setState({ broadcastGroups: Array.isArray(groups) ? groups : [] })
+  } catch {
+    // broadcast 域不可用时静默：它只是增强能力，不该影响主流程
+  }
+}
+
+export function broadcastGroupOf(sessionId: string | undefined): BroadcastGroupView | undefined {
+  if (!sessionId) return undefined
+  return state.broadcastGroups.find((g) => g.members.some((m) => m.sessionId === sessionId))
+}
+
+/** 用一批已建立的会话创建广播组；返回 groupId 或 null */
+export async function createBroadcastGroup(
+  sessionIds: string[],
+  name?: string,
+): Promise<string | null> {
+  if (sessionIds.length === 0) return null
+  try {
+    const res = await invoke<
+      'broadcast',
+      'create',
+      Record<string, unknown>,
+      { group: BroadcastGroupView; skipped: string[] }
+    >('broadcast', 'create', name === undefined ? { sessionIds } : { sessionIds, name })
+    await loadBroadcastGroups()
+    if (res?.skipped?.length) {
+      toast.warn(`${res.skipped.length} 个会话未加入广播组（可能已断开）`)
+    }
+    return res?.group?.groupId ?? null
+  } catch (err) {
+    toast.error(`创建广播组失败：${errorText(err)}`)
+    return null
+  }
+}
+
+export async function dissolveBroadcastGroup(groupId: string): Promise<void> {
+  try {
+    await invoke<'broadcast', 'dissolve', { groupId: string }, unknown>('broadcast', 'dissolve', {
+      groupId,
+    })
+    await loadBroadcastGroups()
+    toast.ok('广播组已解散（各会话恢复独立）')
+  } catch (err) {
+    toast.error(`解散失败：${errorText(err)}`)
+  }
+}
+
+export async function setBroadcastMode(
+  groupId: string,
+  mode: 'independent' | 'broadcast',
+): Promise<void> {
+  try {
+    await invoke<'broadcast', 'setMode', { groupId: string; mode: string }, unknown>(
+      'broadcast',
+      'setMode',
+      { groupId, mode },
+    )
+    await loadBroadcastGroups()
+  } catch (err) {
+    toast.error(`切换模式失败：${errorText(err)}`)
+  }
+}
+
+export async function addToBroadcastGroup(groupId: string, sessionIds: string[]): Promise<void> {
+  if (sessionIds.length === 0) return
+  try {
+    await invoke<'broadcast', 'add', Record<string, unknown>, unknown>('broadcast', 'add', {
+      groupId,
+      sessionIds,
+    })
+    await loadBroadcastGroups()
+  } catch (err) {
+    toast.error(`加入广播组失败：${errorText(err)}`)
+  }
+}
+
+/**
+ * 广播输入。
+ *
+ * 注意：**独立模式下 send 会抛错**（后端不是静默丢弃），
+ * 所以调用方必须先判断模式 —— 这里也兜一层，把错误如实告诉用户，
+ * 而不是让它看起来"输入丢了"。
+ */
+/**
+ * 多选并发打开：逐个建立会话，然后把它们组成一个广播组（默认**独立模式**）。
+ *
+ * 默认独立而不是广播：用户只是想"一次开好几台"时，不应该一上来就把输入打到所有机器。
+ * 切到广播必须是一次显式操作 —— 这是安全事故与便利的分界线。
+ */
+export async function connectManyAsGroup(connections: UiConnection[]): Promise<void> {
+  const sessionIds: string[] = []
+  for (const c of connections) {
+    if (c.kind !== 'ssh' && c.kind !== 'telnet') {
+      toast.info(`${c.name}：${c.kind.toUpperCase()} 工作区尚未接入，已跳过`)
+      continue
+    }
+    await connectTo(c)
+    // connectTo 不返回 sessionId，从落库后的标签里取
+    const tab = [...state.tabs].reverse().find((t) => t.connectionId === c.id && t.sessionId)
+    if (tab?.sessionId) sessionIds.push(tab.sessionId)
+  }
+  if (sessionIds.length === 0) return
+  const groupId = await createBroadcastGroup(sessionIds, `${connections.length} 台并发`)
+  if (groupId) {
+    toast.ok(`已打开 ${sessionIds.length} 个会话并归为一组（当前独立模式，切到广播后输入会同步）`)
+  }
+}
+
+export async function sendBroadcast(groupId: string, data: string): Promise<BroadcastSendResult | null> {
+  try {
+    const res = await invoke<'broadcast', 'send', { groupId: string; data: string }, BroadcastSendResult>(
+      'broadcast',
+      'send',
+      { groupId, data },
+    )
+    setState((s) => ({
+      broadcastLastSend: { ...s.broadcastLastSend, [groupId]: res },
+    }))
+    return res
+  } catch (err) {
+    toast.error(`广播发送失败：${errorText(err)}`)
+    return null
+  }
+}
+
 /* ────────────────────────────────────────────── 终端标签 */
 
 let tabSeq = 0
@@ -1626,6 +1797,20 @@ export function wireEvents(): void {
       // 只保留最近 50 条，协商在连接期就结束了，不会无限增长
       return { negotiations: { ...s.negotiations, [p.sessionId]: [...prev, entry].slice(-50) } }
     })
+  })
+
+  subscribe(Events.BROADCAST_STATE, (p) => {
+    setState({ broadcastGroups: Array.isArray(p.groups) ? p.groups : [] })
+  })
+
+  // 逐条上报的失败：汇总到列表，由工作区展示（避免 N 台失败刷 N 个 toast）
+  subscribe(Events.BROADCAST_ERROR, (p) => {
+    setState((s) => ({
+      broadcastErrors: [
+        { groupId: p.groupId, sessionId: p.sessionId, title: p.title, message: p.message, at: Date.now() },
+        ...s.broadcastErrors,
+      ].slice(0, 50),
+    }))
   })
 
   subscribe(Events.PTY_EXIT, (p) => {

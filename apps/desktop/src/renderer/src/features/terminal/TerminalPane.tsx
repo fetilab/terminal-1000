@@ -30,7 +30,9 @@ import { IconButton } from '../../components/Button'
 import { invoke, subscribe } from '../../lib/ipc'
 import {
   actions,
+  broadcastGroupOf,
   loadSessionLogs,
+  sendBroadcast,
   recordingOf,
   startSessionLog,
   stopSessionLog,
@@ -377,7 +379,16 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
           }
 
           if (!current.sessionId) return
-          const domain = current.kind === 'ssh' ? 'ssh' : 'pty'
+
+          // 广播路由：只有「广播模式」才走 send（后端会写所有成员，包括本机），
+          // 独立模式一律单发 —— 绝不能在这里"猜"，否则用户以为输入丢了。
+          const group = broadcastGroupOf(current.sessionId)
+          if (group && group.mode === 'broadcast') {
+            void sendBroadcast(group.groupId, data)
+            return
+          }
+
+          const domain = current.kind === 'ssh' ? 'ssh' : current.kind === 'telnet' ? 'telnet' : 'pty'
           void invoke(domain, 'write', sessionPayload(current.kind, current.sessionId, { data })).catch(
             (err: unknown) => {
               // 终端写入失败是严重状况（用户会以为"键盘坏了"），不能静默：

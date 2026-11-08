@@ -67,13 +67,44 @@ const connectionInputSchema = z
     id: idSchema,
     name: z.string().min(1, '名称不能为空').max(200),
     kind: connectionKindSchema,
-    host: z.string().min(1, '主机不能为空').max(255),
-    port: z.number().int().min(1).max(65535),
+    /**
+     * 主机与端口在**公共部分必须可选**。
+     *
+     * 原因：隧道连接（`TunnelConnection`）用的是 localHost/localPort/remoteHost/remotePort，
+     * **契约里根本没有 host/port**。此前公共部分强制要求它们，
+     * 导致隧道连接一律保存失败（报 `host: Required; port: Required`）。
+     * 必需性改由下面的 superRefine 按 kind 分别判定。
+     */
+    host: z.string().min(1, '主机不能为空').max(255).optional(),
+    port: z.number().int().min(1).max(65535).optional(),
     groupId: z.string().min(1).optional(),
     username: z.string().max(255).optional(),
     storeType: storeTypeSchema.optional(),
   })
   .passthrough()
+  .superRefine((value, ctx) => {
+    const requireField = (field: string, message: string): void => {
+      const v = (value as Record<string, unknown>)[field]
+      if (v === undefined || v === null || v === '') {
+        ctx.addIssue({ code: 'custom', path: [field], message })
+      }
+    }
+
+    if (value.kind === 'tunnel') {
+      // 隧道不校验 host/port，但要保证真正决定行为的字段齐备：
+      // 没有 serverId 就不知道该挂在哪个 SSH 连接上；两端端口缺失则转发规则无从建立
+      requireField('serverId', '必须指定承载隧道的 SSH 连接')
+      requireField('localHost', '本机监听地址不能为空')
+      requireField('localPort', '本机监听端口不能为空')
+      requireField('remoteHost', '远端地址不能为空')
+      requireField('remotePort', '远端端口不能为空')
+      return
+    }
+
+    // 其余协议（ssh / rdp / telnet / vnc）都以 host:port 为目标
+    requireField('host', '主机不能为空')
+    requireField('port', '端口不能为空')
+  })
 
 const groupInputSchema = z
   .object({

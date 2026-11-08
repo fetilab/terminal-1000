@@ -134,6 +134,55 @@ describe('storeHandlers 端到端', () => {
     await expectAppError('saveConnection', { ...conn(), kind: 'gopher' }, ctx, 'BAD_REQUEST')
   })
 
+  // ── 隧道连接的校验必须与其它协议不同 ──
+  //
+  // 曾经的真 bug：公共 schema 对所有 kind 都强制要求 host/port，
+  // 而 TunnelConnection 契约里根本没有这两个字段（用 localHost/localPort/...），
+  // 导致**隧道连接一律保存失败**（报 `host: Required; port: Required`）。
+  // 这几条用例把"按 kind 分别校验"钉住，防止有人把 host/port 改回必填。
+  describe('隧道连接的字段校验与其它协议不同', () => {
+    const tunnel = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+      id: 'tun-1',
+      name: 'grafana 隧道',
+      kind: 'tunnel',
+      serverId: 'srv-1',
+      type: 'local',
+      localHost: '127.0.0.1',
+      localPort: 13000,
+      remoteHost: '10.0.0.5',
+      remotePort: 3000,
+      autoReconnect: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      ...over,
+    })
+
+    it('★ 没有 host/port 也能保存（这正是之前保存失败的原因）', async () => {
+      const saved = await call<{ id: string }>('saveConnection', tunnel(), ctx)
+      expect(saved.id).toBe('tun-1')
+    })
+
+    it('缺 serverId 被拒（不知道该挂在哪个 SSH 连接上）', async () => {
+      const { serverId: _drop, ...rest } = tunnel()
+      await expectAppError('saveConnection', rest, ctx, 'BAD_REQUEST')
+    })
+
+    it('缺远端端口被拒', async () => {
+      const { remotePort: _drop, ...rest } = tunnel()
+      await expectAppError('saveConnection', rest, ctx, 'BAD_REQUEST')
+    })
+
+    it('非隧道协议仍然必须有 host（不能因为改了 schema 就放松）', async () => {
+      const { host: _drop, ...rest } = conn()
+      await expectAppError('saveConnection', rest, ctx, 'BAD_REQUEST')
+    })
+
+    it('非隧道协议仍然必须有 port', async () => {
+      const { port: _drop, ...rest } = conn()
+      await expectAppError('saveConnection', rest, ctx, 'BAD_REQUEST')
+    })
+  })
+
   it('主密码短于 8 位抛 BAD_REQUEST', async () => {
     await expectAppError('setMasterPassword', { newPassword: 'short' }, ctx, 'BAD_REQUEST')
   })

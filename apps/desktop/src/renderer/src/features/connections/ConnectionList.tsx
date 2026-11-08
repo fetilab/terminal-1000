@@ -5,11 +5,13 @@ import { memo } from 'react'
 import { Icon, type IconName } from '../../components/Icon'
 import { Button, IconButton, StatusDot } from '../../components/Button'
 import { Badge } from '../../components/Feedback'
+import { toast } from '../../components/Toast'
 import { Checkbox } from '../../components/Form'
 import { VirtualList } from '../../components/VirtualList'
 import { formatRelativeTime } from '../../lib/format'
 import {
   actions,
+  connectManyAsGroup,
   connectTo,
   connectionAddress,
   connectionUsername,
@@ -281,9 +283,17 @@ export function ConnectionList({ items, showInfo }: ConnectionListProps): React.
             size="sm"
             icon="zap"
             onClick={() => {
-              const targets = items.filter((c) => selectedSet.has(c.id) && c.kind === 'ssh')
-              for (const t of targets) void connectTo(t)
+              // 多选并发：逐个打开后自动归为一个广播组（默认独立模式，
+              // 切到广播必须是一次显式操作）
+              const targets = items.filter(
+                (c) => selectedSet.has(c.id) && (c.kind === 'ssh' || c.kind === 'telnet'),
+              )
+              if (targets.length === 0) {
+                toast.warn('所选里没有可打开终端的 SSH / Telnet 连接')
+                return
+              }
               actions.clearSelection()
+              void connectManyAsGroup(targets)
             }}
           >
             并发连接

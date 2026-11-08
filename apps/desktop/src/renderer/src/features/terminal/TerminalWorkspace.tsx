@@ -20,7 +20,11 @@ import { Button, IconButton } from '../../components/Button'
 import { Icon } from '../../components/Icon'
 import {
   actions,
+  broadcastGroupOf,
   closeTab,
+  dissolveBroadcastGroup,
+  loadBroadcastGroups,
+  setBroadcastMode,
   openLocalTerminal,
   setActiveTab,
   setTabLayout,
@@ -64,14 +68,29 @@ const STATE_LABEL: Record<string, string> = {
 }
 
 export default function TerminalWorkspace(): React.JSX.Element {
-  const { tabs, activeTabId, recordings } = useStoreShallow((s) => ({
+  const { tabs, activeTabId, recordings, groups, lastSend, bcErrors } = useStoreShallow((s) => ({
     tabs: s.tabs,
     activeTabId: s.activeTabId,
     recordings: s.activeRecordings,
+    groups: s.broadcastGroups,
+    lastSend: s.broadcastLastSend,
+    bcErrors: s.broadcastErrors,
   }))
+
+  useEffect(() => {
+    void loadBroadcastGroups()
+  }, [])
   const [secondaryTabId, setSecondaryTabId] = useState<string | null>(null)
 
   const active = tabs.find((t) => t.tabId === activeTabId) ?? null
+  /** 当前标签所属的广播组（没有则不在任何组里） */
+  const activeGroup = broadcastGroupOf(active?.sessionId)
+  const groupOf = (sessionId: string | undefined): typeof activeGroup =>
+    sessionId ? groups.find((g) => g.members.some((m) => m.sessionId === sessionId)) : undefined
+  const sendInfo = activeGroup ? lastSend[activeGroup.groupId] : undefined
+  const groupErrors = activeGroup
+    ? bcErrors.filter((e) => e.groupId === activeGroup.groupId).slice(0, 3)
+    : []
   const layout: PaneLayout = active?.layout ?? 'single'
 
   // 分屏的第二窗格被关掉后要清空，否则网格里会留一个空槽
@@ -134,6 +153,18 @@ export default function TerminalWorkspace(): React.JSX.Element {
             {recordings.some((r) => r.sessionId === tab.sessionId) ? (
               <span className="rec-dot" title="正在记录会话日志" />
             ) : null}
+            {(() => {
+              const g = groupOf(tab.sessionId)
+              if (!g) return null
+              return (
+                <span
+                  className={`bc-chip${g.mode === 'broadcast' ? ' bc-chip--live' : ''}`}
+                  title={`属于广播组「${g.name}」（${g.mode === 'broadcast' ? '广播模式' : '独立模式'}，${g.members.length} 台）`}
+                >
+                  {g.mode === 'broadcast' ? '广播' : '组'}
+                </span>
+              )
+            })()}
             <span className="term-tab__label">{tab.title}</span>
             <button
               type="button"
@@ -217,6 +248,38 @@ export default function TerminalWorkspace(): React.JSX.Element {
               ))}
           </select>
         ) : null}
+        {activeGroup ? (
+          <>
+            <div className="t-toolbar__divider" />
+            <Badge tone={activeGroup.mode === 'broadcast' ? 'danger' : 'outline'}>
+              {activeGroup.name} · {activeGroup.members.length} 台
+            </Badge>
+            <div className="t-segmented" role="tablist" aria-label="会话模式">
+              {(
+                [
+                  ['independent', '独立'],
+                  ['broadcast', '广播'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeGroup.mode === value}
+                  className={`t-segmented__item${activeGroup.mode === value ? ' t-segmented__item--active' : ''}`}
+                  onClick={() => void setBroadcastMode(activeGroup.groupId, value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <IconButton
+              icon="close"
+              label="解散广播组"
+              onClick={() => void dissolveBroadcastGroup(activeGroup.groupId)}
+            />
+          </>
+        ) : null}
         <div className="t-toolbar__divider" />
         <IconButton
           icon="activity"
@@ -225,6 +288,52 @@ export default function TerminalWorkspace(): React.JSX.Element {
           onClick={() => toggleTabMonitor(mono.tabId)}
         />
       </div>
+
+      {activeGroup?.mode === 'broadcast' ? (
+        <div className="bc-ribbon" role="status">
+          <Icon name="alert-triangle" size={15} />
+          <div className="bc-ribbon__body">
+            <b>广播已开启：一次输入会同时发送到 {activeGroup.members.length} 台服务器。</b>
+            <div className="bc-ribbon__sub">
+              各机回显快慢不一，<b>屏幕上分不出谁先执行</b>，而远端实际耗时也不同 ——
+              涉及有副作用的命令（重启服务、改配置、删文件）时这一点很危险。
+            </div>
+            {activeGroup.members.some((m) => !m.writable) ? (
+              <div className="bc-ribbon__sub">
+                其中有 {activeGroup.members.filter((m) => !m.writable).length} 台标记为**只读**：
+                不会收到输入，但会计入"跳过"。见下方成员列表。
+              </div>
+            ) : null}
+            {sendInfo ? (
+              <div className="bc-ribbon__sub">
+                最近一次：已送达 <b>{sendInfo.delivered}</b> 台
+                {sendInfo.skipped > 0 ? (
+                  <>
+                    ，跳过 <b className="bc-ribbon__warn">{sendInfo.skipped}</b> 台
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            {groupErrors.map((e) => (
+              <div className="bc-ribbon__err" key={`${e.sessionId}-${e.at}`}>
+                {e.title}：{e.message}
+              </div>
+            ))}
+          </div>
+          <div className="bc-ribbon__members">
+            {activeGroup.members.map((m) => (
+              <span
+                key={m.sessionId}
+                className={`bc-member${m.writable ? '' : ' bc-member--ro'}`}
+                title={m.writable ? `${m.title}（可写）` : `${m.title}：后端不会写入该会话（只读）`}
+              >
+                {m.writable ? null : <Icon name="lock" size={10} />}
+                {m.title}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="term-workspace">
         {(mono.mode ?? 'terminal') === 'sftp' ? (

@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 terminal-1000 contributors
+#
+# 打包配置（electron-builder）。
+#
+# 设计取向：**体积优先**。
+# 参考实现的 app.asar 是 92MB（单文件、未分包、内嵌 15MB 补全语料与 3MB i18n 单文件），
+# 我们的目标是安装包 ≤100MB 且应用代码本身远小于它。
+
+appId: io.github.terminal1000
+productName: terminal-1000
+copyright: Copyright (C) 2026 terminal-1000 contributors
+
+directories:
+  output: release
+  buildResources: build
+
+# 只打包构建产物与清单。
+# 源码、spec/、research/ 一律不进包 —— 后者是逆向研究材料，按项目约定不进入分发物。
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/*.ts'
+  - '!**/{spec,research,docs}/**'
+  - '!**/{.eslintrc,.editorconfig,tsconfig*.json,electron.vite.config.*}'
+
+# 原生模块必须解出 asar：.node 文件无法从 asar 内加载
+asarUnpack:
+  - '**/node_modules/better-sqlite3/**'
+  - '**/node_modules/node-pty/**'
+
+# 不做 npm rebuild：原生模块已由 scripts/rebuild-native.mjs 针对 Electron ABI 重建过，
+# 让 electron-builder 再跑一遍既慢又可能因为 pnpm 的符号链接布局失败
+npmRebuild: false
+
+linux:
+  target:
+    - deb
+    - AppImage
+  category: Network
+  synopsis: 远程连接管理器（SSH/SFTP/Telnet/VNC/RDP）
+  description: >-
+    terminal-1000 是一个远程连接管理器：SSH / SFTP / Telnet / 端口转发 / VNC / RDP，
+    带终端工作区、并发广播、系统监控、命令补全、AI 助手、MCP、笔记与加密存储。
+  desktop:
+    entry:
+      Name: terminal-1000
+      Comment: 远程连接管理器
+      Categories: Network;Utility;Development;
+
+deb:
+  # 依赖由 Electron 自带，不额外引入系统库
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
