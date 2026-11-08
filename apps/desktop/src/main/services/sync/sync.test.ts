@@ -26,6 +26,11 @@ import { _resetSyncStateForTests, _setLastVersionForTests, syncHandlers } from '
 
 const serverDataDir = mkdtempSync(join(tmpdir(), 't1000-sync-client-'))
 process.env.T1000_DATA_DIR = serverDataDir
+// 本文件是**同步客户端的端到端测试**：它会起真实后端并连发大量注册/登录请求
+// （每个用例都新建账号以隔离数据），必然触发服务端默认的认证限流。
+// 这里调高阈值 —— 限流本身由 server/test/ratelimit.test.js 专门验证。
+process.env.T1000_RATE_MAX_ATTEMPTS = '100000'
+process.env.T1000_LOCK_THRESHOLD = '100000'
 
 // 动态 import：必须在设置 T1000_DATA_DIR 之后。
 // 路径层级：sync → services → main → src → desktop → apps → 仓库根（6 层）
