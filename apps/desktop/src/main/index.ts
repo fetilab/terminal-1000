@@ -2,12 +2,14 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 import { app, BrowserWindow, ipcMain } from 'electron'
+import { join } from 'node:path'
 import { IPC_CHANNEL } from '@t1000/shared'
 import { createIpcContext, dispatch, type IpcContext } from './ipc/router'
 import { registerAllHandlers } from './ipc'
 import { createLogger } from './logger'
 import { getAppPaths } from './paths'
-import { broadcast, createWindow, getMainWindow } from './window'
+import { broadcast, createWindow, getMainWindow, setWindowBoundsFile } from './window'
+import { destroyTray, hasTray, markQuitting, syncTray } from './tray'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
 import { subscribeSessionClosed } from './services/session-registry'
 
@@ -29,9 +31,26 @@ if (!gotLock) {
 
 function installIpcBridge(ctx: IpcContext): void {
   ipcMain.handle(IPC_CHANNEL, async (_event, raw: unknown) => {
-    return dispatch(raw, ctx)
+    const res = await dispatch(raw, ctx)
+
+    // 设置写操作之后同步依赖设置的宿主行为（托盘）。
+    // 在这里挂钩而不是给 settings 服务加订阅回调：一是改动最小，
+    // 二是 settings 服务当前正被队友修改，避免并行编辑同一文件。
+    if (isSettingsWrite(raw) && !(res as { error?: unknown })?.error) {
+      applyTraySettings()
+    }
+    return res
   })
   log.info(`IPC 通道就绪: ${IPC_CHANNEL}`)
+}
+
+/** 判断这次 IPC 是否写了设置 */
+function isSettingsWrite(raw: unknown): boolean {
+  const req = raw as { domain?: unknown; action?: unknown } | null
+  return (
+    req?.domain === 'settings' &&
+    (req.action === 'set' || req.action === 'reset')
+  )
 }
 
 async function bootstrap(): Promise<void> {
@@ -39,12 +58,18 @@ async function bootstrap(): Promise<void> {
   const paths = getAppPaths()
   log.info(`数据目录: ${paths.userData}`)
 
+  // 窗口位置记忆：用独立小文件，避免窗口创建期依赖设置服务与数据库
+  setWindowBoundsFile(join(paths.userData, 'window-bounds.json'))
+
   // 上下文建成一份，IPC 与需要主动广播的服务（如快捷键）共用
   const ctx = createIpcContext(broadcast)
   installIpcBridge(ctx)
   registerAllHandlers()
 
-  createWindow()
+  const mainWindow = createWindow()
+
+  // 托盘：按设置启用（原先 app.showTrayIcon / app.minimizeToTray 没有任何消费者）
+  applyTraySettings()
 
   // 会话关闭时把它从所有广播组里摘掉（否则会留下幽灵成员，
   // 广播时表现为"某台机器写不进去"）
@@ -64,6 +89,33 @@ async function bootstrap(): Promise<void> {
     // 快捷键注册失败不应阻止应用启动
     log.warn('快捷键初始化失败', err)
   }
+
+  // 关闭窗口 → 按设置决定"最小化到托盘"还是退出。
+  //
+  // 这里**先无条件拦截，再异步决策**：设置是懒加载的、读取要走异步路径，
+  // 而 `close` 的 preventDefault 必须同步决定。若改成"同步读设置"，就只能
+  // 在启动路径上把 settings 拉回来，破坏懒加载。
+  let allowClose = false
+  mainWindow.on('close', (event) => {
+    if (allowClose) return
+    event.preventDefault()
+    void (async () => {
+      try {
+        const { getSettings } = await import('./services/settings')
+        const minimize = getSettings().app?.minimizeToTray ?? false
+        if (minimize && hasTray()) {
+          mainWindow.hide()
+          log.info('窗口已最小化到托盘')
+          return
+        }
+      } catch (err) {
+        log.warn('读取托盘设置失败，按直接退出处理', err)
+      }
+      // 真的退出：放行这次 close
+      allowClose = true
+      mainWindow.close()
+    })()
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -107,7 +159,41 @@ if (gotLock) {
  * 顺序很重要：先关隧道（释放本地监听端口，否则下次启动会 EADDRINUSE），
  * 再断 SSH 会话（隧道依赖会话）。
  */
+/**
+ * 按设置同步托盘。
+ *
+ * 用动态 import 读设置：settings 域是懒加载的，这里不为了两个布尔值
+ * 把它拉进启动路径（托盘本身也只在窗口创建后才需要）。
+ */
+function applyTraySettings(): void {
+  void (async () => {
+    try {
+      const { getSettings } = await import('./services/settings')
+      const appSettings = getSettings().app
+      syncTray(appSettings?.showTrayIcon ?? false, {
+        showWindow: () => {
+          const w = getMainWindow()
+          if (!w) return
+          if (w.isMinimized()) w.restore()
+          w.show()
+          w.focus()
+        },
+        quit: () => {
+          // 必须先标记"正在退出"，否则 close 处理器会把退出拦成"最小化到托盘"
+          markQuitting()
+          app.quit()
+        },
+      })
+    } catch (err) {
+      log.warn('同步托盘设置失败', err)
+    }
+  })()
+}
+
 async function shutdownServices(): Promise<void> {
+  markQuitting()
+  destroyTray()
+
   type Cleanup = { label: string; run: () => void | Promise<void> }
 
   const tasks: Cleanup[] = [
