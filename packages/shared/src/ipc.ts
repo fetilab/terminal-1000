@@ -212,7 +212,18 @@ export const Actions = {
     'revokeClient',
   ] as const,
 
-  sessionlog: ['start', 'stop', 'list', 'read', 'delete'] as const,
+  sessionlog: [
+    'start',
+    'stop',
+    'list',
+    'read',
+    'delete',
+    /** 读回放帧（按时间区间取，不一次塞整场录制） */
+    'replay',
+    /** 录制设置（间隔/自动压缩/是否录制） */
+    'getSettings',
+    'setSettings',
+  ] as const,
 
   settings: ['getAll', 'get', 'set', 'reset'] as const,
 

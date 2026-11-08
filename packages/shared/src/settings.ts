@@ -186,6 +186,73 @@ export interface SyncSettings {
 }
 
 /** 设置总集 */
+/**
+ * 会话录制设置。
+ *
+ * 注意 `enabled` **默认 false**：录制产物会原样落盘终端输出（可能含口令、token），
+ * 不能默认替用户开启。
+ */
+export interface RecordingSettings {
+  /** 是否录制（默认 false） */
+  enabled: boolean
+  /** 快照间隔（ms）。**最小 1000**，小于则被抬到 1000 */
+  intervalMs: number
+  /** 结束录制时自动 gzip 压缩（实测可减少约 89% 体积） */
+  autoCompress: boolean
+}
+
+/** 回放的一帧：距录制开始的毫秒偏移 + 该时刻的输出增量 */
+export interface ReplayFrame {
+  tMs: number
+  data: string
+}
+
+/**
+ * 回放数据。
+ *
+ * ⚠️ 我们存的是**带时间戳的输出流**而非屏幕快照（主进程没有 VT 仿真器），
+ * 屏幕由渲染层的 xterm 重放得到 —— 因此**拖拽跳转是"从 0 快速重放到目标点"，
+ * 不是 O(1) 取快照**。UI 不要假设能瞬间跳到任意位置。
+ */
+export interface SessionLogReplay {
+  logId: string
+  frames: ReplayFrame[]
+  fromMs: number
+  toMs: number | null
+  /** 整场录制的总时长（ms），用于进度条 */
+  totalMs: number
+  frameCount: number
+  hasMore: boolean
+  intervalMs: number
+  /** 录制时的终端尺寸（播放前应先 resize，否则重排会不一致） */
+  cols?: number
+  rows?: number
+  /** 是否已 gzip（主进程透明解压，UI 不用管） */
+  compressed: boolean
+  path: string
+}
+
+/** 一次录制的摘要（列表用） */
+export interface RecordingSummary {
+  logId: string
+  sessionId: string
+  title: string
+  startedAt: string
+  stoppedAt?: string
+  stopReason?: string
+  /** 文本日志字节数 */
+  sizeBytes: number
+  hasTiming: boolean
+  hasRecording: boolean
+  /** 快照文件字节数（压缩后为 .gz 大小） */
+  recBytes?: number
+  gzBytes?: number
+  compressed?: boolean
+  frames?: number
+  /** 与上一帧相同而被跳过的 tick 数（增量录制省下来的量） */
+  skippedTicks?: number
+}
+
 export interface Settings {
   app: AppSettings
   terminal: TerminalSettings
@@ -194,6 +261,8 @@ export interface Settings {
   ai: AiSettings
   transfer: TransferSettings
   hotkeys: HotkeyBinding[]
+  /** 会话录制（快照间隔 / 自动压缩 / 是否录制） */
+  sessionRecording?: RecordingSettings
   sync: SyncSettings
 }
 
