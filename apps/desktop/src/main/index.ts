@@ -12,6 +12,8 @@ import { shutdownSsh } from './services/ssh'
 import { shutdownForwards } from './services/forward'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
 import { shutdownTelnet } from './services/telnet'
+import { shutdownVnc } from './services/vnc'
+import { shutdownRdp } from './services/rdp'
 
 const log = createLogger('bootstrap')
 
@@ -105,6 +107,18 @@ function shutdownServices(): void {
     shutdownTelnet()
   } catch (err) {
     log.warn('关闭 Telnet 会话时出错', err)
+  }
+  try {
+    // VNC 同为裸 socket
+    shutdownVnc()
+  } catch (err) {
+    log.warn('关闭 VNC 会话时出错', err)
+  }
+  try {
+    // RDP 要 SIGTERM 掉外部查看器进程，否则会留下无人管理的窗口
+    shutdownRdp()
+  } catch (err) {
+    log.warn('关闭 RDP 会话时出错', err)
   }
   try {
     shutdownForwards()

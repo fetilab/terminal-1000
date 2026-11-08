@@ -17,9 +17,12 @@
 import { createServer as createHttpServer } from 'node:http'
 import * as accounts from './accounts.js'
 import * as blobs from './blobs.js'
+import { checkAllowed, recordAttempt } from './ratelimit.js'
 import {
   HttpError,
+  clientIp,
   dataDir,
+  isPublicBind,
   listenHost,
   listenPort,
   nowIso,
@@ -133,10 +136,74 @@ function log(...args) {
   console.log(`[${nowIso()}]`, ...args)
 }
 
+/** 安全响应头（每个响应都发） */
+function applySecurityHeaders(res) {
+  res.setHeader('x-content-type-options', 'nosniff')
+  res.setHeader('x-frame-options', 'DENY')
+  res.setHeader('referrer-policy', 'no-referrer')
+  res.setHeader('cache-control', 'no-store')
+  if (process.env.T1000_TRUST_PROXY === '1') {
+    res.setHeader('strict-transport-security', 'max-age=31536000; includeSubDomains')
+  }
+}
+
+/**
+ * 认证类接口限流。
+ *
+ * 公网暴露后 `/login` 就是最低成本的暴力破解入口；大量尝试本身也是资源消耗
+ * （scrypt 会把 CPU 打满 = 拒绝服务）。按「IP」与「IP+账号」双 key 限流：
+ * 单 IP 封不死所有账号，换 IP 打同一账号也会被第二个 key 拦住。
+ */
+const AUTH_PATHS = new Set(['/api/v1/login', '/api/v1/register'])
+
+function authKeys(req, body) {
+  const ip = clientIp(req)
+  const username =
+    typeof body?.username === 'string' ? body.username.trim().toLowerCase().slice(0, 64) : ''
+  const keys = [`ip:${ip}`]
+  if (username) keys.push(`acct:${ip}:${username}`)
+  return { ip, username, keys }
+}
+
+function enforceRateLimit(req, body) {
+  for (const key of authKeys(req, body).keys) {
+    const verdict = checkAllowed(key)
+    if (!verdict.allowed) {
+      const err = new HttpError(
+        429,
+        verdict.reason === 'locked' ? 'TOO_MANY_FAILURES' : 'RATE_LIMITED',
+        verdict.reason === 'locked'
+          ? `尝试过于频繁，已临时锁定，请 ${verdict.retryAfterSec} 秒后重试`
+          : `请求过于频繁，请 ${verdict.retryAfterSec} 秒后重试`,
+      )
+      err.retryAfterSec = verdict.retryAfterSec
+      throw err
+    }
+  }
+}
+
+/** 记录认证尝试（成功清失败计数；失败累计并可能触发锁定）。审计只记 IP+用户名，**绝不记口令**。 */
+function noteAuthAttempt(req, body, success) {
+  const { ip, username, keys } = authKeys(req, body)
+  let locked
+  for (const key of keys) {
+    const r = recordAttempt(key, success)
+    if (r.locked) locked = r
+  }
+  if (success) {
+    log(`AUTH ok ip=${ip} user=${username || '-'}`)
+  } else {
+    log(`AUTH fail ip=${ip} user=${username || '-'}${locked ? ` LOCKED ${locked.retryAfterSec}s` : ''}`)
+  }
+  return locked
+}
+
 /** 请求分发 */
 async function handle(req, res) {
-  const url = new URL(req.url ?? '/', 'http://localhost')
+  const url = new URL(req.url ?? '/', 'http://[::1]')
   const path = url.pathname
+
+  applySecurityHeaders(res)
 
   for (const route of routes) {
     if (req.method !== route.method) continue
@@ -153,7 +220,20 @@ async function handle(req, res) {
     }
 
     const params = m.slice(1)
-    const result = await route.handler(req, res, body, ctx, params)
+
+    const isAuth = AUTH_PATHS.has(path)
+    if (isAuth) enforceRateLimit(req, body)
+
+    let result
+    try {
+      result = await route.handler(req, res, body, ctx, params)
+    } catch (err) {
+      // 认证失败计入失败次数（账号不存在与口令错一视同仁，避免通过锁定行为枚举账号）
+      if (isAuth) noteAuthAttempt(req, body, false)
+      throw err
+    }
+    if (isAuth) noteAuthAttempt(req, body, true)
+
     sendJson(res, 200, result)
     return
   }
@@ -180,6 +260,9 @@ export function createServer() {
         if (status >= 500) {
           log(`ERROR ${method} ${path}`, err instanceof Error ? err.message : String(err))
         }
+        if (status === 429 && err && typeof err.retryAfterSec === 'number') {
+          res.setHeader('retry-after', String(err.retryAfterSec))
+        }
         if (!res.headersSent) sendError(res, err)
         else res.end()
       },
@@ -198,8 +281,14 @@ function main() {
     log(`terminal-1000 sync backend 已启动`)
     log(`  监听: http://${host}:${port}`)
     log(`  数据: ${dir}`)
-    if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
-      log(`  ⚠️  正在监听非回环地址，请确保前面有 TLS 反代或处于可信网络`)
+    if (isPublicBind(host)) {
+      log(`  ⚠️  正在监听对外地址 ${host} —— 请确保前面有 TLS 反代`)
+      log(`      直连 HTTP 会让登录口令明文过网；建议仅把本端口暴露给反代`)
+      if (process.env.T1000_TRUST_PROXY === '1') {
+        log(`      T1000_TRUST_PROXY=1：将采信 X-Forwarded-For（仅在确实位于受信反代之后时启用）`)
+      } else {
+        log(`      未启用 T1000_TRUST_PROXY：限流按 socket 地址计（直连场景正确）`)
+      }
     }
   })
 

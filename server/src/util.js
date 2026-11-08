@@ -18,9 +18,24 @@ export function dataDir() {
   return resolve(process.env.T1000_DATA_DIR ?? join(process.cwd(), 'data'))
 }
 
-/** 监听地址：默认只监听回环，避免误暴露到公网 */
+/**
+ * 监听地址。
+ *
+ * 默认只监听回环（最安全）。要对外提供服务时显式设置：
+ * - IPv4 全接口：`0.0.0.0`
+ * - **IPv6 全接口：`::`**（Node 默认双栈，同时接受 IPv4 映射地址）
+ * - 指定单接口：如 `192.168.1.187` 或某条 v6 地址
+ *
+ * 注意：若服务器**只有 IPv6**，`0.0.0.0` 是无效的 —— 必须用 `::`，
+ * 否则服务看起来"启动了"却在 v6 上完全不可达。
+ */
 export function listenHost() {
   return process.env.T1000_HOST ?? '127.0.0.1'
+}
+
+/** 判断监听地址是否属于"对外暴露"（回环不算）。用于启动时的安全提示。 */
+export function isPublicBind(host) {
+  return !(host === '127.0.0.1' || host === 'localhost' || host === '::1')
 }
 
 export function listenPort() {
@@ -156,4 +171,42 @@ export function sendError(res, err) {
 
 export function nowIso() {
   return new Date().toISOString()
+}
+
+
+/**
+ * 统一 IP 表示，便于作为限流 key。
+ * - 剥掉方括号（`[2001:db8::1]` → `2001:db8::1`）
+ * - IPv4-mapped IPv6（`::ffff:1.2.3.4`）归一为 IPv4 —— 双栈套接字上 v4 客户端
+ *   会以此形式出现，不归一的话同一客户端会因地址形态不同而被算成两个 key
+ */
+export function normalizeIp(raw) {
+  let ip = String(raw ?? '').trim()
+  if (!ip) return 'unknown'
+  if (ip.startsWith('[') && ip.includes(']')) ip = ip.slice(1, ip.indexOf(']'))
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip)
+  if (mapped) return mapped[1]
+  return ip
+}
+
+/**
+ * 提取客户端 IP（用于限流）。
+ *
+ * **安全要点**：`X-Forwarded-For` 是**可伪造**的。只有明确知道自己位于受信反向代理之后
+ * 时才应采信（`T1000_TRUST_PROXY=1`），否则攻击者可以每个请求伪造不同 IP 来绕过限流 ——
+ * 那比不限流更糟（给人虚假的安全感）。默认**不信任**代理头，直接用 socket 地址。
+ */
+export function clientIp(req) {
+  const direct = normalizeIp(req.socket?.remoteAddress ?? '')
+  if (process.env.T1000_TRUST_PROXY !== '1') return direct
+
+  const header = req.headers['x-forwarded-for']
+  if (typeof header === 'string' && header.length > 0) {
+    // 取最左侧（最初的客户端）；后续是代理链追加的
+    const first = header.split(',')[0].trim()
+    if (first) return normalizeIp(first)
+  }
+  const real = req.headers['x-real-ip']
+  if (typeof real === 'string' && real.trim()) return normalizeIp(real.trim())
+  return direct
 }

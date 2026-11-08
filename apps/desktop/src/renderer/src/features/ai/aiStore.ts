@@ -10,64 +10,35 @@
  *
  * `apiKey` 永不出主进程：`listProviders` 只回掩码/是否存在，UI 不尝试读明文。
  *
- * ⚠️ ChatSession / ChatMessage / PublicProvider 目前只定义在主进程
- * （`services/ai/chat.ts` / `providers.ts`），shared 里没有，故镜像于此，
- * 已在反馈中提出上移（同 PingResult / GroupTreeNode / RemoteEntry）。
+ * 领域类型已上移到 `packages/shared/src/ai.ts`，本文件只保留状态与事件接线。
  */
 
 import { useCallback, useRef, useSyncExternalStore } from 'react'
-import { Events } from '@t1000/shared'
+import {
+  Events,
+  type ChatMessage,
+  type ChatSession,
+  type ChatSummary,
+  type PublicProvider,
+  type SendResult,
+} from '@t1000/shared'
 import { invoke, subscribe } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
 
-/* ── 类型镜像 ─────────────────────────────────── */
+/* ── 类型 ─────────────────────────────────────── */
 
-export interface ToolCallRecord {
-  id: string
-  name: string
-  arguments?: unknown
-}
-
-export interface ChatMessage {
-  id: string
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
-  toolCallId?: string
-  toolCalls?: ToolCallRecord[]
-  createdAt?: string
-}
-
-export interface ChatSession {
-  id: string
-  title: string
-  createdAt: string
-  updatedAt: string
-  messages: ChatMessage[]
-  usage?: { inputTokens?: number; outputTokens?: number }
-}
-
-export interface ChatSummary {
-  id: string
-  title: string
-  updatedAt: string
-  messageCount?: number
-}
-
-export interface PublicProvider {
-  id: string
-  name: string
-  kind: 'openai' | 'anthropic'
-  baseUrl: string
-  model: string
-  hasApiKey: boolean
-}
-
-export interface SendResult {
-  chatId: string
-  messageId: string
-  text: string
-  toolCalls: number
-}
+/**
+ * 领域类型统一从 `@t1000/shared` 引入（原先镜像了一份，属契约漂移风险）。
+ * `ToolCallRequest.arguments` 在主进程契约里是**必填的原始 JSON 字符串**
+ * （流式拼装完成前可能不完整），不要当对象用。
+ */
+export type {
+  ChatMessage,
+  ChatSession,
+  ChatSummary,
+  PublicProvider,
+  SendResult,
+} from '@t1000/shared'
 
 /** 工具调用在 UI 上的呈现（把 AI_TOOL_CALL / AI_TOOL_RESULT 配成对） */
 export interface ToolTrace {

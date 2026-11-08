@@ -25,6 +25,7 @@ import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
 import { Events } from '@t1000/shared'
 import { Icon } from '../../components/Icon'
+import { Badge } from '../../components/Feedback'
 import { IconButton } from '../../components/Button'
 import { invoke, subscribe } from '../../lib/ipc'
 import {
@@ -37,6 +38,8 @@ import {
   type TerminalTab,
 } from '../../lib/store'
 import { ContextMenu, type ContextMenuItem } from '../../components/ContextMenu'
+import { toast } from '../../components/Toast'
+import { errorText } from '../../lib/format'
 import {
   LineTracker,
   applyCandidate,
@@ -115,6 +118,23 @@ class BackpressureWriter {
   }
 }
 
+
+/**
+ * 终端 → 会话的载荷。
+ *
+ * ⚠️ 域的字段名**不一样**：ssh / telnet 用 `sessionId`，pty 用 `ptyId`。
+ * 之前这里统一发 `sessionId`，导致本地终端每次按键都被 zod 校验拒绝、
+ * 又被 catch 吞掉 —— 表现是"终端能显示、但打字没反应"，
+ * 而且录制出来是 0 字节（shell 根本没收到输入）。
+ */
+function sessionPayload(
+  kind: 'ssh' | 'local' | 'telnet',
+  sessionId: string,
+  extra: Record<string, unknown>,
+): Record<string, unknown> {
+  return kind === 'local' ? { ptyId: sessionId, ...extra } : { sessionId, ...extra }
+}
+
 const TERMINAL_THEME = {
   background: '#0d0f14',
   foreground: '#e4e7ee',
@@ -179,6 +199,8 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const [completion, setCompletion] = useState<CompletionResult | null>(null)
   const [selected, setSelected] = useState(0)
   const completionSeq = useRef(0)
+  /** 写入失败只提示一次 */
+  const writeWarnedRef = useRef(false)
   const debounceTimer = useRef<number | undefined>(undefined)
   /** 防抖时长来自主进程返回的 debounceMs，不硬编码 */
   const debounceMsRef = useRef(80)
@@ -189,6 +211,10 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const recording = useStoreShallow((s) => ({
     rec: s.activeRecordings.find((r) => r.sessionId === tab.sessionId),
   })).rec
+  const negotiations = useStoreShallow((s) => ({
+    list: tab.sessionId ? s.negotiations[tab.sessionId] : undefined,
+  })).list
+  const [negOpen, setNegOpen] = useState(false)
   const [everVisible, setEverVisible] = useState(visible)
   useEffect(() => {
     if (visible) setEverVisible(true)
@@ -256,7 +282,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       trackerRef.current.consume(applied.line)
       closeCompletion()
       const domain = tab.kind === 'ssh' ? 'ssh' : 'pty'
-      void invoke(domain, 'write', { sessionId: tab.sessionId, data: applied.payload }).catch(
+      void invoke(domain, 'write', sessionPayload(tab.kind, tab.sessionId, { data: applied.payload })).catch(
         () => undefined,
       )
     },
@@ -325,7 +351,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
           const current = tabRef.current
           if (!current.sessionId) return
           const domain = current.kind === 'ssh' ? 'ssh' : 'pty'
-          void invoke(domain, 'resize', { sessionId: current.sessionId, cols, rows }).catch(
+          void invoke(domain, 'resize', sessionPayload(current.kind, current.sessionId, { cols, rows })).catch(
             () => undefined,
           )
         })
@@ -352,7 +378,15 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
 
           if (!current.sessionId) return
           const domain = current.kind === 'ssh' ? 'ssh' : 'pty'
-          void invoke(domain, 'write', { sessionId: current.sessionId, data }).catch(() => undefined)
+          void invoke(domain, 'write', sessionPayload(current.kind, current.sessionId, { data })).catch(
+            (err: unknown) => {
+              // 终端写入失败是严重状况（用户会以为"键盘坏了"），不能静默：
+              // 每个会话只提示一次，避免刷屏
+              if (writeWarnedRef.current) return
+              writeWarnedRef.current = true
+              toast.error(`终端写入失败：${errorText(err)}`)
+            },
+          )
         })
         cleanups.push(() => dataSub.dispose())
 
@@ -428,14 +462,20 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     const sessionId = tab.sessionId
     if (!sessionId) return
     const writer = writerRef.current
-    if (tab.kind === 'ssh') {
-      return subscribe(Events.SSH_DATA, (p) => {
+    if (tab.kind === 'local') {
+      return subscribe(Events.PTY_DATA, (p) => {
+        if (p.ptyId !== sessionId) return
+        writer.push(p.data)
+      })
+    }
+    if (tab.kind === 'telnet') {
+      return subscribe(Events.TELNET_DATA, (p) => {
         if (p.sessionId !== sessionId) return
         writer.push(p.data)
       })
     }
-    return subscribe(Events.PTY_DATA, (p) => {
-      if (p.ptyId !== sessionId) return
+    return subscribe(Events.SSH_DATA, (p) => {
+      if (p.sessionId !== sessionId) return
       writer.push(p.data)
     })
   }, [tab.sessionId, tab.kind])
@@ -544,18 +584,12 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       {
         id: 'record',
         separatorBefore: true,
-        // 本地终端目前录不到内容：主进程的 pty 服务只把数据发给渲染层，
-        // 没有 publishSessionData 到 session-registry，而录制模块只订阅后者。
-        // 与其让用户以为在录、事后发现日志是空的，不如直接说清楚。
-        label:
-          tab.kind === 'local' && !recording
-            ? '开始记录日志（本地终端暂不支持）'
-            : recording
-              ? '停止记录日志'
-              : '开始记录日志',
+        // 本地终端也已支持：pty 服务现在会把输出 publishSessionData 到 session-registry
+        // （此前只有 SSH 在 publish，本地终端录制会静默产出 0 字节空文件）
+        label: recording ? '停止记录日志' : '开始记录日志',
         icon: recording ? 'stop' : 'record',
         danger: Boolean(recording),
-        disabled: !tab.sessionId || (tab.kind === 'local' && !recording),
+        disabled: !tab.sessionId,
         onSelect: () => {
           if (!tab.sessionId) return
           if (recording) void stopSessionLog(tab.sessionId)
@@ -684,6 +718,43 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
             <div className="t-empty__title">终端组件加载失败</div>
             <div className="t-empty__text">{error}</div>
           </div>
+        </div>
+      ) : null}
+
+      {tab.kind === 'telnet' ? (
+        <div className={`telnet-neg${negOpen ? ' telnet-neg--open' : ''}`}>
+          <button type="button" className="telnet-neg__head" onClick={() => setNegOpen((v) => !v)}>
+            <Icon name={negOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+            <Icon name="route" size={12} />
+            选项协商
+            {negotiations && negotiations.length > 0 ? (
+              <Badge tone="outline">{negotiations.length}</Badge>
+            ) : null}
+            {negotiations && negotiations.some((n) => !n.accepted) ? (
+              <Badge tone="warn">有未接受的选项</Badge>
+            ) : null}
+            <span className="telnet-neg__hint">
+              连上但键盘没反应时，先看这里——多半是协商没谈拢
+            </span>
+          </button>
+          {negOpen ? (
+            <div className="telnet-neg__body">
+              {!negotiations || negotiations.length === 0 ? (
+                <div className="telnet-neg__empty">还没有协商记录。</div>
+              ) : (
+                negotiations.map((n, i) => (
+                  <div className="telnet-neg__row" key={`${n.option}-${n.at}-${i}`}>
+                    <span className="telnet-neg__dir">{n.direction === 'local' ? '本机' : '远端'}</span>
+                    <span className="telnet-neg__name">
+                      {n.optionName} <span className="telnet-neg__num">#{n.option}</span>
+                    </span>
+                    <Badge tone={n.accepted ? 'ok' : 'warn'}>{n.accepted ? '已接受' : '拒绝/未接受'}</Badge>
+                    {n.detail ? <span className="telnet-neg__detail">{n.detail}</span> : null}
+                  </div>
+                ))
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
 

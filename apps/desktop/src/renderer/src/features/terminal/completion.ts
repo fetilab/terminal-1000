@@ -4,71 +4,23 @@
 /**
  * 命令补全的前端支撑：类型镜像 + 命令行跟踪 + 接受候选。
  *
- * ⚠️ 这些类型目前只定义在主进程 `services/completion/engine.ts`，
- * `packages/shared` 里没有，渲染层 import 不到，只能镜像一份同形状声明。
- * 已经在反馈里提过（和当初的 PingResult / GroupTreeNode 一样），
- * 移到 shared 之后本文件里的镜像声明应当直接删掉。
+ * 领域类型已上移到 `packages/shared/src/completion.ts`，本文件只留 UI 逻辑。
  */
 
-export type CompletionKind =
-  | 'command'
-  | 'subcommand'
-  | 'option'
-  | 'history'
-  | 'directory'
-  | 'argument'
-  | 'ai'
+/**
+ * 领域类型统一从 `@t1000/shared` 引入（原先镜像了一份，是契约漂移的来源）。
+ * 本文件只保留渲染层自己的逻辑：命令行跟踪、接受候选、展示文案。
+ */
+export type {
+  CommandContext,
+  CompletionCandidate,
+  CompletionKind,
+  CompletionRequest,
+  CompletionResult,
+  MatchKind,
+} from '@t1000/shared'
 
-export type MatchKind = 'exact' | 'prefix' | 'fuzzy'
-
-export interface CompletionCandidate {
-  /** 接受后插入的文本 */
-  value: string
-  /** 展示文本（缺省与 value 相同） */
-  label?: string
-  description?: string
-  kind: CompletionKind
-  icon?: string
-  score: number
-  matchKind: MatchKind
-}
-
-export interface CommandContext {
-  before: string
-  after: string
-  token: string
-  /** token 在整行中的起始偏移 */
-  tokenStart: number
-  /** 建议替换到的偏移（token 结尾） */
-  replaceEnd: number
-  tokens: string[]
-  quote: '"' | "'" | null
-  atCommandPosition: boolean
-  command: string | null
-  argIndex: number
-  expecting: 'command' | 'option' | 'argument'
-  usedOptions: string[]
-  aiPrefix: boolean
-}
-
-export interface CompletionResult {
-  candidates: CompletionCandidate[]
-  context: CommandContext
-  elapsedMs: number
-  specName: string | null
-  /** 主进程建议的输入防抖（ms）——UI 直接用它，不要自己硬编码 */
-  debounceMs: number
-  aiRequested: boolean
-  notes?: string[]
-}
-
-export interface CompletionRequest {
-  line: string
-  cursor?: number
-  history?: readonly string[]
-  limit?: number
-  cwd?: string
-}
+import type { CompletionCandidate, CompletionKind, CommandContext } from '@t1000/shared'
 
 export const KIND_LABEL: Record<CompletionKind, string> = {
   command: '命令',

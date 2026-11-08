@@ -57,6 +57,17 @@ export const Events = {
   TELNET_CLOSED: 'TELNET_CLOSED',
   TELNET_NEGOTIATION: 'TELNET_NEGOTIATION',
 
+  // VNC（RFB）
+  VNC_STATE: 'VNC_STATE',
+  VNC_FRAME: 'VNC_FRAME',
+  VNC_CLIPBOARD: 'VNC_CLIPBOARD',
+  VNC_BELL: 'VNC_BELL',
+  VNC_ERROR: 'VNC_ERROR',
+
+  // RDP（外部 FreeRDP 进程方案）
+  RDP_STATE: 'RDP_STATE',
+  RDP_EXIT: 'RDP_EXIT',
+
   // AI
   AI_DELTA: 'AI_DELTA',
   AI_TOOL_CALL: 'AI_TOOL_CALL',
@@ -151,6 +162,46 @@ export interface EventPayloads {
     direction: 'local' | 'remote'
     accepted: boolean
     detail?: string
+  }
+
+  [Events.VNC_STATE]: { sessionId: string; state: ConnectionState; message?: string }
+  /**
+   * 一帧画面更新。
+   *
+   * RFB 本质是**增量矩形**更新，所以按 rect 列表给而不是整屏 buffer：
+   * 只传真正变化的矩形，带宽与渲染成本都更小。
+   */
+  [Events.VNC_FRAME]: {
+    sessionId: string
+    /** 远端完整画面尺寸（缩放/裁剪由渲染层决定） */
+    framebufferWidth: number
+    framebufferHeight: number
+    rects: Array<{
+      x: number
+      y: number
+      width: number
+      height: number
+      /** 32bpp little-endian BGRA 的 base64（redShift=16 / greenShift=8 / blueShift=0） */
+      pixels?: string
+      /**
+       * CopyRect：源矩形左上角。
+       * 后端**不持有帧缓冲**，所以搬运必须由渲染层在自己画布上完成 ——
+       * 这也是 RFB 的设计本意。
+       */
+      copyFrom?: { x: number; y: number }
+    }>
+  }
+  [Events.VNC_CLIPBOARD]: { sessionId: string; text: string }
+  [Events.VNC_BELL]: { sessionId: string }
+  [Events.VNC_ERROR]: { sessionId: string; message: string }
+
+  [Events.RDP_STATE]: { sessionId: string; state: ConnectionState; message?: string }
+  [Events.RDP_EXIT]: {
+    sessionId: string
+    code: number | null
+    signal: string | null
+    /** 非正常退出（用于区分"用户关窗口"与"崩了"） */
+    crashed: boolean
   }
 
   /** 快捷键被触发：渲染层据此执行对应命令 */

@@ -18,6 +18,10 @@ import { join } from 'node:path'
 const testDataDir = mkdtempSync(join(tmpdir(), 't1000-sync-test-'))
 process.env.T1000_DATA_DIR = testDataDir
 process.env.T1000_MAX_BODY_BYTES = String(64 * 1024 * 1024)
+// 本文件测的是 API 语义（鉴权/隔离/版本冲突），不是限流；
+// 调高阈值避免自动化请求把自己锁死。限流本身由 ratelimit.test.js 专门验证。
+process.env.T1000_RATE_MAX_ATTEMPTS = '100000'
+process.env.T1000_LOCK_THRESHOLD = '100000'
 
 const { createServer } = await import('../src/index.js')
 

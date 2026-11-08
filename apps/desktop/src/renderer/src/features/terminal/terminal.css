@@ -291,3 +291,85 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── Telnet 选项协商面板 ────────────────────────── */
+
+.telnet-neg {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-raised);
+}
+
+.telnet-neg__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  color: var(--t1000-fg-dim);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.telnet-neg__head:hover {
+  color: var(--t1000-fg);
+}
+
+.telnet-neg__hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t1000-fg-faint);
+}
+
+.telnet-neg__body {
+  max-height: 160px;
+  overflow: auto;
+  padding: 4px 10px 8px;
+  border-top: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-sunken);
+}
+
+.telnet-neg__empty {
+  padding: 6px 0;
+  color: var(--t1000-fg-faint);
+  font-size: 11.5px;
+}
+
+.telnet-neg__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+
+.telnet-neg__dir {
+  flex: 0 0 32px;
+  color: var(--t1000-fg-faint);
+}
+
+.telnet-neg__name {
+  flex: 0 0 auto;
+  font-family: var(--t1000-font-mono);
+  color: var(--t1000-fg-muted);
+}
+
+.telnet-neg__num {
+  color: var(--t1000-fg-faint);
+}
+
+.telnet-neg__detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t1000-fg-faint);
+}

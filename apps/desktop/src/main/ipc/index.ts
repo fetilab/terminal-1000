@@ -21,6 +21,8 @@ import { mcpHandlers } from '../services/mcp'
 import { hotkeyHandlers } from '../services/hotkey'
 import { sessionlogHandlers } from '../services/sessionlog'
 import { telnetHandlers } from '../services/telnet'
+import { vncHandlers } from '../services/vnc'
+import { rdpHandlers } from '../services/rdp'
 
 const log = createLogger('ipc-setup')
 
@@ -45,6 +47,8 @@ export function registerAllHandlers(): void {
   registerDomain('hotkey', hotkeyHandlers)
   registerDomain('sessionlog', sessionlogHandlers)
   registerDomain('telnet', telnetHandlers)
+  registerDomain('vnc', vncHandlers)
+  registerDomain('rdp', rdpHandlers)
 
   log.info(`已注册 ${listRegistered().length} 个 IPC 动作`)
 }

@@ -80,8 +80,12 @@ export type ViewId =
 
 /**
  * 会话日志类型。
- * ⚠️ 定义在主进程 `services/sessionlog/index.ts`（`LogMeta` / `read()` 返回），
- * shared 里没有，故镜像于此；已随其它镜像类型一并反馈上移。
+ *
+ * ⚠️ 这几组**仍然只定义在主进程** `services/sessionlog/index.ts`
+ * （`LogMeta` / `active()` / `read()` 的返回），`packages/shared` 里没有，
+ * 所以这里是渲染层的镜像声明 —— 与 sftp / completion / ai / mcp 不同，
+ * 那四组已上移 shared 并改成 re-export，只有这一组还没。
+ * 已在反馈里单独提出；上移后应删掉本段改为 import。
  */
 export interface SessionLogMeta {
   logId: string
@@ -121,6 +125,16 @@ export interface LogReadResult {
 /** 笔记面板的过滤条件：三个固定视图 + 任意文件夹 */
 export type NotesFilter = 'all' | 'favorites' | 'trash' | `folder:${string}`
 
+/** 一条 Telnet 选项协商摘要（诊断"连上但键盘没反应"的关键证据） */
+export interface NegotiationEntry {
+  option: number
+  optionName: string
+  direction: 'local' | 'remote'
+  accepted: boolean
+  detail?: string
+  at: number
+}
+
 /** 设置面板分区。定义在这里作为唯一真源，features/settings 直接复用。 */
 export type SettingsSectionId =
   | 'app'
@@ -141,7 +155,7 @@ export const FILTER_FREQUENT = '__frequent__'
 export type SortKey = 'name' | 'address' | 'latency' | 'status' | 'updated'
 export type SortDir = 'asc' | 'desc'
 
-export type TabKind = 'ssh' | 'local'
+export type TabKind = 'ssh' | 'local' | 'telnet'
 export type PaneLayout = 'single' | 'hsplit' | 'vsplit'
 
 export interface TerminalTab {
@@ -190,6 +204,9 @@ export interface AppState {
   logsLoading: boolean
   logsReady: boolean
   logsError: string | null
+
+  /** 会话 id → 最近的协商记录（只对 telnet 有值；低频，放全局无压力） */
+  negotiations: Record<string, NegotiationEntry[]>
 
   /* ── 笔记 ── */
   notes: NoteSummary[]
@@ -266,6 +283,7 @@ const initialState: AppState = {
   transferConflictPolicy: 'ask',
   aiMode: 'chat',
   servicesSection: 'sync',
+  negotiations: {},
   sessionLogs: [],
   activeRecordings: [],
   logsLoading: false,
@@ -1317,9 +1335,14 @@ export function closeTab(tabId: string): void {
   const tab = state.tabs.find((t) => t.tabId === tabId)
   // 先请求断开，再移除标签；断开失败不影响 UI 收敛
   if (tab?.sessionId) {
-    const domain = tab.kind === 'ssh' ? 'ssh' : 'pty'
-    const action = 'disconnect'
-    void invoke(domain, action, { sessionId: tab.sessionId }).catch(() => undefined)
+    // ssh 是 disconnect({sessionId})，pty 是 close({ptyId}) —— 动作名与字段名都不同
+    if (tab.kind === 'ssh') {
+      void invoke('ssh', 'disconnect', { sessionId: tab.sessionId }).catch(() => undefined)
+    } else if (tab.kind === 'telnet') {
+      void invoke('telnet', 'disconnect', { sessionId: tab.sessionId }).catch(() => undefined)
+    } else {
+      void invoke('pty', 'close', { ptyId: tab.sessionId }).catch(() => undefined)
+    }
   }
   setState((s) => {
     const tabs = s.tabs.filter((t) => t.tabId !== tabId)
@@ -1350,8 +1373,8 @@ export function toggleTabMonitor(tabId: string): void {
  * 不在渲染层做乐观状态猜测——否则事件与本地状态会互相打架。
  */
 export async function connectTo(connection: UiConnection): Promise<void> {
-  if (connection.kind !== 'ssh') {
-    toast.info(`${connection.kind.toUpperCase()} 工作区尚未接入，当前版本先支持 SSH 与本地终端`)
+  if (connection.kind !== 'ssh' && connection.kind !== 'telnet') {
+    toast.info(`${connection.kind.toUpperCase()} 工作区尚未接入，当前版本先支持 SSH / Telnet 与本地终端`)
     return
   }
 
@@ -1367,22 +1390,31 @@ export async function connectTo(connection: UiConnection): Promise<void> {
     return
   }
 
+  const isTelnet = connection.kind === 'telnet'
   const tab = makeTab({
-    kind: 'ssh',
+    kind: isTelnet ? 'telnet' : 'ssh',
     title: connection.name,
     subtitle: connectionAddress(connection),
     connectionId: connection.id,
     state: 'connecting',
-    encoding: (connection.options?.encoding as TerminalEncoding | undefined) ?? 'utf-8',
+    // telnet 连接没有 options.encoding（是另一个类型），只有 ssh 才有
+    encoding: (isTelnet ? undefined : (connection.options?.encoding as TerminalEncoding)) ?? 'utf-8',
   })
   setState((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.tabId, view: 'console' }))
 
   try {
-    const res = await invoke<'ssh', 'connect', { connection: UiConnection }, { sessionId: string }>(
-      'ssh',
-      'connect',
-      { connection },
-    )
+    // Telnet 没有 shell 通道，但对接网络设备的用法和终端一致，所以复用同一套标签/终端
+    const res = isTelnet
+      ? await invoke<'telnet', 'connect', { connection: UiConnection }, { sessionId: string }>(
+          'telnet',
+          'connect',
+          { connection },
+        )
+      : await invoke<'ssh', 'connect', { connection: UiConnection }, { sessionId: string }>(
+          'ssh',
+          'connect',
+          { connection },
+        )
     if (res?.sessionId) {
       updateTab(tab.tabId, { sessionId: res.sessionId, state: 'ready' })
       if (state.monitorOpen) void startMonitor(res.sessionId)
@@ -1559,6 +1591,41 @@ export function wireEvents(): void {
 
   subscribe(Events.SSH_AUTH_RESULT, (p) => {
     if (!p.success) toast.warn(`认证方式 ${p.method} 未通过`)
+  })
+
+  subscribe(Events.TELNET_STATE, (p) => {
+    setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === p.sessionId ? { ...t, state: p.state, message: p.message } : t,
+      ),
+    }))
+  })
+
+  subscribe(Events.TELNET_CLOSED, (p) => {
+    setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === p.sessionId
+          ? { ...t, state: 'disconnected', message: p.reason ?? '连接已关闭' }
+          : t,
+      ),
+    }))
+  })
+
+  // 选项协商：Telnet"连上却键盘没反应"几乎都是协商没谈拢，留着给 UI 定位
+  subscribe(Events.TELNET_NEGOTIATION, (p) => {
+    setState((s) => {
+      const prev = s.negotiations[p.sessionId] ?? []
+      const entry: NegotiationEntry = {
+        option: p.option,
+        optionName: p.optionName,
+        direction: p.direction,
+        accepted: p.accepted,
+        ...(p.detail === undefined ? {} : { detail: p.detail }),
+        at: Date.now(),
+      }
+      // 只保留最近 50 条，协商在连接期就结束了，不会无限增长
+      return { negotiations: { ...s.negotiations, [p.sessionId]: [...prev, entry].slice(-50) } }
+    })
   })
 
   subscribe(Events.PTY_EXIT, (p) => {

@@ -23,44 +23,17 @@ import { toast } from '../../components/Toast'
 import { invoke } from '../../lib/ipc'
 import { errorText, formatDate } from '../../lib/format'
 
-interface McpPolicy {
-  listenHost: string
-  port: number
-  executionPolicy: 'confirm' | 'direct'
-  sudoPolicy: 'deny' | 'confirm' | 'direct'
-  workspacePolicy: 'deny' | 'confirm' | 'direct'
-  allowedServerIds: string[] | 'all'
-  allowedLocalDirs: string[]
-  defaultTimeoutMs: number
-  maxTimeoutMs: number
-}
+import type {
+  McpPolicy,
+  McpStatus,
+  McpToolView,
+  PublicMcpClient,
+} from '@t1000/shared'
 
-interface McpClient {
-  id: string
-  name: string
-  allowSudo: boolean
-  allowWorkspace: boolean
-  createdAt: string
-  revoked: boolean
-}
-
-interface McpStatus {
-  running: boolean
-  host: string
-  port: number
-  endpoint: string
-  clients: McpClient[]
-  tools: string[]
-  policy: McpPolicy
-}
-
-interface McpTool {
-  name: string
-  group: string
-  description: string
-  enabled: boolean
-  requiresSudo?: boolean
-  requiresWorkspace?: boolean
+/** 新建令牌时主进程会**只在这一次**回传明文 token，之后只有摘要 */
+interface CreatedClientResponse {
+  client: PublicMcpClient & { token?: string }
+  notice?: string
 }
 
 const POLICY_OPTIONS = {
@@ -82,7 +55,7 @@ const POLICY_OPTIONS = {
 
 export default function McpPanel(): React.JSX.Element {
   const [status, setStatus] = useState<McpStatus | null>(null)
-  const [tools, setTools] = useState<McpTool[]>([])
+  const [tools, setTools] = useState<McpToolView[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -98,6 +71,8 @@ export default function McpPanel(): React.JSX.Element {
   // 策略草稿
   const [draft, setDraft] = useState<McpPolicy | null>(null)
   const [dirsText, setDirsText] = useState('')
+  /** 启用的工具名；留空 = 全部启用（语义由主进程解释） */
+  const [enabledTools, setEnabledTools] = useState<string[]>([])
 
   const refresh = useCallback(async () => {
     try {
@@ -105,6 +80,7 @@ export default function McpPanel(): React.JSX.Element {
       setStatus(st)
       setDraft(st.policy)
       setDirsText((st.policy.allowedLocalDirs ?? []).join('\n'))
+      setEnabledTools(st.policy.enabledTools ?? [])
       setError(null)
     } catch (err) {
       setError(errorText(err))
@@ -115,7 +91,7 @@ export default function McpPanel(): React.JSX.Element {
 
   const loadTools = useCallback(async () => {
     try {
-      const res = await invoke<'mcp', 'listTools', Record<string, never>, { tools: McpTool[] }>(
+      const res = await invoke<'mcp', 'listTools', Record<string, never>, { tools: McpToolView[] }>(
         'mcp',
         'listTools',
         {},
@@ -170,6 +146,7 @@ export default function McpPanel(): React.JSX.Element {
           .split('\n')
           .map((s) => s.trim())
           .filter(Boolean),
+        enabledTools,
         defaultTimeoutMs: draft.defaultTimeoutMs,
         maxTimeoutMs: draft.maxTimeoutMs,
       })
@@ -188,12 +165,10 @@ export default function McpPanel(): React.JSX.Element {
   const createClient = async (): Promise<void> => {
     if (!newName.trim()) return
     try {
-      const res = await invoke<
+      const res = await invoke<'mcp', 'createClient', Record<string, unknown>, CreatedClientResponse>(
         'mcp',
         'createClient',
-        Record<string, unknown>,
-        { client: McpClient & { token?: string }; notice?: string }
-      >('mcp', 'createClient', {
+        {
         name: newName.trim(),
         allowSudo: newSudo,
         allowWorkspace: newWorkspace,
@@ -227,7 +202,7 @@ export default function McpPanel(): React.JSX.Element {
   }
   if (!status || !draft) return <div />
 
-  const grouped = tools.reduce<Record<string, McpTool[]>>((acc, t) => {
+  const grouped = tools.reduce<Record<string, McpToolView[]>>((acc, t) => {
     acc[t.group] = [...(acc[t.group] ?? []), t]
     return acc
   }, {})
@@ -374,6 +349,7 @@ export default function McpPanel(): React.JSX.Element {
               allowedLocalDirs: [],
               defaultTimeoutMs: 60000,
               maxTimeoutMs: 600000,
+              enabledTools: [],
             })
           }
         >

@@ -4,48 +4,22 @@
 /**
  * SFTP 前端类型。
  *
- * ⚠️ `RemoteEntry` / `RemoteTextFile` 目前只定义在主进程 `services/sftp/browser.ts`，
- * `packages/shared` 里没有（transfer 域的类型倒是已经在 shared 了）。
- * 这里镜像一份并已在反馈中提出：应像 PingResult / GroupTreeNode 一样上移到 shared，
- * 否则字段一改就是静默漂移。上移后本文件应只保留 UI 自己的类型。
+ * 领域类型已上移到 `packages/shared/src/sftp.ts`，这里只做 re-export +
+ * 渲染层自己的路径/权限辅助函数。
  */
 
-export type RemoteEntryType = 'directory' | 'file' | 'symlink' | 'other'
+/**
+ * 领域类型统一从 `@t1000/shared` 引入（原先这里镜像了一份，属于契约漂移风险）。
+ * 本文件只保留渲染层自己的路径/权限辅助函数。
+ */
+import type { RemoteEntry } from '@t1000/shared'
 
-export interface RemoteEntry {
-  name: string
-  /** 规范化后的绝对路径 */
-  path: string
-  type: RemoteEntryType
-  size: number
-  mtime: number
-  /** 数字权限位（低 12 位） */
-  mode: number
-  /** rwxr-xr-x 形式 */
-  permissions: string
-  uid: number
-  gid: number
-  /** ls -l 风格长名称 */
-  longname: string
-}
-
-export interface RemoteTextFile {
-  path: string
-  content: string
-  size: number
-  mtime: number
-  mode: number
-}
-
-export interface OpenEditorResult {
-  remotePath: string
-  /** 物化到本机临时目录的副本路径 */
-  localPath: string
-  size: number
-  mtime: number
-  mode: number
-  editId: string
-}
+export type {
+  OpenEditorResult,
+  RemoteEntry,
+  RemoteEntryType,
+  RemoteTextFile,
+} from '@t1000/shared'
 
 /** 权限字符串 → 三位八进制（chmod 用） */
 export function modeToOctal(mode: number): string {
