@@ -19,7 +19,6 @@
     "postinstall": "node scripts/rebuild-native.mjs"
   },
   "dependencies": {
-    "@t1000/shared": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-web-links": "^0.12.0",
@@ -45,6 +44,9 @@
     "react-dom": "^18.3.1",
     "typescript": "^5.9.3",
     "vite": "^5.4.11",
-    "vitest": "^2.1.8"
-  }
+    "vitest": "^2.1.8",
+    "@t1000/shared": "workspace:*"
+  },
+  "author": "terminal-1000 contributors <noreply@example.invalid>",
+  "homepage": "https://github.com/terminal-1000/terminal-1000"
 }

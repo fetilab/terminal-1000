@@ -651,27 +651,10 @@ export default function ProtocolForm({ kind, existingId }: ProtocolFormProps): R
       }) as unknown as Connection
     }
 
-    /**
-     * ⚠️ 隧道要额外带 `host` / `port`。
-     *
-     * `TunnelConnection` 契约里**没有** host/port（它用 localHost/localPort/
-     * remoteHost/remotePort），但 store 域的 `connectionInputSchema` 是**通用**的：
-     * 它对所有 kind 都要求 `host: min(1)` 与 `port: 1..65535`，
-     * 所以不带这两个字段会被 zod 拒掉（实测报 `host: Required; port: Required`）。
-     *
-     * 这里用「本地监听地址/端口」镜像一份，纯粹为了过 store 的通用校验；
-     * 读取路径（connectionAddress / connectionHost）对 tunnel 走的是 localHost/remoteHost，
-     * 不会用到这两个镜像值。**这属于主进程 schema 需要按 kind 分化的问题**，已反馈，
-     * 修好后应删掉这两行。
-     */
-    const tunnelMirror = {
-      host: String(draft.localHost ?? '127.0.0.1').trim() || '127.0.0.1',
-      port: num(draft.localPort) ?? 1,
-    }
-
+    // 隧道不再镜像 host/port：store 的 connectionInputSchema 已按 kind 分化
+    // （tunnel 校验 serverId + local*/remote*，其余协议才要求 host/port）
     return omitUndefined({
       ...base,
-      ...tunnelMirror,
       kind: 'tunnel' as const,
       serverId: String(draft.serverId ?? '').trim(),
       type: (draft.type as ForwardType) ?? 'local',

@@ -9,6 +9,13 @@
 
 appId: io.github.terminal1000
 productName: terminal-1000
+# 不加这行的话可执行文件名会取自 package.json 的 name（`@t1000/desktop` → `@t1000desktop`），
+# 带 scope 前缀既难用又难看
+executableName: terminal-1000
+# package.json 的 name 是带 scope 的 `@t1000/desktop`，会让 deb 包名变成
+# `@t1000/desktop_0.1.0_amd64.deb`（非法且难看）。这里在打包元数据里覆盖成规范名。
+extraMetadata:
+  name: terminal-1000
 copyright: Copyright (C) 2026 terminal-1000 contributors
 
 directories:
@@ -24,6 +31,21 @@ files:
   - '!**/*.ts'
   - '!**/{spec,research,docs}/**'
   - '!**/{.eslintrc,.editorconfig,tsconfig*.json,electron.vite.config.*}'
+  # workspace 包 @t1000/shared 是 TS 源码、已被完整内联进 bundle
+  # （产物里 0 处运行时引用），且它的真实路径在 apps/desktop 之外 ——
+  # electron-builder 无法打包本目录以外的文件，必须排除。
+  - '!node_modules/@t1000/**'
+
+  # 只保留**本平台**的原生二进制。
+  # better-sqlite3 随包带了 8 个平台的 prebuild（约 34MB），
+  # 而 Linux x64 包永远只会用 linux-x64.node —— 其余约 32MB 是纯浪费。
+  # ⚠️ 将来要出 arm64 / musl 包时必须按 arch 分别配置，不能沿用这几条。
+  - '!**/node_modules/better-sqlite3/prebuilds/darwin-*'
+  - '!**/node_modules/better-sqlite3/prebuilds/win32-*'
+  - '!**/node_modules/better-sqlite3/prebuilds/linuxmusl-*'
+  - '!**/node_modules/better-sqlite3/prebuilds/linux-arm64*'
+  - '!**/node_modules/node-pty/prebuilds/darwin-*/**'
+  - '!**/node_modules/node-pty/prebuilds/win32-*/**'
 
 # 原生模块必须解出 asar：.node 文件无法从 asar 内加载
 asarUnpack:
@@ -33,6 +55,15 @@ asarUnpack:
 # 不做 npm rebuild：原生模块已由 scripts/rebuild-native.mjs 针对 Electron ABI 重建过，
 # 让 electron-builder 再跑一遍既慢又可能因为 pnpm 的符号链接布局失败
 npmRebuild: false
+
+# Electron 自带 50+ 个语言包（约 7.8MB）。我们只做中英界面，其余是纯浪费。
+electronLanguages:
+  - en-US
+  - zh-CN
+
+# 安装包用最高压缩：目标是把安装包压到 ≤100MB
+compression: maximum
+
 
 linux:
   target:
