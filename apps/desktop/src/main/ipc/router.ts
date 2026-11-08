@@ -28,6 +28,18 @@ export type IpcHandler = (payload: unknown, ctx: IpcContext) => Promise<unknown>
 
 const registry = new Map<string, IpcHandler>()
 
+/**
+ * 懒加载的域：**首次被调用时才 import**。
+ *
+ * 为什么需要：主进程启动时把所有域一次性 import，会把 ssh2 / better-sqlite3 /
+ * node-pty 等重模块全部拉起来，直接体现为空闲内存偏高。
+ * 而多数会话里有些域（AI / MCP / VNC / RDP …）根本不会被用到。
+ */
+const lazyDomains = new Map<string, () => Promise<Record<string, IpcHandler>>>()
+
+/** 正在加载中的域（防止并发首次调用重复注册 —— 重复注册会抛错） */
+const pendingLoads = new Map<string, Promise<void>>()
+
 function key(domain: IpcDomain, action: string): string {
   return `${domain}.${action}`
 }
@@ -49,9 +61,50 @@ export function registerDomain(
   }
 }
 
+/**
+ * 声明一个懒加载的域。
+ * 只登记加载器，不立即 import —— 真正的加载发生在第一次调用该域时。
+ */
+export function registerLazyDomain(
+  domain: IpcDomain,
+  loader: () => Promise<Record<string, IpcHandler>>,
+): void {
+  lazyDomains.set(domain, loader)
+}
+
+/** 确保某域已加载（幂等；并发安全） */
+async function ensureDomainLoaded(domain: string): Promise<void> {
+  const loader = lazyDomains.get(domain)
+  if (!loader) return
+
+  const inflight = pendingLoads.get(domain)
+  if (inflight) {
+    await inflight
+    return
+  }
+
+  const loading = (async () => {
+    const handlers = await loader()
+    // 加载期间可能已被别处注册（例如测试直接注册），重复注册会抛错，这里先让位
+    if (!registry.has(key(domain as IpcDomain, Object.keys(handlers)[0] ?? ''))) {
+      registerDomain(domain as IpcDomain, handlers)
+    }
+    lazyDomains.delete(domain)
+    pendingLoads.delete(domain)
+  })()
+
+  pendingLoads.set(domain, loading)
+  await loading
+}
+
 /** 已注册的动作（测试与自检用） */
 export function listRegistered(): string[] {
   return [...registry.keys()].sort()
+}
+
+/** 已声明但尚未加载的域（用于启动日志与自检） */
+export function listLazyDomains(): string[] {
+  return [...lazyDomains.keys()].sort()
 }
 
 export function hasHandler(domain: IpcDomain, action: string): boolean {
@@ -70,6 +123,13 @@ export async function dispatch(
     parsed = ipcRequestSchema.parse(raw) as IpcRequest
   } catch (err) {
     return fail(AppError.badRequest('IPC 请求格式不合法', err))
+  }
+
+  // 首次调用某域时才加载它（不是启动时全量加载）
+  try {
+    await ensureDomainLoaded(parsed.domain)
+  } catch (err) {
+    return fail(AppError.internal(`加载 IPC 域失败: ${parsed.domain}`, err))
   }
 
   const handler = registry.get(key(parsed.domain, parsed.action))
@@ -114,5 +174,7 @@ export function createIpcContext(emit: EventEmitterFn): IpcContext {
 
 /** 测试用：清空注册表 */
 export function clearRegistry(): void {
+  lazyDomains.clear()
+  pendingLoads.clear()
   registry.clear()
 }

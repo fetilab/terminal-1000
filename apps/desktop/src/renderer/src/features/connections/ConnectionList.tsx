@@ -120,8 +120,8 @@ interface RowProps {
 const Row = memo(function Row({ conn, selected, showInfo, ping, sessionState }: RowProps): React.JSX.Element {
   const favorite = isFavorite(conn)
   const user = connectionUsername(conn)
-  // ssh 与 telnet 都能打开终端工作区（RDP/VNC/隧道尚未接入）
-  const canConnect = conn.kind === 'ssh' || conn.kind === 'telnet'
+  // 五种协议都能打开：SSH/Telnet → 终端，VNC → 画面，RDP → 独立窗口状态卡，隧道 → 状态视图
+  const canConnect = true
 
   return (
     <div

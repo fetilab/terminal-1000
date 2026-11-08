@@ -28,6 +28,7 @@ import { Icon } from '../../components/Icon'
 import { Badge } from '../../components/Feedback'
 import { IconButton } from '../../components/Button'
 import { invoke, subscribe } from '../../lib/ipc'
+import type { TabKind } from '../../lib/store'
 import {
   actions,
   broadcastGroupOf,
@@ -130,10 +131,11 @@ class BackpressureWriter {
  * 而且录制出来是 0 字节（shell 根本没收到输入）。
  */
 function sessionPayload(
-  kind: 'ssh' | 'local' | 'telnet',
+  kind: TabKind,
   sessionId: string,
   extra: Record<string, unknown>,
 ): Record<string, unknown> {
+  // 只有本地终端用 ptyId；其余域（ssh/telnet，以及不会走到这里的 vnc/rdp/tunnel）都用 sessionId
   return kind === 'local' ? { ptyId: sessionId, ...extra } : { sessionId, ...extra }
 }
 

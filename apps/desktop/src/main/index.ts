@@ -8,13 +8,7 @@ import { registerAllHandlers } from './ipc'
 import { createLogger } from './logger'
 import { getAppPaths } from './paths'
 import { broadcast, createWindow, getMainWindow } from './window'
-import { shutdownSsh } from './services/ssh'
-import { shutdownForwards } from './services/forward'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
-import { shutdownTelnet } from './services/telnet'
-import { shutdownVnc } from './services/vnc'
-import { shutdownRdp } from './services/rdp'
-import { onSessionClosed, shutdownBroadcast } from './services/broadcast'
 import { subscribeSessionClosed } from './services/session-registry'
 
 const log = createLogger('bootstrap')
@@ -55,11 +49,11 @@ async function bootstrap(): Promise<void> {
   // 会话关闭时把它从所有广播组里摘掉（否则会留下幽灵成员，
   // 广播时表现为"某台机器写不进去"）
   subscribeSessionClosed((sessionId) => {
-    try {
-      onSessionClosed(sessionId)
-    } catch (err) {
-      log.warn('清理广播组成员时出错', err)
-    }
+    // 动态 import：广播域是懒加载的。若它从未被使用过，这里会真正加载一次
+    // （代价很小）；若已加载则走模块缓存，瞬时完成。
+    void import('./services/broadcast')
+      .then((m) => m.onSessionClosed(sessionId))
+      .catch((err: unknown) => log.warn('清理广播组成员时出错', err))
   })
 
   // 窗口就绪后按设置注册快捷键。
@@ -104,53 +98,71 @@ if (gotLock) {
 /**
  * 退出前释放外部资源。
  *
+ * **全部走动态 import**，理由：这些服务模块是懒加载的（见 ipc/index.ts）。
+ * 若在这里静态 import，等于把它们全部拉回启动路径，懒加载就白做了。
+ *
+ * 动态 import 在这里是安全的：**模块已加载时它是瞬时的（走模块缓存）；
+ * 而模块没被加载过，说明这次会话根本没建立过对应资源，也就没有什么要清理的。**
+ *
  * 顺序很重要：先关隧道（释放本地监听端口，否则下次启动会 EADDRINUSE），
  * 再断 SSH 会话（隧道依赖会话）。
  */
-function shutdownServices(): void {
-  try {
-    // 先注销快捷键：全局热键会占用系统级按键，不注销会留给下一个进程一个"死键"
-    shutdownHotkeys()
-  } catch (err) {
-    log.warn('注销快捷键时出错', err)
-  }
-  try {
-    // Telnet 是裸 socket，不主动销毁会留下半开连接
-    shutdownTelnet()
-  } catch (err) {
-    log.warn('关闭 Telnet 会话时出错', err)
-  }
-  try {
-    // VNC 同为裸 socket
-    shutdownVnc()
-  } catch (err) {
-    log.warn('关闭 VNC 会话时出错', err)
-  }
-  try {
-    // RDP 要 SIGTERM 掉外部查看器进程，否则会留下无人管理的窗口
-    shutdownRdp()
-  } catch (err) {
-    log.warn('关闭 RDP 会话时出错', err)
-  }
-  try {
-    // 广播组只存在于内存，退出时清掉避免残留引用
-    shutdownBroadcast()
-  } catch (err) {
-    log.warn('清理广播组时出错', err)
-  }
-  try {
-    shutdownForwards()
-  } catch (err) {
-    log.warn('关闭隧道时出错', err)
-  }
-  try {
-    shutdownSsh()
-  } catch (err) {
-    log.warn('关闭 SSH 会话时出错', err)
+async function shutdownServices(): Promise<void> {
+  type Cleanup = { label: string; run: () => void | Promise<void> }
+
+  const tasks: Cleanup[] = [
+    {
+      // 全局热键会占用系统级按键，不注销会留给下一个进程一个"死键"
+      label: '注销快捷键',
+      run: () => shutdownHotkeys(),
+    },
+    {
+      // Telnet 是裸 socket，不主动销毁会留下半开连接
+      label: '关闭 Telnet 会话',
+      run: async () => (await import('./services/telnet')).shutdownTelnet(),
+    },
+    {
+      label: '关闭 VNC 会话',
+      run: async () => (await import('./services/vnc')).shutdownVnc(),
+    },
+    {
+      // RDP 要 SIGTERM 掉外部查看器进程，否则会留下无人管理的窗口
+      label: '关闭 RDP 查看器',
+      run: async () => (await import('./services/rdp')).shutdownRdp(),
+    },
+    {
+      label: '清理广播组',
+      run: async () => (await import('./services/broadcast')).shutdownBroadcast(),
+    },
+    {
+      label: '关闭隧道',
+      run: async () => (await import('./services/forward')).shutdownForwards(),
+    },
+    {
+      label: '断开 SSH 会话',
+      run: async () => (await import('./services/ssh')).shutdownSsh(),
+    },
+  ]
+
+  for (const task of tasks) {
+    try {
+      await task.run()
+    } catch (err) {
+      log.warn(`${task.label}时出错`, err)
+    }
   }
 }
 
-app.on('before-quit', shutdownServices)
+let cleanupDone = false
+app.on('before-quit', (event) => {
+  if (cleanupDone) return
+  // 清理是异步的（动态 import），必须先拦下这次退出，清完再退
+  event.preventDefault()
+  void shutdownServices().finally(() => {
+    cleanupDone = true
+    app.quit()
+  })
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

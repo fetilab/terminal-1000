@@ -14,9 +14,6 @@ importers:
 
   apps/desktop:
     dependencies:
-      '@t1000/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -48,6 +45,9 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
+      '@t1000/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0

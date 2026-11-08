@@ -182,7 +182,7 @@ export const FILTER_FREQUENT = '__frequent__'
 export type SortKey = 'name' | 'address' | 'latency' | 'status' | 'updated'
 export type SortDir = 'asc' | 'desc'
 
-export type TabKind = 'ssh' | 'local' | 'telnet'
+export type TabKind = 'ssh' | 'local' | 'telnet' | 'vnc' | 'rdp' | 'tunnel'
 export type PaneLayout = 'single' | 'hsplit' | 'vsplit'
 
 export interface TerminalTab {
@@ -221,6 +221,8 @@ export interface AppState {
   transferConflictPolicy: 'ask' | 'overwrite' | 'skip' | 'rename'
   /** AI 交互模式（来自 settings.ai.mode），面板顶部展示 */
   aiMode: 'chat' | 'assistant' | 'confirm' | 'thinking'
+  /** 终端/远端响铃设置（来自 settings.terminal.bell）；VNC 的 BELL 事件据此决定是否发声 */
+  bellMode: 'none' | 'sound' | 'visual'
   /** 外部服务面板当前分区 */
   servicesSection: 'sync' | 'mcp'
 
@@ -316,6 +318,7 @@ const initialState: AppState = {
   settingsSection: 'app',
   transferConflictPolicy: 'ask',
   aiMode: 'chat',
+  bellMode: 'none',
   servicesSection: 'sync',
   negotiations: {},
   broadcastGroups: [],
@@ -760,6 +763,7 @@ export async function loadInitialSettings(): Promise<void> {
     setState({
       transferConflictPolicy: settings.transfer.conflictPolicy,
       aiMode: settings.ai.mode,
+      bellMode: settings.terminal.bell,
     })
   } catch {
     applyTheme('dark')
@@ -1511,6 +1515,12 @@ export function closeTab(tabId: string): void {
       void invoke('ssh', 'disconnect', { sessionId: tab.sessionId }).catch(() => undefined)
     } else if (tab.kind === 'telnet') {
       void invoke('telnet', 'disconnect', { sessionId: tab.sessionId }).catch(() => undefined)
+    } else if (tab.kind === 'vnc') {
+      void invoke('vnc', 'disconnect', { sessionId: tab.sessionId }).catch(() => undefined)
+    } else if (tab.kind === 'rdp') {
+      void invoke('rdp', 'disconnect', { sessionId: tab.sessionId }).catch(() => undefined)
+    } else if (tab.kind === 'tunnel') {
+      void invoke('forward', 'close', { tunnelId: tab.sessionId }).catch(() => undefined)
     } else {
       void invoke('pty', 'close', { ptyId: tab.sessionId }).catch(() => undefined)
     }
@@ -1544,10 +1554,6 @@ export function toggleTabMonitor(tabId: string): void {
  * 不在渲染层做乐观状态猜测——否则事件与本地状态会互相打架。
  */
 export async function connectTo(connection: UiConnection): Promise<void> {
-  if (connection.kind !== 'ssh' && connection.kind !== 'telnet') {
-    toast.info(`${connection.kind.toUpperCase()} 工作区尚未接入，当前版本先支持 SSH / Telnet 与本地终端`)
-    return
-  }
 
   // 幂等：同一连接已经在连接中/已连接时，只把焦点切过去，不再发起第二次握手。
   // 重复点击、双击、批量操作叠加都不会产生多余会话——每个多余会话在远端都是一次真实登录。
@@ -1561,31 +1567,80 @@ export async function connectTo(connection: UiConnection): Promise<void> {
     return
   }
 
-  const isTelnet = connection.kind === 'telnet'
+  const kind: TabKind =
+    connection.kind === 'telnet'
+      ? 'telnet'
+      : connection.kind === 'vnc'
+        ? 'vnc'
+        : connection.kind === 'rdp'
+          ? 'rdp'
+          : connection.kind === 'tunnel'
+            ? 'tunnel'
+            : 'ssh'
+
   const tab = makeTab({
-    kind: isTelnet ? 'telnet' : 'ssh',
+    kind,
     title: connection.name,
     subtitle: connectionAddress(connection),
     connectionId: connection.id,
     state: 'connecting',
     // telnet 连接没有 options.encoding（是另一个类型），只有 ssh 才有
-    encoding: (isTelnet ? undefined : (connection.options?.encoding as TerminalEncoding)) ?? 'utf-8',
+    encoding:
+      (connection.kind === 'ssh' ? (connection.options?.encoding as TerminalEncoding) : undefined) ??
+      'utf-8',
   })
   setState((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.tabId, view: 'console' }))
 
   try {
+    if (connection.kind === 'vnc') {
+      const res = await invoke<'vnc', 'connect', { connection: UiConnection }, { sessionId: string }>(
+        'vnc',
+        'connect',
+        { connection },
+      )
+      if (res?.sessionId) {
+        updateTab(tab.tabId, { sessionId: res.sessionId, state: 'ready' })
+        touchConnection(connection.id)
+      }
+      return
+    }
+
+    if (connection.kind === 'rdp') {
+      // 失败时**必须保留原文**：缺 FreeRDP 的报错里带安装命令，要在界面上原样展示
+      const res = await invoke<'rdp', 'connect', { connection: UiConnection }, { sessionId: string }>(
+        'rdp',
+        'connect',
+        { connection },
+      )
+      if (res?.sessionId) {
+        updateTab(tab.tabId, { sessionId: res.sessionId, state: 'ready' })
+        touchConnection(connection.id)
+      }
+      return
+    }
+
+    if (connection.kind === 'tunnel') {
+      const res = await invoke<
+        'forward',
+        'open',
+        { tunnel: UiConnection },
+        { tunnelId: string }
+      >('forward', 'open', { tunnel: connection })
+      if (res?.tunnelId) {
+        // 隧道用运行期 tunnelId 当作会话标识，后续 close/状态事件都按它匹配
+        updateTab(tab.tabId, { sessionId: res.tunnelId, state: 'ready' })
+        touchConnection(connection.id)
+      }
+      return
+    }
+
     // Telnet 没有 shell 通道，但对接网络设备的用法和终端一致，所以复用同一套标签/终端
-    const res = isTelnet
-      ? await invoke<'telnet', 'connect', { connection: UiConnection }, { sessionId: string }>(
-          'telnet',
-          'connect',
-          { connection },
-        )
-      : await invoke<'ssh', 'connect', { connection: UiConnection }, { sessionId: string }>(
-          'ssh',
-          'connect',
-          { connection },
-        )
+    const res = await invoke<
+      'ssh' | 'telnet',
+      'connect',
+      { connection: UiConnection },
+      { sessionId: string }
+    >(connection.kind === 'telnet' ? 'telnet' : 'ssh', 'connect', { connection })
     if (res?.sessionId) {
       updateTab(tab.tabId, { sessionId: res.sessionId, state: 'ready' })
       if (state.monitorOpen) void startMonitor(res.sessionId)
@@ -1810,6 +1865,55 @@ export function wireEvents(): void {
         { groupId: p.groupId, sessionId: p.sessionId, title: p.title, message: p.message, at: Date.now() },
         ...s.broadcastErrors,
       ].slice(0, 50),
+    }))
+  })
+
+  subscribe(Events.VNC_STATE, (p) => {
+    setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === p.sessionId ? { ...t, state: p.state, message: p.message } : t,
+      ),
+    }))
+  })
+
+  subscribe(Events.RDP_STATE, (p) => {
+    setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === p.sessionId ? { ...t, state: p.state, message: p.message } : t,
+      ),
+    }))
+  })
+
+  // RDP 进程退出：外部窗口被关掉和崩溃是两件事，措辞在视图里区分
+  subscribe(Events.RDP_EXIT, (p) => {
+    setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === p.sessionId
+          ? {
+              ...t,
+              state: 'disconnected',
+              message: p.crashed
+                ? `远程桌面进程异常退出（code ${p.code ?? '—'}）`
+                : '远程桌面窗口已关闭',
+            }
+          : t,
+      ),
+    }))
+  })
+
+  subscribe(Events.FORWARD_STATE, (p) => {
+    setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === p.forwardId ? { ...t, state: p.state, message: p.message } : t,
+      ),
+    }))
+  })
+
+  subscribe(Events.FORWARD_ERROR, (p) => {
+    setState((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === p.forwardId ? { ...t, state: 'failed', message: p.message } : t,
+      ),
     }))
   })
 

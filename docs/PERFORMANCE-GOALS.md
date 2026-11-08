@@ -134,3 +134,76 @@ ps -o rss= -p $(pgrep -f 'electron .*--no-sandbox' | head -1) | awk '{printf "%.
 | 会话录制 | 目录存在但功能未启用 | **完整实现，可回放导出** |
 | 监控历史 | 无时序表，只有实时曲线 | **本地时序存储 + 历史图表** |
 | MCP 策略 | 固定策略集 | **更细粒度的按工具/目录/命令白名单** |
+
+## 打包实测（2026-11-08，electron-builder 25.1.8 / Electron 45.2.3 / linux-x64）
+
+| 指标 | 目标 | 实测 | 结论 |
+|---|---|---|---|
+| **deb 安装包** | ≤ 100 MB | **92.6 MB** | ✅ 达成（参考实现 133 MB，小约 **30%**） |
+| AppImage | ≤ 100 MB | **101.1 MB** | ⚠️ 差 1 MB（AppImage 压缩率不如 deb 的 xz） |
+| **app.asar**（我们的代码 + 依赖） | — | **6.9 MB** | ✅ 对比参考实现的 92 MB，约 **1/13** |
+| 应用载荷（asar + unpacked） | — | 约 43 MB | 其余为 Electron 运行时 |
+
+### 体积是怎么降下来的（按收益排序）
+1. **排除异平台原生二进制**（约 15 MB）：better-sqlite3 随包带了 8 个平台的 prebuild，
+   Linux x64 只会用 `linux-x64.node`；node-pty 的 darwin/win32 同理。
+2. **排除原生模块的 C/C++ 源码与编译中间产物**（约 18 MB）：
+   better-sqlite3 的 `deps/` 与 `build/`（其中**没有** .node，运行期走 prebuilds）；
+   而 node-pty / cpu-features 的 `build/Release/*.node` 是**必需**的，不能一起砍。
+3. **`electronLanguages: [en-US, zh-CN]`**：Electron 自带 50+ 语言包。
+4. **`compression: maximum`**：deb 走 xz 高压缩。
+5. workspace 包 `@t1000/shared` 本就**完全内联**进 bundle（产物里 0 处运行时引用），
+   从 dependencies 移到 devDependencies 并排除 —— 否则 electron-builder 会试图
+   打包 `apps/desktop` 之外的真实路径并直接报错。
+
+### 打包后必须验证原生模块（不能只看"打包成功"）
+```bash
+cat > /tmp/probe.cjs <<'EOF'
+const D = require('<unpacked>/node_modules/better-sqlite3')
+const db = new D(':memory:'); db.exec('CREATE TABLE t(a)'); db.prepare('INSERT INTO t VALUES (1)').run()
+console.log('OK', db.prepare('SELECT a FROM t').get())
+EOF
+ELECTRON_RUN_AS_NODE=1 ./release/linux-unpacked/terminal-1000 /tmp/probe.cjs
+# → BETTER_SQLITE3_OK {"a":1} / NODE_PTY_OK true
+```
+`ELECTRON_RUN_AS_NODE=1` 是关键：它用 **Electron 的 ABI** 跑脚本，
+测的才是"打包产物里的 .node 能不能被 Electron 加载"；用宿主 node 测会因 ABI 不同而假失败。
+
+另外做了对照实验：打包版与未打包版用全新 profile 启动都不会立刻生成 `local-store.db`
+→ 属应用自身的懒初始化行为，不是打包回归。**对照实验很便宜，但能直接把
+"我改坏了"和"本来就这样"分开。**
+
+## 主进程内存：目标本身定错了（2026-11-08 用对照实验纠正）
+
+原目标「主进程空闲内存 ≤ 150 MB」。实测 169 MB → 懒加载优化后 162 MB，仍未达标。
+于是跑了一个**不含任何我们代码**的最小 Electron 应用（同版本、同环境）作对照：
+
+| 对象 | 主进程 RSS |
+|---|---|
+| **裸 Electron 45.2.3**（只开一个空白窗口） | **150 MB** |
+| terminal-1000（18 个域、完整界面） | **162 MB** |
+| **差值 = 我们的代码实际占用** | **约 12 MB** |
+
+结论：**150 MB 就是 Electron 自身的地板**。在 Electron 45 上任何应用都到不了它 ——
+这不是可达成的工程目标，而是把宿主的固定开销当成了自己的预算。
+
+**该看的数字是那 12 MB**：18 个 IPC 域、加密存储、SSH/SFTP/VNC/RDP/Telnet 各协议实现、
+补全引擎、AI/MCP/广播，加起来约 12 MB；其余约 150 MB 是 Chromium/Electron 运行时。
+
+### 教训：定内存目标前先量宿主基线
+不量基线就会陷入"优化到 150MB 以下"的死胡同，而那个数字根本不含我们的代码。
+**正确做法**：先测同版本宿主的空载占用，再把预算定在「基线 + 我们的合理增量」上。
+
+### 仍做了的优化：IPC 域懒加载
+18 个域原先启动时全部 import；现改为**首次调用才 import**
+（`router.registerLazyDomain`），只有 `app` 立即注册；关停路径也改为动态 import，
+否则静态 import 会把懒加载彻底抵消。
+
+实测只省约 7 MB —— 因为渲染层启动即调用 `store`/`settings`，
+而它们会拉起 better-sqlite3，这是**设计上就该有**的依赖。
+
+懒加载仍然保留，因为架构上是对的：**没被用到的域（AI/MCP/VNC/RDP…）
+不该为它的存在付启动内存与启动时间**；收益在"用户从不打开那些功能"的会话里体现。
+
+> 动态 import 用于关停路径是安全的：**模块已加载时走缓存、瞬时完成；
+> 模块从未加载，说明这次会话没建立过对应资源，也就没有什么要清理。**

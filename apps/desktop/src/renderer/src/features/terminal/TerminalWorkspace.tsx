@@ -18,10 +18,12 @@ import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { Badge, EmptyState, Loading } from '../../components/Feedback'
 import { Button, IconButton } from '../../components/Button'
 import { Icon } from '../../components/Icon'
+import type { RdpConnection, TunnelConnection, VncConnection } from '@t1000/shared'
 import {
   actions,
   broadcastGroupOf,
   closeTab,
+  getConnection,
   dissolveBroadcastGroup,
   loadBroadcastGroups,
   setBroadcastMode,
@@ -40,6 +42,10 @@ import './terminal.css'
 const MonitorPanel = lazy(() => import('../monitor/MonitorPanel'))
 /** SFTP 浏览器同理：只有切到「文件」才加载 */
 const SftpBrowser = lazy(() => import('../sftp/SftpBrowser'))
+/** 远端画面/桌面/隧道：各自独立 chunk，没这类标签就不加载 */
+const VncViewer = lazy(() => import('../vnc/VncViewer'))
+const RdpView = lazy(() => import('../rdp/RdpView'))
+const TunnelView = lazy(() => import('../tunnel/TunnelView'))
 
 const LAYOUTS: ReadonlyArray<{ value: PaneLayout; icon: 'panel-right' | 'split-h' | 'split-v'; label: string }> = [
   { value: 'single', icon: 'panel-right', label: '单窗格' },
@@ -84,6 +90,9 @@ export default function TerminalWorkspace(): React.JSX.Element {
 
   const active = tabs.find((t) => t.tabId === activeTabId) ?? null
   /** 当前标签所属的广播组（没有则不在任何组里） */
+  /** 只有这几种才用"终端 + 文件"那套界面；vnc/rdp/tunnel 是各自独立的视图 */
+  const isTerminalLike =
+    active?.kind === 'ssh' || active?.kind === 'local' || active?.kind === 'telnet' || active === undefined
   const activeGroup = broadcastGroupOf(active?.sessionId)
   const groupOf = (sessionId: string | undefined): typeof activeGroup =>
     sessionId ? groups.find((g) => g.members.some((m) => m.sessionId === sessionId)) : undefined
@@ -191,6 +200,8 @@ export default function TerminalWorkspace(): React.JSX.Element {
         {mono.subtitle ? <span className="term-toolbar__meta">{mono.subtitle}</span> : null}
         <div style={{ flex: 1 }} />
 
+        {isTerminalLike ? (
+        <>
         <div className="t-toolbar__divider" />
         {/* 终端 / 远端文件：同一会话的两种视图，SFTP 依附于该会话 */}
         <div className="t-segmented" role="tablist" aria-label="工作区视图">
@@ -280,13 +291,17 @@ export default function TerminalWorkspace(): React.JSX.Element {
             />
           </>
         ) : null}
+        </>
+        ) : null}
         <div className="t-toolbar__divider" />
+        {isTerminalLike ? (
         <IconButton
           icon="activity"
           label={mono.monitorOpen ? '关闭监控' : '打开监控'}
           tone={mono.monitorOpen ? 'accent' : 'default'}
           onClick={() => toggleTabMonitor(mono.tabId)}
         />
+        ) : null}
       </div>
 
       {activeGroup?.mode === 'broadcast' ? (
@@ -336,29 +351,58 @@ export default function TerminalWorkspace(): React.JSX.Element {
       ) : null}
 
       <div className="term-workspace">
-        {(mono.mode ?? 'terminal') === 'sftp' ? (
+        {isTerminalLike && (mono.mode ?? 'terminal') === 'sftp' ? (
           <Suspense fallback={<Loading text="正在载入文件浏览器…" />}>
             <SftpBrowser sessionId={mono.sessionId} title={mono.title} />
           </Suspense>
         ) : (
-        <div className={`term-panes term-panes--${layout}`}>
+        <div className={`term-panes term-panes--${isTerminalLike ? layout : 'single'}`}>
           {tabs.map((tab) => {
             const visible = visibleIds.includes(tab.tabId)
+            const conn = getConnection(tab.connectionId)
             return (
               <div
                 key={tab.tabId}
                 className={`term-slot${visible ? '' : ' term-slot--hidden'}`}
                 aria-hidden={!visible}
               >
-                {/* 从未可见过的标签不创建 xterm，切过去时才初始化 */}
-                <TerminalPane tab={tab} visible={visible} />
+                <Suspense fallback={<Loading text="载入视图…" />}>
+                  {tab.kind === 'vnc' ? (
+                    <VncViewer
+                      sessionId={tab.sessionId}
+                      title={tab.title}
+                      viewOnly={(conn as VncConnection | undefined)?.viewOnly === true}
+                      scaleViewport={(conn as VncConnection | undefined)?.scaleViewport === true}
+                      clipViewport={(conn as VncConnection | undefined)?.clipViewport === true}
+                    />
+                  ) : tab.kind === 'rdp' ? (
+                    <RdpView
+                      sessionId={tab.sessionId}
+                      title={tab.title}
+                      host={(conn as RdpConnection | undefined)?.host ?? ''}
+                      width={(conn as RdpConnection | undefined)?.width ?? 1280}
+                      height={(conn as RdpConnection | undefined)?.height ?? 800}
+                      {...(tab.message === undefined ? {} : { errorMessage: tab.message })}
+                    />
+                  ) : tab.kind === 'tunnel' && conn ? (
+                    <TunnelView
+                      sessionId={tab.sessionId}
+                      connection={conn as TunnelConnection}
+                      state={tab.state}
+                      {...(tab.message === undefined ? {} : { message: tab.message })}
+                    />
+                  ) : (
+                    /* 从未可见过的标签不创建 xterm，切过去时才初始化 */
+                    <TerminalPane tab={tab} visible={visible} />
+                  )}
+                </Suspense>
               </div>
             )
           })}
         </div>
         )}
 
-        {mono.monitorOpen && (mono.mode ?? 'terminal') === 'terminal' ? (
+        {isTerminalLike && mono.monitorOpen && (mono.mode ?? 'terminal') === 'terminal' ? (
           <Suspense fallback={<div className="monitor"><Loading text="正在载入监控面板…" /></div>}>
             <MonitorPanel
               sessionId={mono.sessionId}
