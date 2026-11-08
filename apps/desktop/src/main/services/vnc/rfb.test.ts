@@ -39,6 +39,8 @@ import {
   type RfbEvent,
   type RfbPixelFormat,
   type RfbProtocolOptions,
+  PSEUDO_ENCODING_LAST_RECT,
+  MAX_RECTS_PER_UPDATE,
 } from './rfb'
 
 // ---------------------------------------------------------------------------
@@ -525,6 +527,54 @@ describe('ServerInit 与像素格式', () => {
 // ---------------------------------------------------------------------------
 
 describe('FramebufferUpdate 解码', () => {
+
+  // ── 真实服务端行为：矩形数"未知" ────────────────────────
+  //
+  // 对 tigervnc-standalone-server 1.15 实测抓到：1280x800 / Hextile 的首帧
+  // **把 numRects 写成 0xFFFF**，表示"个数未知，以 LastRect 伪编码结束"。
+  // 此前实现把它当"矩形数异常"直接报错关连接 —— 现象是**握手完全成功却一帧都收不到**，
+  // 而且错误信息指向"矩形数"而不是根因。
+  //
+  // 手工构造的测试向量永远不会包含这个约定值，只有连真实服务端才会暴露。
+  it('★ numRects=0xFFFF 视为"个数未知"，用 LastRect 结束（真实服务端实测行为）', () => {
+    const { protocol } = handshake()
+    protocol.drainOutbox()
+
+    const rects = [
+      Buffer.concat([rectHeader(0, 0, 1, 1, ENCODING_RAW), bgra(10, 20, 30)]),
+      // LastRect 伪编码：x/y/w/h 全 0，encoding = -224
+      rectHeader(0, 0, 0, 0, PSEUDO_ENCODING_LAST_RECT),
+    ]
+    const events = protocol.feed(fbUpdate(rects, 0xffff))
+
+    const frame = events.find((e) => e.type === 'frame')
+    expect(events.some((e) => e.type === 'error'), `不应报错：${JSON.stringify(events)}`).toBe(false)
+    expect(frame).toBeDefined()
+    expect(frame!.type === 'frame' && frame!.rects).toHaveLength(1)
+    // 像素仍被正确解出
+    const r = frame!.type === 'frame' ? frame!.rects[0]! : undefined
+    expect(r?.pixels?.subarray(0, 3)).toEqual(bgra(10, 20, 30).subarray(0, 3))
+  })
+
+  it('声明个数未知但还没给 LastRect → 继续等更多数据，不产出半截帧', () => {
+    const { protocol } = handshake()
+    protocol.drainOutbox()
+    // 只给了 1 个普通矩形：服务端说"个数未知"，那就还没结束
+    const events = protocol.feed(
+      fbUpdate([Buffer.concat([rectHeader(0, 0, 1, 1, ENCODING_RAW), bgra(1, 2, 3)])], 0xffff),
+    )
+    // 关键：既不能报错（这不是畸形流），也不能吐出只有 1 个矩形的不完整帧
+    expect(events.some((e) => e.type === 'error')).toBe(false)
+    expect(events.some((e) => e.type === 'frame')).toBe(false)
+
+    // 后续补上 LastRect 才成帧
+    const more = protocol.feed(rectHeader(0, 0, 0, 0, PSEUDO_ENCODING_LAST_RECT))
+    const frame = more.find((e) => e.type === 'frame')
+    expect(frame).toBeDefined()
+    expect(frame!.type === 'frame' && frame!.rects).toHaveLength(1)
+  })
+
+
   it('Raw：像素原样给出', () => {
     const { protocol } = handshake()
     protocol.drainOutbox()

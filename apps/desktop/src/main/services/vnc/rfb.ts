@@ -76,7 +76,13 @@ export const SERVER_CUT_TEXT = 3
 export const MAX_RFB_STRING_BYTES = 8 * 1024 * 1024
 
 /** 一帧最多多少矩形（防御畸形报文） */
-export const MAX_RECTS_PER_UPDATE = 4096
+/**
+ * 单帧矩形数上限（安全阀，不是协议真值）。
+ *
+ * 定得比"理论最大值"宽松：Hextile 按 16x16 分块，1280x800 满屏可达 4000 个矩形，
+ * 4096 太贴边。这里只用于防止畸形流把内存打爆。
+ */
+export const MAX_RECTS_PER_UPDATE = 65535
 
 /** 常用 X11 keysym（UI 侧一般自己算，这里给一组便于直接调用/测试） */
 export const KEYSYM = {
@@ -614,6 +620,11 @@ export class RfbProtocol {
   // -------------------------------------------------------------- 客户端消息
 
   /** 请求帧缓冲更新（incremental=true 时只要变化区域） */
+  /** 当前阶段（诊断用：握手卡住时能一眼看出停在哪一步） */
+  phaseName(): string {
+    return this.phase
+  }
+
   requestFramebufferUpdate(options: { incremental?: boolean } = {}): void {
     const screen = this.screen
     const width = screen?.width ?? 0
@@ -902,15 +913,32 @@ export class RfbProtocol {
     if (!reader.need(3)) return 'need-more'
     reader.skip(1)
     const rectCount = reader.u16()
-    if (rectCount > MAX_RECTS_PER_UPDATE) {
-      events.push({ type: 'error', message: `单帧矩形数异常: ${rectCount}` })
-      this.phase = 'closed'
-      return 'ok'
-    }
+
+    /**
+     * `0xFFFF` 不是异常值，而是**"矩形数未知，以 LastRect 伪编码结束"的约定**。
+     *
+     * 真实服务端会这么发：本机对 tigervnc-standalone-server 1.15 实测抓到过
+     * （1280x800、Hextile，首帧 `00 00 FF FF`）。手工构造的测试向量不会包含它 ——
+     * 这正是必须连真实服务端才能发现的协议行为。
+     *
+     * 此前这里把 0xFFFF 直接当"矩形数异常"报错并关连接，
+     * 结果是**握手完全成功、却一帧都收不到**，且报错信息指向"矩形数"而非根因。
+     */
+    const unknownRectCount = rectCount === 0xffff
 
     const rects: RfbRect[] = []
+    /**
+     * 未知个数时靠 LastRect 结束；`limit` 只是**安全阀**，避免畸形流把内存打爆。
+     *
+     * 注意这里**不再对"已知个数"做上限检查**：该字段是 uint16，
+     * 范围天然就是 0..65535（其中 0xFFFF 已被解释为"未知"），
+     * 任何 `> MAX` 的阈值都不可达 —— 写了也是死代码。
+     * 上限只对"未知个数"这条路径有意义。
+     */
+    const limit = unknownRectCount ? MAX_RECTS_PER_UPDATE : rectCount
+    let sawLastRect = false
 
-    for (let i = 0; i < rectCount; i += 1) {
+    for (let i = 0; i < limit; i += 1) {
       if (!reader.need(12)) {
         return RfbProtocol.incomplete()
       }
@@ -931,7 +959,8 @@ export class RfbProtocol {
         continue
       }
       if (encoding === PSEUDO_ENCODING_LAST_RECT) {
-        // 提前结束矩形列表（TightVNC 扩展）
+        // 提前结束矩形列表：这是"矩形数未知"时唯一的结束标志（TightVNC/TigerVNC 扩展）
+        sawLastRect = true
         break
       }
 
@@ -958,6 +987,17 @@ export class RfbProtocol {
       }
 
       events.push({ type: 'error', message: `不支持的编码: ${encoding}（矩形 ${x},${y} ${width}x${height}）` })
+      this.phase = 'closed'
+      return 'ok'
+    }
+
+    // 声明"个数未知"却始终没给 LastRect —— 此时游标停在半截流里，
+    // 继续解析后续消息必然错位。宁可控告失败，也不要静默产出错乱画面。
+    if (unknownRectCount && !sawLastRect) {
+      events.push({
+        type: 'error',
+        message: `服务端声明矩形数未知（0xFFFF）但未发送 LastRect，已处理 ${limit} 个矩形后放弃`,
+      })
       this.phase = 'closed'
       return 'ok'
     }
