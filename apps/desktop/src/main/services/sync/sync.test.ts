@@ -257,6 +257,109 @@ describe('sync 端到端（真实后端）', () => {
     expect(migrated.password).toBe('secret-password')
   })
 
+  // ── 同步范围（sync.scopes.*）─────────────────────────
+  //
+  // 此前 push 是**全库转储**，`sync.scopes.*` 五项全被忽略 ——
+  // 用户取消勾选"同步凭证"，凭证照样上传，属于违背用户显式设置的数据外发。
+  describe('同步范围过滤', () => {
+    /** 造一份含连接与凭证的库 */
+    function seedMachine(id: string): StoreService {
+      const store = makeUnlockedStore()
+      useClient(store)
+      store.saveConnection(sampleConnection(id + '-conn', '10.9.9.9'))
+      store.saveCredential({
+        id: id + '-cred',
+        name: '生产库账号',
+        username: 'deploy',
+        password: 'credential-secret',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      })
+      return store
+    }
+
+    it('★ 关闭「同步凭证」后，载荷里不应出现凭证（但连接仍同步）', async () => {
+      const user = uniqueUser('scope-cred-off')
+
+      const a = seedMachine('a')
+      await call('login', {
+        endpoint: endpointUrl,
+        username: user,
+        password: USER_PASSWORD,
+        passphrase: SYNC_PASSPHRASE,
+        register: true,
+      })
+      // 关掉凭证范围
+      updateSettings({ sync: { scopes: { credentials: false } } as never })
+      await call('push', {})
+
+      // 换一台机器拉回来
+      const b = makeUnlockedStore()
+      useClient(b)
+      await call('login', {
+        endpoint: endpointUrl,
+        username: user,
+        password: USER_PASSWORD,
+        passphrase: SYNC_PASSPHRASE,
+      })
+      await call('pull', { mode: 'replace' })
+
+      expect(b.listConnections()).toHaveLength(1)
+      expect(b.listCredentials()).toHaveLength(0)
+      // 反向确认：这不是"凭证本来就没同步"造成的假阳性 —— 源库里确实有一条
+      expect(a.listCredentials()).toHaveLength(1)
+    })
+
+    it('★ 开启凭证范围时才同步凭证（证明上一条不是因为凭证从不同步）', async () => {
+      const user = uniqueUser('scope-cred-on')
+      const a = seedMachine('b')
+      await call('login', {
+        endpoint: endpointUrl,
+        username: user,
+        password: USER_PASSWORD,
+        passphrase: SYNC_PASSPHRASE,
+        register: true,
+      })
+      updateSettings({ sync: { scopes: { credentials: true } } as never })
+      await call('push', {})
+
+      const c = makeUnlockedStore()
+      useClient(c)
+      await call('login', {
+        endpoint: endpointUrl,
+        username: user,
+        password: USER_PASSWORD,
+        passphrase: SYNC_PASSPHRASE,
+      })
+      await call('pull', { mode: 'replace' })
+
+      expect(c.listCredentials()).toHaveLength(1)
+      expect(a.listCredentials()).toHaveLength(1)
+    })
+
+    it('全部范围关闭时 push 明确报错，而不是上传一个空载荷', async () => {
+      await call('login', {
+        endpoint: endpointUrl,
+        username: uniqueUser('scope-none'),
+        password: USER_PASSWORD,
+        passphrase: SYNC_PASSPHRASE,
+        register: true,
+      })
+      updateSettings({
+        sync: {
+          scopes: {
+            connections: false,
+            groups: false,
+            credentials: false,
+            notes: false,
+            settings: false,
+          },
+        } as never,
+      })
+      await expect(call('push', {})).rejects.toThrow(/范围/)
+    })
+  })
+
   it('连续 push 递增版本号', async () => {
     const user = uniqueUser('versioner')
     await call('login', { endpoint: endpointUrl, username: user, password: USER_PASSWORD, passphrase: SYNC_PASSPHRASE, register: true })

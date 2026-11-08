@@ -20,7 +20,7 @@ import { z } from 'zod'
 import type { Connection, ConnectionGroup, Credential } from '@t1000/shared'
 import { AppError } from '../../errors'
 import type { IpcHandler } from '../../ipc/router'
-import { StoreDb } from './db'
+import { StoreDb, type StoreEntity } from './db'
 import { Repository } from './repository'
 import {
   Vault,
@@ -41,6 +41,12 @@ import {
   exportBackup,
   importBackup,
 } from './backup'
+import { createParseIo, defaultHome, defaultSshConfigPath } from './sshconfig-fs'
+import {
+  importOpenSshConfig,
+  type ConflictPolicy,
+  type OpenSshImportResult,
+} from './sshconfig-service'
 
 /** 主密码校验记录的 meta key */
 const META_VERIFIER = 'master_password_verifier'
@@ -170,6 +176,15 @@ const deleteGroupSchema = z.object({
   id: idSchema,
   /** false = 子分组提升一层，连接移出分组 */
   cascade: z.boolean().optional(),
+})
+
+const importOpenSshSchema = z.object({
+  /** 配置文件路径；省略则用 ~/.ssh/config */
+  path: z.string().min(1).optional(),
+  /** 只解析不写库（UI 预览用） */
+  dryRun: z.boolean().optional(),
+  /** 同名连接的处理方式 */
+  conflictPolicy: z.enum(['skip', 'rename', 'overwrite']).optional(),
 })
 
 /** 统一的 zod 解析：失败转成带 issues 的 AppError.badRequest */
@@ -358,6 +373,69 @@ export class StoreService {
     return this.repo.search(keyword, limit)
   }
 
+  // --------------------------------------------------- 导入 OpenSSH 配置
+
+  /**
+   * 解析 `~/.ssh/config` 并批量导入连接。
+   *
+   * 与 `importBackup` 是**两件事**：这里读的是用户既有的 OpenSSH 明文配置，
+   * 产出的是普通连接（敏感字段仍然走 Repository 的加密路径落库）。
+   *
+   * @param params.path 默认 `~/.ssh/config`；不存在时报明确错误
+   * @param params.dryRun true 时只解析不写库，供 UI 预览
+   */
+  importOpenSsh(params: {
+    path?: string
+    dryRun?: boolean
+    conflictPolicy?: ConflictPolicy
+    /** 测试用：注入 home 与 IO */
+    home?: string
+    io?: ReturnType<typeof createParseIo>
+  } = {}): OpenSshImportResult & { missingKeys: string[] } {
+    const home = params.home ?? defaultHome()
+    const path = params.path ?? defaultSshConfigPath(home)
+    const io = params.io ?? createParseIo(home)
+
+    // 先确认入口文件可读。这里刻意**不重复读**（大配置读两遍没必要）：
+    // 只判断可读性，真正内容由 parseSshConfig 内部读取。
+    const resolvedPath = io.paths.resolve(path, home)
+    const absolutePath = resolvedPath.startsWith('/') ? resolvedPath : path
+    if (io.readFile(resolvedPath) === null) {
+      // 目录存在但文件读不到 → 更像是权限问题；否则就是文件不存在
+      const dirReadable = io.paths.isDirectory(io.paths.dirname(resolvedPath))
+      throw AppError.notFound(
+        dirReadable
+          ? `未找到 ${absolutePath}（若文件确实存在，请检查读取权限）`
+          : `未找到 ${absolutePath}`,
+      )
+    }
+
+    const dryRun = params.dryRun ?? false
+
+    // 写库前必须已解锁：锁定态下 Repository 的写路径会把"看起来像机密的字段"
+    // 当作未修改而丢弃（那是为防止掩码覆盖密文的设计）。若在这里放行，
+    // 导入进来的私钥会被**静默丢掉**，用户以为导入成功但密钥没了。
+    // 所以宁可明确拒绝，也不能悄悄丢数据。
+    if (!dryRun && !this.isUnlocked()) {
+      throw AppError.unauthorized('导入 OpenSSH 配置需要先解锁（私钥需要加密存储）')
+    }
+
+    const result = importOpenSshConfig({
+      path,
+      dryRun,
+      ...(params.conflictPolicy === undefined ? {} : { conflictPolicy: params.conflictPolicy }),
+      io,
+      sink: this.repo,
+    })
+
+    // 汇总"哪些条目缺私钥"，方便 UI 一次性提示，不让用户自己去翻 warnings
+    const missingKeys = result.entries
+      .filter((e) => e.warnings?.some((w) => w.includes('私钥不可读')))
+      .map((e) => e.name)
+
+    return { ...result, missingKeys }
+  }
+
   // --------------------------------------------------------------- 备份
 
   /**
@@ -389,7 +467,16 @@ export class StoreService {
    * 这样备份才能跨设备还原凭据（不带口令的本地备份行为不变）。
    * 未解锁时无法完成字段迁移，直接报错而不是写出一个凭据解不开的备份。
    */
-  renderBackup(passphrase?: string): {
+  renderBackup(
+    passphrase?: string,
+    /**
+     * 只导出这些实体（不传 = 全部）。
+     *
+     * 用于让**同步**尊重设置里的 `sync.scopes.*`：用户明确关掉"同步凭证"时，
+     * 载荷里就不该出现凭证 —— 否则是违背用户显式设置的数据外发。
+     */
+    entities?: StoreEntity[],
+  ): {
     data: Buffer
     fileName: string
     counts: Record<string, number>
@@ -399,6 +486,7 @@ export class StoreService {
       const { data, fileName, envelope } = exportBackup(this.db, {
         ...(passphrase === undefined ? {} : { passphrase }),
         ...(passphrase === undefined && key ? { key } : {}),
+        ...(entities === undefined ? {} : { entities }),
         // 字段级编解码复用 repository 的递归扫描（不另造字段清单）
         fieldCodec: this.repo,
         masterKey: this.vault.currentKey(),
@@ -531,6 +619,10 @@ function ensureService(ctx: { paths: { dbFile: string } }): StoreService {
 export const STORE_LOCKED_MASK = '__LOCKED__'
 export { CIPHER_VERSION, isCiphertext, isLockedMask, decryptWithKey }
 
+// 备份/同步需要按实体过滤载荷，因此把实体联合类型作为 store 域的公开类型导出
+// （避免其它服务从 ./db 这种内部模块直接引，造成跨服务耦合）
+export type { StoreEntity } from './db'
+
 export const storeHandlers: Record<string, IpcHandler> = {
   // ------------------------------------------------------------- 连接
   listConnections: (_payload, ctx) => ensureService(ctx).listConnections(),
@@ -625,5 +717,15 @@ export const storeHandlers: Record<string, IpcHandler> = {
   search: (payload, ctx) => {
     const { keyword, limit } = parseInput(searchSchema, payload)
     return ensureService(ctx).search(keyword, limit)
+  },
+
+  // --------------------------------------------- 导入 OpenSSH 配置（~/.ssh/config）
+  importOpenSsh: (payload, ctx) => {
+    const opts = parseInput(importOpenSshSchema, payload ?? {})
+    return ensureService(ctx).importOpenSsh({
+      ...(opts.path === undefined ? {} : { path: opts.path }),
+      ...(opts.dryRun === undefined ? {} : { dryRun: opts.dryRun }),
+      ...(opts.conflictPolicy === undefined ? {} : { conflictPolicy: opts.conflictPolicy }),
+    })
   },
 }

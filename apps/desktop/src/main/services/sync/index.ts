@@ -20,7 +20,7 @@ import { Events, type SyncSettings } from '@t1000/shared'
 import { AppError, parseInput } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { createLogger } from '../../logger'
-import { getStoreService } from '../store'
+import { getStoreService, type StoreEntity } from '../store'
 import { getSettings, updateSettings } from '../settings'
 
 const log = createLogger('sync')
@@ -221,7 +221,26 @@ async function pushSnapshot(ctx: IpcContext, options: { force?: boolean } = {}):
 
   // 用**同步口令**加密整份快照（不是本机主密钥 —— 那样换设备就解不开了）。
   // 备份文件自带 salt，因此同口令在任何设备都能解开；后端始终拿不到明文。
-  const { data, counts } = getStoreService().renderBackup(requirePassphrase())
+  // 按设置里的同步范围过滤载荷。
+  //
+  // 此前这里是全库转储，`sync.scopes.*` 五项**全被忽略** —— 用户取消勾选
+  // "同步凭证"也照样上传凭证，属于违背用户显式设置的数据外发。
+  //
+  // 未列入任何范围的实体（AI 对话、会话日志）**默认不同步**：
+  // 设置里没有对应的开关，同步它们等于未经用户同意；且两者体积大、偏本地。
+  const scopes = getSettings().sync?.scopes
+  const entities: StoreEntity[] = []
+  if (scopes?.connections !== false) entities.push('Server')
+  if (scopes?.groups !== false) entities.push('Group')
+  if (scopes?.credentials !== false) entities.push('Credential')
+  if (scopes?.notes !== false) entities.push('Note', 'NoteFolder')
+  if (scopes?.settings !== false) entities.push('Settings')
+
+  if (entities.length === 0) {
+    throw AppError.badRequest('同步范围全部关闭：请在同步设置里至少开启一项')
+  }
+
+  const { data, counts } = getStoreService().renderBackup(requirePassphrase(), entities)
   const ciphertext = data.toString('base64')
 
   state.state = 'syncing'
