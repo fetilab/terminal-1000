@@ -33,6 +33,7 @@ export const IPC_DOMAINS = [
   'settings',
   'sync',
   'hotkey',
+  'broadcast',
 ] as const
 
 export type IpcDomain = (typeof IPC_DOMAINS)[number]
@@ -207,6 +208,21 @@ export const Actions = {
   settings: ['getAll', 'get', 'set', 'reset'] as const,
 
   sync: ['status', 'login', 'logout', 'push', 'pull', 'resolveConflict'] as const,
+
+  broadcast: [
+    /** 用一批已打开的会话建立广播组 */
+    'create',
+    /** 解散广播组（不影响会话本身） */
+    'dissolve',
+    'add',
+    'remove',
+    /** 切换独立 / 广播模式 */
+    'setMode',
+    /** 广播输入（广播模式下由渲染层把任意终端的输入发到这里） */
+    'send',
+    'list',
+    'status',
+  ] as const,
 
   hotkey: [
     /** 列出全部绑定及其实时注册状态（是否被别的程序占用等） */

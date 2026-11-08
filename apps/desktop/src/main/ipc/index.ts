@@ -23,6 +23,7 @@ import { sessionlogHandlers } from '../services/sessionlog'
 import { telnetHandlers } from '../services/telnet'
 import { vncHandlers } from '../services/vnc'
 import { rdpHandlers } from '../services/rdp'
+import { broadcastHandlers } from '../services/broadcast'
 
 const log = createLogger('ipc-setup')
 
@@ -49,6 +50,7 @@ export function registerAllHandlers(): void {
   registerDomain('telnet', telnetHandlers)
   registerDomain('vnc', vncHandlers)
   registerDomain('rdp', rdpHandlers)
+  registerDomain('broadcast', broadcastHandlers)
 
   log.info(`已注册 ${listRegistered().length} 个 IPC 动作`)
 }

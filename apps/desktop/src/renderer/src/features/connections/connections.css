@@ -271,3 +271,26 @@
   height: 100%;
   min-height: 320px;
 }
+
+/* ── Telnet 按键映射编辑 ─────────────────────────── */
+
+.keymap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.keymap-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.keymap-row__from {
+  flex: 0 0 38%;
+}
+
+.keymap-row__to {
+  flex: 1;
+  min-width: 0;
+}

@@ -110,9 +110,11 @@ function harness(overrides: {
     return proc
   }
 
+  const spawned = new Map<string, (d: string) => void>()
   let seq = 0
   const manager = new PtyManager(
     {
+      onSpawn: (ptyId, write) => spawned.set(ptyId, write),
       onData: (ptyId, chunk) => data.push({ ptyId, data: chunk }),
       onExit: (ptyId, exitCode, signal) =>
         exits.push(signal === undefined ? { ptyId, exitCode } : { ptyId, exitCode, signal }),

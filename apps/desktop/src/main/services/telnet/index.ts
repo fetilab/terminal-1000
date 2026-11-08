@@ -20,6 +20,7 @@ import { AppError, parseInput } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { createLogger } from '../../logger'
 import { OutputBatcher } from '../output-batcher'
+import { registerWritable, unregisterWritable } from '../session-registry'
 import { applyKeyMapping, TelnetProtocol, type KeyMappingRule } from './protocol'
 
 const log = createLogger('telnet')
@@ -95,6 +96,19 @@ function connectSession(connection: TelnetConnection, ctx: IpcContext): Promise<
     }
     sessions.set(sessionId, session)
 
+    registerWritable({
+      sessionId,
+      kind: 'telnet',
+      title: connection.name,
+      // 复用与 telnet.write 同一路径：按键映射必须一致，
+      // 否则广播出去的键位与手动输入不同（网络设备上会表现为"广播时退格变怪字符"）
+      write: (data) => {
+        if (socket.destroyed) throw new Error('连接已断开')
+        socket.write(applyKeyMapping(data, session.keyRules))
+      },
+      canWrite: () => socket.writable === true && !socket.destroyed,
+    })
+
     let settled = false
     const fail = (message: string): void => {
       if (settled) return
@@ -135,6 +149,7 @@ function connectSession(connection: TelnetConnection, ctx: IpcContext): Promise<
     })
 
     socket.on('close', () => {
+      unregisterWritable(sessionId)
       batcher.dispose({ flushFirst: true })
       sessions.delete(sessionId)
       emitState(session, 'disconnected')
@@ -218,6 +233,7 @@ export const telnetHandlers: Record<string, IpcHandler> = {
       /* 已关闭 */
     }
     session.batcher.dispose({ flushFirst: true })
+    unregisterWritable(sessionId)
     sessions.delete(sessionId)
     emitState(session, 'disconnected')
     ctx.emit(Events.TELNET_CLOSED, { sessionId, reason: '用户断开' })

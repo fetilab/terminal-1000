@@ -150,8 +150,50 @@ export function sessionDataListenerCount(sessionId: string): number {
   return dataListeners.get(sessionId)?.size ?? 0
 }
 
+// ── 可写入会话（并发广播用）──────────────────────────
+//
+// 广播需要"往一批终端里写同样的输入"，但 ssh / pty / telnet 的写入口各不相同
+// （ssh 走 session.write、pty 走 pty.write、telnet 还要先过按键映射）。
+// 让广播服务去 import 三个服务显然不对，所以在这里放一个中立的写入口：
+// 各服务登记自己的写入函数，广播按 sessionId 取用。
+
+/** 终端型会话（可接收用户输入的那类） */
+export interface WritableSession {
+  sessionId: string
+  kind: 'ssh' | 'pty' | 'telnet'
+  /** 展示名（连接名 / 终端标题），广播界面显示成员用 */
+  title: string
+  /** 写入用户输入（实现方自己负责按键映射等细节） */
+  write(data: string): void
+  /**
+   * 当前是否可写。
+   * 用于跳过已断开或只读（如 VNC viewOnly）的成员 ——
+   * 不检查的话广播会静默丢输入，用户以为发出去了。
+   */
+  canWrite(): boolean
+}
+
+const writables = new Map<string, WritableSession>()
+
+export function registerWritable(session: WritableSession): void {
+  writables.set(session.sessionId, session)
+}
+
+export function unregisterWritable(sessionId: string): void {
+  writables.delete(sessionId)
+}
+
+export function getWritable(sessionId: string): WritableSession | undefined {
+  return writables.get(sessionId)
+}
+
+export function listWritables(): WritableSession[] {
+  return [...writables.values()]
+}
+
 /** 测试用：清空注册表 */
 export function clearSessions(): void {
   sessions.clear()
   dataListeners.clear()
+  writables.clear()
 }

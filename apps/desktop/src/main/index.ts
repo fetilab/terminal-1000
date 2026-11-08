@@ -14,6 +14,8 @@ import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
 import { shutdownTelnet } from './services/telnet'
 import { shutdownVnc } from './services/vnc'
 import { shutdownRdp } from './services/rdp'
+import { onSessionClosed, shutdownBroadcast } from './services/broadcast'
+import { subscribeSessionClosed } from './services/session-registry'
 
 const log = createLogger('bootstrap')
 
@@ -49,6 +51,16 @@ async function bootstrap(): Promise<void> {
   registerAllHandlers()
 
   createWindow()
+
+  // 会话关闭时把它从所有广播组里摘掉（否则会留下幽灵成员，
+  // 广播时表现为"某台机器写不进去"）
+  subscribeSessionClosed((sessionId) => {
+    try {
+      onSessionClosed(sessionId)
+    } catch (err) {
+      log.warn('清理广播组成员时出错', err)
+    }
+  })
 
   // 窗口就绪后按设置注册快捷键。
   // 放在窗口之后：应用内快捷键要挂到窗口的 before-input-event 上。
@@ -119,6 +131,12 @@ function shutdownServices(): void {
     shutdownRdp()
   } catch (err) {
     log.warn('关闭 RDP 会话时出错', err)
+  }
+  try {
+    // 广播组只存在于内存，退出时清掉避免残留引用
+    shutdownBroadcast()
+  } catch (err) {
+    log.warn('清理广播组时出错', err)
   }
   try {
     shutdownForwards()

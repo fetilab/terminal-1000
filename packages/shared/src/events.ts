@@ -57,6 +57,11 @@ export const Events = {
   TELNET_CLOSED: 'TELNET_CLOSED',
   TELNET_NEGOTIATION: 'TELNET_NEGOTIATION',
 
+  // 并发广播
+  BROADCAST_STATE: 'BROADCAST_STATE',
+  /** 某个成员写入失败（广播的"部分失败"必须让用户看得见） */
+  BROADCAST_ERROR: 'BROADCAST_ERROR',
+
   // VNC（RFB）
   VNC_STATE: 'VNC_STATE',
   VNC_FRAME: 'VNC_FRAME',
@@ -164,6 +169,21 @@ export interface EventPayloads {
     detail?: string
   }
 
+  /** 广播组状态（成员变动 / 模式切换） */
+  [Events.BROADCAST_STATE]: { groups: BroadcastGroupView[] }
+  /**
+   * 广播写入失败。
+   *
+   * 广播的语义是"一次输入多处执行"，但各成员响应时间与可用性不同 ——
+   * **部分失败必须逐条报出来**，不能让用户以为所有服务器都执行了。
+   */
+  [Events.BROADCAST_ERROR]: {
+    groupId: string
+    sessionId: string
+    title: string
+    message: string
+  }
+
   [Events.VNC_STATE]: { sessionId: string; state: ConnectionState; message?: string }
   /**
    * 一帧画面更新。
@@ -229,6 +249,24 @@ export interface EventPayloads {
 
   [Events.SYNC_STATE]: { state: 'idle' | 'syncing' | 'offline' | 'error'; message?: string }
   [Events.SYNC_PROGRESS]: { phase: 'push' | 'pull'; done: number; total: number }
+}
+
+/** 广播组成员（给 UI 的视图） */
+export interface BroadcastMemberView {
+  sessionId: string
+  kind: 'ssh' | 'pty' | 'telnet'
+  title: string
+  /** 当前是否可写；false 时 UI 应标灰并说明原因 */
+  writable: boolean
+}
+
+/** 广播组（给 UI 的视图） */
+export interface BroadcastGroupView {
+  groupId: string
+  name: string
+  mode: 'independent' | 'broadcast'
+  members: BroadcastMemberView[]
+  createdAt: string
 }
 
 /** 快捷键注册状态（供设置界面如实显示，而不是假装成功） */

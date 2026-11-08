@@ -42,6 +42,7 @@ import {
   type GroupNode,
   type UiConnection,
 } from '../../lib/store'
+import ProtocolForm, { type ProtocolKind } from './ProtocolForm'
 import './connections.css'
 
 const AUTH_LABELS: Record<SshAuthType, string> = {
@@ -407,7 +408,14 @@ export default function ConnectionForm(): React.JSX.Element {
   }))
 
   const existing = editing?.mode === 'edit' ? getConnection(editing.id) : undefined
-  const isSsh = !existing || existing.kind === 'ssh'
+  /**
+   * 目标协议。
+   * 之前只看 `existing`，导致从 Telnet/RDP/VNC/隧道 标签点「新建连接」时
+   * `existing` 是 undefined → 一律走 SSH 分支，**建出来的其实是 SSH 连接**。
+   * 正确来源是：编辑看已有连接的 kind，新建看 editing.kind（由当前协议标签传入）。
+   */
+  const targetKind = existing?.kind ?? editing?.kind ?? 'ssh'
+  const isSsh = targetKind === 'ssh'
 
   const [draft, setDraft] = useState<Draft>(() =>
     existing && existing.kind === 'ssh' ? toDraft(existing) : emptyDraft(),
@@ -494,12 +502,20 @@ export default function ConnectionForm(): React.JSX.Element {
     setTestResult(null)
   }, [draft.host, draft.port, draft.username, draft.authType])
 
+  // 非 SSH 走同一套表单外壳（字段表驱动），按 kind 切换字段组
   if (!isSsh) {
     return (
-      <Modal open title="编辑连接" onClose={() => actions.closeEditor()}>
-        <p className="t-field__hint">
-          该连接协议为 {existing?.kind.toUpperCase()}，对应表单尚未实现。当前版本优先保证 SSH 路径完整可用。
-        </p>
+      <Modal
+        open
+        title={existing ? `编辑连接 · ${existing.name}` : `新建 ${targetKind.toUpperCase()} 连接`}
+        subtitle={
+          existing
+            ? connectionAddress(existing)
+            : '字段按该协议的契约填写；带 * 的为必填'
+        }
+        onClose={() => actions.closeEditor()}
+      >
+        <ProtocolForm kind={targetKind as ProtocolKind} existingId={existing?.id} />
       </Modal>
     )
   }

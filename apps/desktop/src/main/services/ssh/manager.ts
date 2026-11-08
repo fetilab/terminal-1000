@@ -16,6 +16,8 @@ import {
   listSessions as listRegistrySessions,
   registerSession,
   unregisterSession,
+  registerWritable,
+  unregisterWritable,
   publishSessionData,
   type SshSessionHandle,
 } from '../session-registry'
@@ -174,6 +176,7 @@ export class SshManager {
         },
         onClosed: (reason, code) => {
           unregisterSession(session.sessionId)
+          unregisterWritable(session.sessionId)
           this.sessions.delete(session.sessionId)
           this.events.onClosed(session.sessionId, reason, code)
         },
@@ -190,6 +193,18 @@ export class SshManager {
       await session.connect()
       // 连接就绪后登记到中立注册表，供 SFTP / 监控 / 转发取用
       registerSession(session.getInfo())
+      // 登记可写入口：并发广播按 sessionId 取用，无需 import ssh 内部实现
+      {
+        const info = session.getInfo()
+        registerWritable({
+          sessionId: session.sessionId,
+          kind: 'ssh',
+          title: `${info.username}@${info.host}`,
+          write: (data) => session.write(data),
+          // 仅 ready 可写：连接中/已断开会静默丢输入，广播必须先剔除
+          canWrite: () => session.getInfo().state === 'ready',
+        })
+      }
       return session.sessionId
     } catch (err) {
       this.sessions.delete(session.sessionId)

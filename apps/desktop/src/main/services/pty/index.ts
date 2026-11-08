@@ -21,7 +21,12 @@ import { Events } from '@t1000/shared'
 import { AppError } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { OutputBatcher } from '../output-batcher'
-import { publishSessionClosed, publishSessionData } from '../session-registry'
+import {
+  publishSessionClosed,
+  publishSessionData,
+  registerWritable,
+  unregisterWritable,
+} from '../session-registry'
 import {
   DEFAULT_TERM,
   buildShellEnv,
@@ -133,6 +138,13 @@ export function createNodePtySpawner(
 // ── 会话管理 ──────────────────────────────────────────────────────────────
 
 export interface PtyEvents {
+  /**
+   * 会话已就绪。
+   *
+   * 把"写入函数"从这里交出去，服务层才能把它登记到中立契约供并发广播使用 ——
+   * 管理层因此不需要知道 session-registry 的存在（保持分层）。
+   */
+  onSpawn(ptyId: string, write: (data: string) => void): void
   onData(ptyId: string, data: string): void
   onExit(ptyId: string, exitCode: number, signal?: number): void
 }
@@ -293,6 +305,7 @@ export class PtyManager {
       startedAt: this.now(),
     }
     this.sessions.set(ptyId, { info, proc, batcher })
+    this.events.onSpawn(ptyId, (data) => proc.write(data))
 
     proc.onData((data) => batcher.push(data))
     proc.onExit((event) => {
@@ -372,6 +385,16 @@ function getManager(ctx: IpcContext): PtyManager {
 
   manager = new PtyManager(
     {
+      // 本地终端也可参与广播（批量在本机+多台远机同时执行时有用）
+      onSpawn: (ptyId, writeToProc) => {
+        registerWritable({
+          sessionId: ptyId,
+          kind: 'pty',
+          title: `本地终端 ${ptyId.slice(0, 8)}`,
+          write: (data) => writeToProc(data),
+          canWrite: () => true,
+        })
+      },
       onData: (ptyId, data) => {
         activeCtx?.emit(Events.PTY_DATA, { ptyId, data })
         // 同时写入中立契约：会话日志/录制订阅的是这条通道。
@@ -384,6 +407,7 @@ function getManager(ctx: IpcContext): PtyManager {
           exitCode,
           ...(signal === undefined ? {} : { signal }),
         })
+        unregisterWritable(ptyId)
         // 广播关闭，让正在录制的日志自动收尾（否则写入流一直挂着）
         publishSessionClosed(ptyId)
       },
