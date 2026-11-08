@@ -34,6 +34,19 @@ export const COMMAND_CATEGORIES: readonly CommandCategory[] = [
 ]
 
 /** 索引条目：首屏只加载这个（命令名 + 简述 + 分类），不含任何选项明细。 */
+/** 分类的中文标签（UI 直接展示，不要让它自己维护一份映射） */
+export const CATEGORY_LABELS: Record<CommandCategory, string> = {
+  files: '文件与目录',
+  text: '文本处理',
+  process: '进程与资源',
+  network: '网络',
+  system: '系统与 Shell',
+  package: '包管理与构建',
+  container: '容器与虚拟化',
+  vcs: '版本控制',
+  security: '安全与密钥',
+}
+
 export interface CommandIndexEntry {
   name: string
   brief: string
@@ -55,12 +68,41 @@ export interface SpecSubcommand {
   description: string
 }
 
-/** 单个命令的详情（惰性加载的实体） */
+/** 一个示例：命令行 + 一句说明 */
+export interface SpecExample {
+  command: string
+  description: string
+}
+
+/** 交互界面里的常用快捷键 */
+export interface SpecShortcut {
+  key: string
+  description: string
+}
+
+/**
+ * 单个命令的详情（惰性加载的实体）。
+ *
+ * `purpose` / `install` / `usage` / `examples` / `shortcuts` 是**命令手册**需要的字段
+ * （spec/official-features.md 的「命令搜索」要求展开 用途/安装方式/语法/参数/常用快捷键）。
+ * 全部可选：补全逻辑只依赖 name/options/subcommands。
+ */
 export interface CommandSpec {
   name: string
   options: SpecOption[]
   subcommands?: SpecSubcommand[]
+  /** 补全用的单条示例（可被 examples 取代） */
   example?: string
+  /** 用途：一句话说明这条命令是干什么的 */
+  purpose?: string
+  /** 安装方式（系统自带的可写「系统自带」） */
+  install?: string
+  /** 语法/用法行 */
+  usage?: string
+  /** 常用示例 */
+  examples?: SpecExample[]
+  /** 常用快捷键（交互式命令才有） */
+  shortcuts?: SpecShortcut[]
 }
 
 /** 紧凑的选项行：[选项, 说明] 或 [选项, 说明, 参数占位] */
@@ -80,6 +122,47 @@ export interface SpecRows {
   opts?: readonly OptionRow[]
   /** 示例（UI 展示用） */
   example?: string
+  /** 手册字段（可选；内置语料把手册文本集中放在 specs/manual/ 下） */
+  purpose?: string
+  install?: string
+  usage?: string
+  examples?: readonly (readonly [string, string])[]
+  shortcuts?: readonly (readonly [string, string])[]
+}
+
+/**
+ * 手册行（紧凑书写，供 specs/manual/ 使用）：
+ * `[用途, 语法]` 或 `[用途, 语法, 安装方式]`
+ */
+export type ManualRow = readonly [string, string] | readonly [string, string, string]
+
+/** 手册条目（含示例与快捷键时用对象形式书写） */
+export interface ManualEntry {
+  purpose: string
+  usage: string
+  install?: string
+  examples?: readonly (readonly [string, string])[]
+  shortcuts?: readonly (readonly [string, string])[]
+}
+
+/** 把紧凑手册行展开成 ManualEntry */
+export function manualFromRow(row: ManualRow): ManualEntry {
+  const [purpose, usage, install] = row
+  return install === undefined ? { purpose, usage } : { purpose, usage, install }
+}
+
+/** 把手册字段写进 CommandSpec（就地返回同一个对象，便于链式组装） */
+export function applyManual(spec: CommandSpec, manual: ManualEntry): CommandSpec {
+  spec.purpose = manual.purpose
+  spec.usage = manual.usage
+  if (manual.install !== undefined && manual.install !== '') spec.install = manual.install
+  if (manual.examples !== undefined && manual.examples.length > 0) {
+    spec.examples = manual.examples.map(([command, description]) => ({ command, description }))
+  }
+  if (manual.shortcuts !== undefined && manual.shortcuts.length > 0) {
+    spec.shortcuts = manual.shortcuts.map(([key, description]) => ({ key, description }))
+  }
+  return spec
 }
 
 /** 把紧凑行转成 CommandSpec（缺省字段一律补齐，避免下游判空） */
@@ -96,5 +179,14 @@ export function normalizeSpec(name: string, rows: SpecRows): CommandSpec {
     spec.subcommands = rows.subs.map(([subName, description]) => ({ name: subName, description }))
   }
   if (rows.example !== undefined) spec.example = rows.example
+  if (rows.purpose !== undefined || rows.usage !== undefined) {
+    applyManual(spec, {
+      purpose: rows.purpose ?? '',
+      usage: rows.usage ?? '',
+      ...(rows.install === undefined ? {} : { install: rows.install }),
+      ...(rows.examples === undefined ? {} : { examples: rows.examples }),
+      ...(rows.shortcuts === undefined ? {} : { shortcuts: rows.shortcuts }),
+    })
+  }
   return spec
 }

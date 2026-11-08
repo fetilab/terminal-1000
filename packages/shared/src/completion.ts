@@ -104,3 +104,38 @@ export interface CompletionResult {
   aiRequested: boolean
   notes?: string[]
 }
+
+/**
+ * 命令搜索（离线命令手册）的一条结果。
+ *
+ * 对应 spec 对"命令搜索"的要求：输入命令名查看候选与简述，
+ * 展开后应能看到**用途、安装方式、语法、参数和常用快捷键**。
+ *
+ * 注意：这是**给人读的参考**，与补全候选（`CompletionCandidate`）是两条通路 ——
+ * 手册只提供参考，不自动发送到终端。
+ */
+export interface CommandSearchItem {
+  name: string
+  /** 用途（一句话） */
+  summary?: string
+  /** 分类的中文标签，可直接用于界面分组 */
+  category?: string
+  /** 安装方式（系统自带的命令可省略） */
+  install?: string
+  /** 语法（用法行） */
+  usage?: string
+  options?: Array<{ name: string; description: string; arg?: string }>
+  subcommands?: Array<{ name: string; description: string }>
+  /** 常用示例 —— "查用法"里最实用的部分 */
+  examples?: Array<{ command: string; description: string }>
+  /** 交互式命令的常用快捷键（如 less 的 q/g/G） */
+  shortcuts?: Array<{ key: string; description: string }>
+}
+
+/** 命令搜索结果集 */
+export interface CommandSearchResponse {
+  query: string
+  results: CommandSearchItem[]
+  /** 是否因 limit 截断 —— UI 据此如实提示"还有更多"，而不是假装只有这些 */
+  truncated: boolean
+}

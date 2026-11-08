@@ -5,7 +5,8 @@
  * completion 域 IPC 接入。
  *
  * 动作清单见 packages/shared/src/ipc.ts 的 Actions.completion：
- * complete / settings / setSettings / listSpecs。
+ * complete / settings / setSettings / listSpecs，外加命令搜索 `search`
+ * （spec 验收标准第 8 条「命令搜索可离线查用法」；契约由 lead 同步加入 Actions）。
  *
  * - 引擎单例、惰性创建：语料索引也是首次真正用到补全时才加载（冷启动无负担）。
  * - 语料是**自建**的（`specs/`），不含任何第三方补全库内容。
@@ -89,6 +90,11 @@ const completeSchema = z.object({
   cwd: z.string().optional(),
 })
 
+const searchSchema = z.object({
+  query: z.string(),
+  limit: z.number().int().min(1).max(100).optional(),
+})
+
 const settingsPatchSchema = z.object({
   enabled: z.boolean().optional(),
   specCompletion: z.boolean().optional(),
@@ -121,5 +127,14 @@ export const completionHandlers: Record<string, IpcHandler> = {
   listSpecs: async (_payload, ctx) => {
     const entries = await getEngine(ctx).listSpecs()
     return { total: entries.length, entries }
+  },
+
+  /**
+   * 命令搜索：输入命令名/用途关键词，返回候选 + 手册字段（用途/安装/语法/参数/示例/快捷键）。
+   * 只提供参考，不向终端发送任何内容。
+   */
+  search: async (payload, ctx) => {
+    const { query, limit } = searchSchema.parse(payload ?? {})
+    return getEngine(ctx).search(query, limit)
   },
 }

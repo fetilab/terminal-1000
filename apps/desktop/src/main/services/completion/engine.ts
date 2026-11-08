@@ -36,6 +36,7 @@ export type {
   MatchKind,
 }
 import { CompletionCorpus } from './corpus'
+import { searchCommands, type CommandSearchResponse } from './search'
 import type { CommandIndexEntry, SpecOption } from './specs/types'
 
 // ── 类型 ──────────────────────────────────────────────────────────────────
@@ -386,6 +387,25 @@ export class CompletionEngine {
   /** 语料索引（listSpecs 用） */
   async listSpecs(): Promise<readonly CommandIndexEntry[]> {
     return this.options.corpus.index()
+  }
+
+  /**
+   * 命令搜索 / 离线命令手册（spec 验收标准第 8 条）。
+   *
+   * 索引由 corpus 在**首次搜索时一次性构建**并常驻（不在启动路径上）；
+   * 没有搜索/手册请求时，一个明细分类模块都不会被 import。
+   */
+  async search(query: string, limit?: number): Promise<CommandSearchResponse> {
+    // 空 query 直接短路：清空搜索框不该触发一次全量索引构建
+    const trimmed = query.trim()
+    if (trimmed.length === 0) return { query: trimmed, results: [], truncated: false }
+    const docs = await this.options.corpus.docs()
+    return searchCommands(docs, trimmed, limit)
+  }
+
+  /** 搜索索引是否已构建（自检与测试用） */
+  get searchIndexBuilt(): boolean {
+    return this.options.corpus.docsBuilt
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResult> {

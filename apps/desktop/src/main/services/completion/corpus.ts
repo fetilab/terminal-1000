@@ -16,10 +16,20 @@
  * - `directorySpecSource()`：从磁盘目录读取（用户自建语料 / 测试用，含路径穿越校验）
  */
 
-import type { CommandIndexEntry, CommandSpec } from './specs/types'
-import { normalizeSpec } from './specs/types'
+import type {
+  CommandCategory,
+  CommandIndexEntry,
+  CommandSpec,
+  SpecExample,
+  SpecOption,
+  SpecShortcut,
+  SpecSubcommand,
+} from './specs/types'
+import { CATEGORY_LABELS, applyManual, normalizeSpec } from './specs/types'
 import { CATALOG, CATALOG_BY_NAME } from './specs/catalog'
 import { CATEGORY_LOADERS } from './specs/details'
+import { COMMAND_CATEGORIES } from './specs/types'
+import { MANUAL_BY_NAME } from './specs/manual'
 
 // ── LRU ──────────────────────────────────────────────────────────────────
 
@@ -143,6 +153,14 @@ export class PrefixIndex<T> {
 export interface SpecSource {
   loadIndex(): Promise<readonly CommandIndexEntry[]>
   loadSpec(name: string): Promise<CommandSpec | null>
+  /**
+   * 一次性加载全部明细（命令搜索/手册索引用）。
+   *
+   * 搜索必须扫全部描述文本才能正确排序（用户搜"压缩"要能找到 tar），
+   * 所以这里给一个"批量入口"，让按分类的惰性 import 只发生一次、
+   * 而不是逐个 loadSpec 把 LRU 冲掉。未实现时由 corpus 回退到逐个加载。
+   */
+  loadAllSpecs?(): Promise<readonly CommandSpec[]>
 }
 
 /** 内置自建语料：分类惰性 import */
@@ -155,6 +173,18 @@ export function bundledSpecSource(): SpecSource {
       const details = await CATEGORY_LOADERS[entry.category]()
       const rows = details[name]
       return rows === undefined ? null : normalizeSpec(name, rows)
+    },
+    /**
+     * 一次加载全部明细：只 import 用到的分类模块（同一分类复用同一个 module promise），
+     * 因此 9 个分类模块最多各加载一次。
+     */
+    loadAllSpecs: async () => {
+      const specs: CommandSpec[] = []
+      for (const category of COMMAND_CATEGORIES) {
+        const details = await CATEGORY_LOADERS[category]()
+        for (const [name, rows] of Object.entries(details)) specs.push(normalizeSpec(name, rows))
+      }
+      return specs
     },
   }
 }
@@ -187,37 +217,68 @@ export function isSafeSpecName(name: string): boolean {
  * 用于用户自建语料与单测（真实惰性 IO，不做任何预读）。
  */
 export function directorySpecSource(dir: string, io: DirectorySourceIo): SpecSource {
+  const readSpec = (name: string): CommandSpec | null => {
+    if (!isSafeSpecName(name)) return null
+    const raw = io.readFile(io.join(dir, `${name}.json`))
+    if (raw === null) return null
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (typeof parsed !== 'object' || parsed === null) return null
+      const spec = parsed as CommandSpec
+      return {
+        name,
+        options: Array.isArray(spec.options) ? spec.options : [],
+        ...(Array.isArray(spec.subcommands) ? { subcommands: spec.subcommands } : {}),
+        ...(typeof spec.example === 'string' ? { example: spec.example } : {}),
+        ...(typeof spec.purpose === 'string' ? { purpose: spec.purpose } : {}),
+        ...(typeof spec.usage === 'string' ? { usage: spec.usage } : {}),
+        ...(typeof spec.install === 'string' ? { install: spec.install } : {}),
+        ...(Array.isArray(spec.examples) ? { examples: spec.examples } : {}),
+        ...(Array.isArray(spec.shortcuts) ? { shortcuts: spec.shortcuts } : {}),
+      }
+    } catch {
+      return null
+    }
+  }
+
+  const readIndex = (): readonly CommandIndexEntry[] => {
+    const raw = io.readFile(io.join(dir, 'index.json'))
+    if (raw === null) return []
+    try {
+      const parsed: DirectoryIndexFile = JSON.parse(raw)
+      const commands = parsed.commands
+      return Array.isArray(commands) ? (commands as CommandIndexEntry[]) : []
+    } catch {
+      return []
+    }
+  }
+
   return {
-    loadIndex: () => {
-      const raw = io.readFile(io.join(dir, 'index.json'))
-      if (raw === null) return Promise.resolve([])
-      try {
-        const parsed: DirectoryIndexFile = JSON.parse(raw)
-        const commands = parsed.commands
-        return Promise.resolve(Array.isArray(commands) ? (commands as CommandIndexEntry[]) : [])
-      } catch {
-        return Promise.resolve([])
+    loadIndex: () => Promise.resolve(readIndex()),
+    loadSpec: (name) => Promise.resolve(readSpec(name)),
+    loadAllSpecs: () => {
+      const specs: CommandSpec[] = []
+      for (const entry of readIndex()) {
+        const spec = readSpec(entry.name)
+        if (spec !== null) specs.push(spec)
       }
-    },
-    loadSpec: (name) => {
-      if (!isSafeSpecName(name)) return Promise.resolve(null)
-      const raw = io.readFile(io.join(dir, `${name}.json`))
-      if (raw === null) return Promise.resolve(null)
-      try {
-        const parsed: unknown = JSON.parse(raw)
-        if (typeof parsed !== 'object' || parsed === null) return Promise.resolve(null)
-        const spec = parsed as CommandSpec
-        return Promise.resolve({
-          name,
-          options: Array.isArray(spec.options) ? spec.options : [],
-          ...(Array.isArray(spec.subcommands) ? { subcommands: spec.subcommands } : {}),
-          ...(typeof spec.example === 'string' ? { example: spec.example } : {}),
-        })
-      } catch {
-        return Promise.resolve(null)
-      }
+      return Promise.resolve(specs)
     },
   }
+}
+
+/** 把一条命令的可检索文本拼成小写串（用途 + 简述 + 选项/子命令 + 示例命令） */
+function buildMatchText(entry: CommandIndexEntry, spec: CommandSpec): string {
+  const parts: string[] = [entry.name, entry.brief]
+  if (spec.purpose !== undefined) parts.push(spec.purpose)
+  if (spec.usage !== undefined) parts.push(spec.usage)
+  for (const option of spec.options) {
+    parts.push(option.name, option.description)
+    if (option.arg !== undefined) parts.push(option.arg)
+  }
+  for (const sub of spec.subcommands ?? []) parts.push(sub.name, sub.description)
+  for (const example of spec.examples ?? []) parts.push(example.command, example.description)
+  return parts.join(' ').toLowerCase()
 }
 
 // ── 语料门面 ──────────────────────────────────────────────────────────────
@@ -231,6 +292,32 @@ export interface CorpusOptions {
   now?: () => number
 }
 
+/**
+ * 命令搜索/手册用的一条完整文档：目录（名字/简述/分类）+ 明细（选项/子命令）+ 手册
+ * （用途/安装/语法/示例/快捷键）合并成 UI 可直接渲染的形状。
+ */
+export interface CommandDoc {
+  name: string
+  brief: string
+  category: CommandCategory
+  /** 分类中文标签（UI 直接显示） */
+  categoryLabel: string
+  purpose?: string
+  install?: string
+  usage?: string
+  examples?: SpecExample[]
+  shortcuts?: SpecShortcut[]
+  options: SpecOption[]
+  subcommands?: SpecSubcommand[]
+  /** 供描述命中检索的小写文本（用途 + 简述 + 选项/子命令 + 示例命令） */
+  matchText: string
+  /**
+   * 其中属于「用途/简述」的那部分（小写）。
+   * 用于在同一个"描述命中"档位内细分：命中用途比只命中选项/示例更可能是用户想要的。
+   */
+  matchPrimary: string
+}
+
 export interface CorpusStats {
   indexLoaded: boolean
   indexSize: number
@@ -241,6 +328,9 @@ export interface CorpusStats {
   negativeCacheHits: number
   evictions: number
   cacheSize: number
+  /** 搜索/手册索引是否已构建 */
+  docsBuilt: boolean
+  docsSize: number
 }
 
 export const DEFAULT_SPEC_CACHE_SIZE = 64
@@ -256,6 +346,8 @@ export class CompletionCorpus {
   private readonly negativeTtlMs: number
   private readonly now: () => number
 
+  private docsPromise: Promise<readonly CommandDoc[]> | null = null
+  private docsCache: readonly CommandDoc[] = []
   private indexPromise: Promise<readonly CommandIndexEntry[]> | null = null
   private cachedIndex: readonly CommandIndexEntry[] | null = null
   private byName: Map<string, CommandIndexEntry> | null = null
@@ -307,6 +399,66 @@ export class CompletionCorpus {
     return this.prefix?.withPrefix(prefix, limit) ?? []
   }
 
+  /**
+   * 命令手册/搜索索引（**首次使用时一次性构建，之后常驻**）。
+   *
+   * 代价与取舍（写清楚，不悄悄退化成"启动全加载"）：
+   * - 搜索要扫用途/选项描述才能正确排序，因此这一步会把**全部明细**读进来
+   *   （内置语料 9 个分类模块，实测见 search.test.ts 的耗时/规模断言）；
+   * - 但它**不在启动路径**上：没有任何搜索/手册请求时，一个分类模块都不会被 import；
+   * - 构建后常驻内存，后续搜索零额外加载。
+   */
+  async docs(): Promise<readonly CommandDoc[]> {
+    if (this.docsPromise === null) {
+      this.docsPromise = this.buildDocs().then((docs) => {
+        this.docsCache = docs
+        return docs
+      })
+    }
+    return this.docsPromise
+  }
+
+  get docsBuilt(): boolean {
+    return this.docsPromise !== null
+  }
+
+  private async buildDocs(): Promise<readonly CommandDoc[]> {
+    const entries = await this.index()
+    const specs = this.source.loadAllSpecs
+      ? await this.source.loadAllSpecs()
+      : (await Promise.all(entries.map((e) => this.spec(e.name)))).filter(
+          (s): s is CommandSpec => s !== null,
+        )
+    const byName = new Map(specs.map((spec) => [spec.name, spec]))
+
+    return entries.map((entry) => {
+      const base = byName.get(entry.name)
+      // 浅拷贝：手册字段写在副本上，不污染 LRU 里的 spec
+      const merged: CommandSpec = base === undefined ? { name: entry.name, options: [] } : { ...base }
+      const manual = MANUAL_BY_NAME.get(entry.name)
+      if (manual) applyManual(merged, manual)
+
+      const doc: CommandDoc = {
+        name: entry.name,
+        brief: entry.brief,
+        category: entry.category,
+        categoryLabel: CATEGORY_LABELS[entry.category],
+        options: merged.options,
+        matchText: buildMatchText(entry, merged),
+        matchPrimary: `${entry.name} ${entry.brief} ${merged.purpose ?? ''}`.toLowerCase(),
+      }
+      if (merged.purpose !== undefined) doc.purpose = merged.purpose
+      if (merged.install !== undefined) doc.install = merged.install
+      if (merged.usage !== undefined) doc.usage = merged.usage
+      if (merged.examples !== undefined) doc.examples = merged.examples
+      if (merged.shortcuts !== undefined) doc.shortcuts = merged.shortcuts
+      if (merged.subcommands !== undefined && merged.subcommands.length > 0) {
+        doc.subcommands = merged.subcommands
+      }
+      return doc
+    })
+  }
+
   /** 单条命令详情：LRU → 负缓存 → 源加载 */
   async spec(name: string): Promise<CommandSpec | null> {
     const cached = this.specCache.get(name)
@@ -351,6 +503,8 @@ export class CompletionCorpus {
       negativeCacheHits: this.counters.negativeCacheHits,
       evictions: this.specCache.evictionCount,
       cacheSize: this.specCache.size,
+      docsBuilt: this.docsPromise !== null,
+      docsSize: this.docsCache.length,
     }
   }
 }
