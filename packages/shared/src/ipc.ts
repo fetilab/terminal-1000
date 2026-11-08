@@ -126,6 +126,8 @@ export const Actions = {
     'lock',
     'isUnlocked',
     'search',
+    /** 解析 ~/.ssh/config 并批量导入连接（与 importBackup 是两件事） */
+    'importOpenSsh',
   ] as const,
 
   credential: ['list', 'get', 'save', 'delete'] as const,
@@ -187,7 +189,14 @@ export const Actions = {
     'deleteFolder',
   ] as const,
 
-  completion: ['complete', 'settings', 'setSettings', 'listSpecs'] as const,
+  completion: [
+    'complete',
+    'settings',
+    'setSettings',
+    'listSpecs',
+    /** 命令搜索 / 离线命令手册：查用途、安装方式、语法、参数与示例 */
+    'search',
+  ] as const,
 
   ai: ['listChats', 'getChat', 'send', 'cancel', 'deleteChat', 'listProviders', 'setProvider'] as const,
 
