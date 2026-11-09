@@ -26,6 +26,9 @@ export type StoreEntity =
   | 'Note'
   | 'NoteFolder'
   | 'SessionLog'
+  | 'QuickCommand'
+  | 'QuickCommandGroup'
+  | 'QuickCommandParamHistory'
 
 export const STORE_ENTITIES: readonly StoreEntity[] = [
   'Server',
@@ -36,6 +39,9 @@ export const STORE_ENTITIES: readonly StoreEntity[] = [
   'Note',
   'NoteFolder',
   'SessionLog',
+  'QuickCommand',
+  'QuickCommandGroup',
+  'QuickCommandParamHistory',
 ] as const
 
 /** 拼出参考实现同构的 store_key */
@@ -53,6 +59,9 @@ export const STORE_KEYS = {
   note: storeKeyOf('Note'),
   noteFolder: storeKeyOf('NoteFolder'),
   sessionLog: storeKeyOf('SessionLog'),
+  quickCommand: storeKeyOf('QuickCommand'),
+  quickCommandGroup: storeKeyOf('QuickCommandGroup'),
+  quickCommandParamHistory: storeKeyOf('QuickCommandParamHistory'),
 } as const
 
 /** 元数据表里保存主密码校验记录、schema 版本等 */

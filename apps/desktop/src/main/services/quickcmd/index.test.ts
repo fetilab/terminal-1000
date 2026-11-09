@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { QuickCmdService, getQuickCmdService, configureQuickCmd, resetQuickCmd, quickcmdHandlers, type QuickCmdDeps } from './index'
 import { MemoryQuickCmdStore } from './store-port'
 import type { VariableContext } from './variables'
+import { clearSessions, registerWritable, unregisterWritable } from '../session-registry'
 
 const FIXED = new Date(2025, 10, 29, 14, 30, 45)
 
@@ -424,5 +425,88 @@ describe('IPC handler 表', () => {
     }
     await expect(call({ name: '' })).rejects.toMatchObject({ code: 'BAD_REQUEST' })
     resetQuickCmd()
+  })
+})
+
+describe('execute 经中立契约真正写进终端（不注入发送器）', () => {
+  /** 用默认发送路径（不传 sendToSession），因此走 session-registry 的真实查找 */
+  function serviceWithoutSender(): QuickCmdService {
+    const store = new MemoryQuickCmdStore()
+    const context: VariableContext = {
+      now: FIXED,
+      randomString: (n) => 'R'.repeat(n),
+      uuid: () => 'uuid-fixed',
+      clipboard: 'clip',
+      password: 'p@ss',
+      hostname: 'dev-box',
+      username: 'mosfet',
+      localIp: '127.0.0.1',
+    }
+    return new QuickCmdService({ store, context, now: () => FIXED.getTime() })
+  }
+
+  it('★ 已登记的会话能收到命令（此前鸭子类型摸 session.write 必然失败）', async () => {
+    clearSessions()
+    const received: string[] = []
+    registerWritable({
+      sessionId: 'real-sess',
+      kind: 'ssh',
+      title: 'web-1',
+      write: (d) => received.push(d),
+      canWrite: () => true,
+    })
+
+    const service = serviceWithoutSender()
+    await service.execute({ sessionId: 'real-sess', command: 'ls -la' })
+
+    // 命令应当真的被写出去，并且末尾带换行（终端需要回车才会执行）
+    expect(received.join('')).toContain('ls -la')
+    expect(received.join('')).toContain('\n')
+    unregisterWritable('real-sess')
+  })
+
+  it('★ 多行命令逐行发送（spec §6.2）', async () => {
+    clearSessions()
+    const received: string[] = []
+    registerWritable({
+      sessionId: 'multi',
+      kind: 'ssh',
+      title: 'multi',
+      write: (d) => received.push(d),
+      canWrite: () => true,
+    })
+
+    const service = serviceWithoutSender()
+    await service.execute({ sessionId: 'multi', command: 'cd /tmp\nls\npwd' })
+
+    // 至少要有 3 次写入（逐行），而不是把整段一次性塞进去
+    expect(received.length).toBeGreaterThanOrEqual(3)
+    expect(received.join('')).toContain('cd /tmp')
+    expect(received.join('')).toContain('pwd')
+    unregisterWritable('multi')
+  })
+
+  it('会话未登记时给出**可操作**的错误，而不是让用户猜', async () => {
+    clearSessions()
+    const service = serviceWithoutSender()
+    await expect(service.execute({ sessionId: 'nope', command: 'ls' })).rejects.toThrow(
+      /不可写入|未连接|已断开/,
+    )
+  })
+
+  it('会话存在但当前不可写（canWrite=false）→ 拒绝并说明', async () => {
+    clearSessions()
+    registerWritable({
+      sessionId: 'ro',
+      kind: 'ssh',
+      title: '断线中的机器',
+      write: () => {},
+      canWrite: () => false,
+    })
+    const service = serviceWithoutSender()
+    await expect(service.execute({ sessionId: 'ro', command: 'ls' })).rejects.toThrow(/不可写入/)
+    // 错误里最好带上会话标题，便于用户定位是哪台机器
+    await expect(service.execute({ sessionId: 'ro', command: 'ls' })).rejects.toThrow(/断线中的机器/)
+    unregisterWritable('ro')
   })
 })

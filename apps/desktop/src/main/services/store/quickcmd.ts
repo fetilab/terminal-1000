@@ -18,6 +18,7 @@
  * 正式注册需要 store 负责人往 STORE_ENTITIES / STORE_KEYS 各加两行，已上报。
  */
 
+import { STORE_KEYS } from './db'
 import type { StoreDb, KvRow } from './db'
 import { isCiphertext } from './crypto'
 import type { ParamHistoryData } from '../quickcmd/history'
@@ -25,10 +26,12 @@ import type { QuickCmdStorePort } from '../quickcmd/store-port'
 import type { QuickCommandRecord, QuickGroupRecord, QuickLibrary } from '../quickcmd/tree'
 
 /** 与 storeKeyOf() 同构的 key（先在本地定义，注册后可换成 STORE_KEYS） */
+// 不加 `as const`：值来自 STORE_KEYS（类型是 string），
+// 而 `as const` 只能作用于字面量 —— 用在这里会直接编译失败。
 export const QUICKCMD_STORE_KEYS = {
-  command: 'GeneralDatabaseLocalImp-QuickCommandDatabaseLocalImp',
-  group: 'GeneralDatabaseLocalImp-QuickCommandGroupDatabaseLocalImp',
-  history: 'GeneralDatabaseLocalImp-QuickCommandParamHistoryDatabaseLocalImp',
+  command: STORE_KEYS.quickCommand,
+  group: STORE_KEYS.quickCommandGroup,
+  history: STORE_KEYS.quickCommandParamHistory,
 } as const
 
 const HISTORY_ITEM_ID = 'param-history'

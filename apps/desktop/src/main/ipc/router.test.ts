@@ -158,7 +158,7 @@ describe('IPC 懒加载域', () => {
     ])) as Array<{ ok: boolean; data: unknown }>
 
     expect(loads, '并发首次调用只应触发一次 import').toBe(1)
-    for (const r of [a, b, c]) expect(r.data).toBe('hi')
+    for (const r of [a, b, c]) expect(r?.data).toBe('hi')
   })
 
   it('加载器抛错 → INTERNAL，且错误信息点明是哪个域', async () => {

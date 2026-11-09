@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { AppError, parseInput } from '../../errors'
 import type { IpcHandler } from '../../ipc/router'
-import { requireSession } from '../session-registry'
+import { getWritable } from '../session-registry'
 import { ParamHistory, type HistoryValue, type ParamHistoryData, type ParamHistoryOptions } from './history'
 import {
   matchesPinyin,
@@ -87,21 +87,27 @@ export function getQuickCmdService(): QuickCmdService {
   return service
 }
 
-/** 默认终端写入：中立契约里会话只有 exec，没有 write —— 需要 ssh 服务补一个写入能力 */
+/**
+ * 默认终端写入：通过中立契约的**可写会话**把命令送进终端。
+ *
+ * 早先这里用鸭子类型去摸 `session.write`，但 `SshSessionHandle` 上**根本没有** write
+ * （它只有 exec），所以快速命令的"执行"必然报 UNSUPPORTED。
+ *
+ * 正确的入口是 `session-registry` 的 `getWritable` —— 那是为并发广播加的：
+ * ssh / pty / telnet 各服务登记自己的写入函数，消费方按 sessionId 取用。
+ * 这样快速命令能对 SSH、本地终端、Telnet **一视同仁**地执行。
+ */
 async function defaultSendToSession(sessionId: string, data: string): Promise<void> {
-  let session
-  try {
-    session = requireSession(sessionId)
-  } catch (err) {
-    throw AppError.notConnected(err instanceof Error ? err.message : '会话不存在或已断开')
-  }
-  const writable = session as unknown as { write?: (d: string) => void }
-  if (typeof writable.write !== 'function') {
-    throw AppError.unsupported(
-      '当前 SSH 会话未暴露终端写入能力，无法执行快速命令（需要 session-registry 的会话提供 write）',
+  const target = getWritable(sessionId)
+  if (!target) {
+    throw AppError.notConnected(
+      '该会话当前不可写入（未连接、已断开，或不支持输入）—— 请先连接终端再执行快速命令',
     )
   }
-  writable.write(data)
+  if (!target.canWrite()) {
+    throw AppError.notConnected(`会话「${target.title}」当前不可写入，请检查连接状态`)
+  }
+  target.write(data)
 }
 
 // ---------------------------------------------------------------------------

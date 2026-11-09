@@ -474,6 +474,12 @@ function storeKeyAlias(entity: StoreEntity): keyof typeof STORE_KEYS {
       return 'noteFolder'
     case 'SessionLog':
       return 'sessionLog'
+    case 'QuickCommand':
+      return 'quickCommand'
+    case 'QuickCommandGroup':
+      return 'quickCommandGroup'
+    case 'QuickCommandParamHistory':
+      return 'quickCommandParamHistory'
   }
 }
 
