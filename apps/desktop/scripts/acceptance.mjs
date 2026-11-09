@@ -21,11 +21,13 @@
 // SKIP 并给出原因，等 `scripts/ssh-test-host.mjs` 就绪后可补上。
 
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { createServer, connect as netConnect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const DESKTOP = new URL('..', import.meta.url).pathname
+const REPO_ROOT = new URL('../../..', import.meta.url).pathname
 const CDP_PORT = Number(process.env.T1000_CDP_PORT ?? 9226)
 const PROFILE = mkdtempSync(join(tmpdir(), 't1000-acceptance-'))
 
@@ -117,6 +119,45 @@ const INVOKE = (domain, action, payload) =>
      if (!r || r.ok !== true) throw new Error('IPC 失败: ' + JSON.stringify(r && r.error));
      return r.data;
    })()`
+
+/**
+ * 启动仓库自带的 SSH 测试主机（真实 ssh2 服务端 + 真实子进程 + 真实文件系统），
+ * 从它的 stdout 里解析出端口与凭据。
+ */
+function startSshHost() {
+  return new Promise((resolve, reject) => {
+    const root = mkdtempSync(join(tmpdir(), 't1000-sshroot-'))
+    const child = spawn('node', ['scripts/ssh-test-host.mjs', '--root', root], {
+      cwd: REPO_ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    })
+    let buf = ''
+    const timer = setTimeout(() => reject(new Error('测试主机启动超时')), 20000)
+    const onData = (chunk) => {
+      buf += chunk.toString()
+      const port = buf.match(/port\s*:\s*(\d+)/)?.[1]
+      const password = buf.match(/password\s*:\s*(\S+)/)?.[1]
+      const username = buf.match(/username\s*:\s*(\S+)/)?.[1]
+      if (port && username && password) {
+        clearTimeout(timer)
+        resolve({
+          host: '127.0.0.1',
+          port: Number(port),
+          username,
+          password,
+          workspace: root,
+          stop: () => {
+            try { process.kill(-child.pid, 'SIGTERM') } catch { /* 已退出 */ }
+            rmSync(root, { recursive: true, force: true })
+          },
+        })
+      }
+    }
+    child.stdout.on('data', onData)
+    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+  })
+}
 
 async function main() {
   if (!process.env.DISPLAY) throw new Error('需要 DISPLAY（无头环境请先起 Xvfb）')
@@ -274,20 +315,236 @@ async function main() {
       }
     }
 
-    // 需要真实 SSH 主机的条目
-    for (const [id, title] of [
-      ['1', 'SSH 连接出终端'],
-      ['2', '跳板机链路 + SOCKS5 代理'],
-      ['3', '终端搜索/复制/字体/编码/多标签/分屏'],
-      ['4', 'SFTP 上传下载（含递归/进度/取消）'],
-      ['5', '端口转发实际生效（本地/远程/动态）'],
-      ['9', 'AI 助手配 key 对话 + 风险命令拦截'],
-      ['11', '列表 ping 延迟与硬件信息 + 监控卡片出数据'],
-      ['13', '并发广播一次输入多处执行'],
-    ]) {
-      record(id, title, 'SKIP', '需要真实 SSH 主机（scripts/ssh-test-host.mjs 就绪后补）')
+    // ════════════════════════════════════════════════════════════
+    // 以下条目需要**真实 SSH 主机**：用仓库自带的 SSH 测试主机
+    // （scripts/ssh-test-host.mjs：真实 ssh2 服务端 + 真实子进程 + 真实文件系统）
+    // ════════════════════════════════════════════════════════════
+    let sshHost = null
+    try {
+      sshHost = await startSshHost()
+      globalThis.__sshHostStop = sshHost.stop
+    } catch (err) {
+      console.log(`\n⚠️ SSH 测试主机未启动（${err.message}），跳过依赖它的条目`)
     }
 
+    if (sshHost) {
+      const { host, port, username, password, workspace } = sshHost
+      /** 页内收集某个会话的输出（通过真实 SSH_DATA 事件） */
+      const collect = async (sessionId, holdMs) => {
+        await cdp.eval(`(() => {
+          window.__acc = window.__acc || {};
+          if (!window.__acc['${sessionId}']) {
+            window.__acc['${sessionId}'] = '';
+            window.t1000.on('SSH_DATA', (p) => {
+              if (p && p.sessionId === '${sessionId}') window.__acc['${sessionId}'] += p.data;
+            });
+          }
+          return true;
+        })()`)
+        await sleep(holdMs)
+        return cdp.eval(`window.__acc['${sessionId}'] || ''`)
+      }
+
+      // 首次连接会弹"主机密钥指纹确认"（spec 要求的能力）。脚本要像 UI 一样应答，
+      // 否则握手会一直等用户决定直到超时 —— 我第一版就因此判了 6 条失败，
+      // 实际是"信任流程在正常工作，只是没人点确认"。
+      await cdp.eval(`(() => {
+        window.__accAskedKeys = [];
+        window.t1000.on('SSH_HOST_KEY_ASK', (p) => {
+          window.__accAskedKeys.push({ host: p.host, port: p.port, keyType: p.keyType, fingerprint: p.fingerprint, mismatch: p.mismatch });
+          // 真实验收场景：接受该主机密钥（等价于用户点"信任并记住"）
+          window.t1000.invoke('ssh', 'verifyHostKey', { requestId: p.requestId, accepted: true });
+        });
+        return true;
+      })()`)
+
+      const sshConnection = {
+        kind: 'ssh',
+        id: `acc-${Date.now().toString(16)}`,
+        name: '验收-SSH 测试主机',
+        host,
+        port,
+        username,
+        authType: 'password',
+        password,
+        createdAt: '',
+        updatedAt: '',
+      }
+
+      // ════ 第 1 条：SSH 连接出终端（真实握手 + 真实 shell 输出）════
+      let sessionId = null
+      try {
+        const res = await cdp.eval(INVOKE('ssh', 'connect', { connection: sshConnection }))
+        sessionId = res?.sessionId
+        const got = await collect(sessionId, 1200)
+        await cdp.eval(INVOKE('ssh', 'write', { sessionId, data: 'echo ACCEPT_TERMINAL_OK\n' }))
+        const out = await collect(sessionId, 2500)
+        const ok = out.includes('ACCEPT_TERMINAL_OK')
+        const asked = await cdp.eval('JSON.stringify(window.__accAskedKeys || [])')
+        const askedKeys = JSON.parse(asked || '[]')
+        record('1', 'SSH 连接出终端（真实握手 + 真实命令回显）', ok ? 'PASS' : 'FAIL',
+          ok
+            ? `已建立会话并收到回显；主机密钥确认流程也走通了（${askedKeys.length} 次询问，指纹 ${askedKeys[0]?.fingerprint?.slice(0, 24) ?? '—'}…）`
+            : `未见回显，累计输出 ${JSON.stringify((got + out).slice(0, 120))}`)
+      } catch (err) {
+        record('1', 'SSH 连接出终端', 'FAIL', String(err.message ?? err))
+      }
+
+      // ════ 第 11 条：监控面板（真实 exec 采集）════
+      try {
+        await cdp.eval(INVOKE('monitor', 'start', { sessionId }))
+        // 真实形状是 { sessionId, at, system?, cpu?, memory?, network?, disk?, processes? }
+        // —— 没有 `cards` 字段（我第一版按印象写的，于是误判成"0 张卡片"）
+        const snap = await cdp.eval(INVOKE('monitor', 'getSnapshot', { sessionId, force: true }))
+        const sections = ['system', 'cpu', 'memory', 'network', 'disk', 'processes'].filter(
+          (k) => snap?.[k] !== undefined,
+        )
+        const cpu = snap?.cpu
+        const mem = snap?.memory
+        const detail = [
+          `分区 ${sections.join('/') || '无'}`,
+          cpu ? `CPU ${cpu.usagePercent ?? cpu.usage ?? '—'}%` : '',
+          mem ? `内存 ${mem.usedPercent ?? mem.used ?? '—'}%` : '',
+          `进程 ${snap?.processes?.length ?? 0} 个`,
+        ]
+          .filter(Boolean)
+          .join('，')
+        record('11', '监控面板：真实 exec 采集出数据', sections.length > 0 ? 'PASS' : 'FAIL', detail)
+      } catch (err) {
+        record('11', '监控面板', 'FAIL', String(err.message ?? err))
+      }
+
+      // ════ 第 4 条：SFTP 上传下载（真实协议 + 真实磁盘）════
+      try {
+        const localFile = join(PROFILE, 'acc-upload.bin')
+        const payload = Buffer.alloc(256 * 1024)
+        for (let i = 0; i < payload.length; i++) payload[i] = i % 251
+        writeFileSync(localFile, payload)
+        // ⚠️ 远端路径是**相对 SFTP 根**的：测试主机把 `--root` 作为 SFTP 根，
+        // 所以远端应写 `/acc-upload.bin`，而不是宿主机上的绝对路径（我第一版就错在这，
+        // 结果文件写到了 workspace 之外→核对时"找不到文件"）。
+        const remotePath = '/acc-upload.bin'
+
+        const up = await cdp.eval(INVOKE('sftp', 'upload', {
+          sessionId, direction: 'upload', sourcePath: localFile, targetPath: remotePath,
+        }))
+        // 等传输完成（事件驱动；这里轮询 listTransfers 到终态）
+        let done = false
+        for (let i = 0; i < 40 && !done; i++) {
+          await sleep(250)
+          const list = await cdp.eval(INVOKE('sftp', 'listTransfers', { sessionId }))
+          const t0 = (list?.transfers ?? list ?? []).find?.((x) => x.transferId === up?.transferId)
+          if (t0 && ['done', 'completed', 'finished', 'failed', 'cancelled'].includes(t0.state)) done = true
+        }
+        // 用真实文件系统核对：字节必须完全一致
+        const hostSidePath = join(workspace, 'acc-upload.bin')
+        const remoteBytes = existsSync(hostSidePath) ? readFileSync(hostSidePath) : null
+        const sameSize = remoteBytes?.length === payload.length
+        const sameHash = remoteBytes ? remoteBytes.equals(payload) : false
+
+        // 下载回来再比对
+        const backPath = join(PROFILE, 'acc-download.bin')
+        await cdp.eval(INVOKE('sftp', 'download', {
+          sessionId, direction: 'download', sourcePath: remotePath, targetPath: backPath,
+        }))
+        for (let i = 0; i < 40 && !existsSync(backPath); i++) await sleep(250)
+        const back = existsSync(backPath) ? readFileSync(backPath) : null
+        const roundTrip = back ? back.equals(payload) : false
+
+        record('4', 'SFTP 上传下载：真实磁盘字节一致（256KB）',
+          sameHash && roundTrip ? 'PASS' : 'FAIL',
+          `远端大小一致=${sameSize} 远端内容一致=${sameHash} 往返一致=${roundTrip}`)
+      } catch (err) {
+        record('4', 'SFTP 上传下载', 'FAIL', String(err.message ?? err))
+      }
+
+      // ════ 第 5 条：端口转发**真的转发**（本机 TCP → SSH → 远端 TCP）════
+      try {
+        // 起一个本机 echo 服务当作"远端目标"
+        const echo = createServer((sock) => sock.pipe(sock))
+        await new Promise((r) => echo.listen(0, '127.0.0.1', r))
+        const echoPort = echo.address().port
+
+        const opened = await cdp.eval(INVOKE('forward', 'open', {
+          tunnel: {
+            kind: 'tunnel', id: `tun-${Date.now().toString(16)}`, name: '验收-本地转发',
+            // serverId 传**会话 id**：这正是本轮修好的解析（也支持连接 id）
+            serverId: sessionId,
+            type: 'local', localHost: '127.0.0.1', localPort: 0,
+            remoteHost: '127.0.0.1', remotePort: echoPort,
+            autoReconnect: false, createdAt: '', updatedAt: '',
+          },
+        }))
+        const boundPort = opened?.boundPort ?? opened?.port
+        // 从 Node 侧真实连入被转发的端口
+        const echoed = await new Promise((resolve, reject) => {
+          const s = netConnect(boundPort, '127.0.0.1')
+          let got = ''
+          s.setTimeout(4000)
+          s.on('connect', () => s.write('FORWARD_OK'))
+          s.on('data', (d) => (got += d.toString()))
+          s.on('timeout', () => { s.destroy(); reject(new Error(`转发读回超时（已收到 ${got}）`)) })
+          s.on('error', reject)
+          setTimeout(() => { s.destroy(); resolve(got) }, 1200)
+        })
+        echo.close()
+        record('5', '端口转发：数据真的经 SSH 隧道往返',
+          echoed.includes('FORWARD_OK') ? 'PASS' : 'FAIL',
+          `本地:${boundPort} → SSH → 远端:${echoPort}，读回 ${JSON.stringify(echoed)}`)
+      } catch (err) {
+        record('5', '端口转发', 'FAIL', String(err.message ?? err))
+      }
+
+      // ════ 第 13 条：并发广播（一次输入，多会话都收到）════
+      try {
+        const c2 = { ...sshConnection, id: `acc2-${Date.now().toString(16)}`, name: '验收-第二台' }
+        const s2 = (await cdp.eval(INVOKE('ssh', 'connect', { connection: c2 })))?.sessionId
+        await collect(s2, 800)
+        const group = await cdp.eval(INVOKE('broadcast', 'create', { sessionIds: [sessionId, s2], mode: 'broadcast' }))
+        const gid = group?.group?.groupId
+        const sent = await cdp.eval(INVOKE('broadcast', 'send', { groupId: gid, data: 'echo BCAST_OK\n' }))
+        const out1 = await collect(sessionId, 2000)
+        const out2 = await collect(s2, 500)
+        const both = out1.includes('BCAST_OK') && out2.includes('BCAST_OK')
+        record('13', '并发广播：一次输入多处执行',
+          both && (sent?.delivered ?? 0) >= 2 ? 'PASS' : 'FAIL',
+          `delivered=${sent?.delivered} skipped=${sent?.skipped} 会话1=${out1.includes('BCAST_OK')} 会话2=${out2.includes('BCAST_OK')}`)
+      } catch (err) {
+        record('13', '并发广播', 'FAIL', String(err.message ?? err))
+      }
+
+      // ════ 第 2 条：跳板机链路（经测试主机自身再跳一次）════
+      try {
+        const jumped = await cdp.eval(INVOKE('ssh', 'connect', {
+          connection: {
+            ...sshConnection,
+            id: `acc-jump-${Date.now().toString(16)}`,
+            name: '验收-经跳板机',
+            jumpChain: [{
+              id: 'hop-1', name: 'hop', host, port, username, authType: 'password', password,
+            }],
+          },
+        }))
+        const jid = jumped?.sessionId
+        await collect(jid, 1000)
+        await cdp.eval(INVOKE('ssh', 'write', { sessionId: jid, data: 'echo JUMP_OK\n' }))
+        const jout = await collect(jid, 2500)
+        record('2', '跳板机链路：经一跳建立会话',
+          jout.includes('JUMP_OK') ? 'PASS' : 'FAIL',
+          jout.includes('JUMP_OK') ? '经跳板机连上并收到回显' : `未见回显：${JSON.stringify(jout.slice(0, 120))}`)
+      } catch (err) {
+        record('2', '跳板机链路', 'FAIL', String(err.message ?? err))
+      }
+
+      // ── 纯 UI 层 / 需要外部服务的条目，如实标注 ──
+      record('3', '终端搜索/复制/字体/编码/多标签/分屏', 'SKIP',
+        '属渲染层交互（已在 UI 侧单独自验），非本脚本的 IPC 链路范围')
+      record('2b', 'SOCKS5 代理', 'SKIP', '需要一个外部 SOCKS5 服务端，测试主机不提供')
+      record('9', 'AI 助手配 key 对话 + 风险命令拦截', 'SKIP',
+        '需要真实 AI 供应商 key（护栏本身已有单测覆盖）')
+    }
+
+    // ── 截图（主界面 + 工具页）──
     // ── 截图（主界面 + 工具页）──
     try {
       const shot = await cdp.send('Page.captureScreenshot', { format: 'png' })
@@ -300,6 +557,7 @@ async function main() {
 
     cdp.close()
   } finally {
+    globalThis.__sshHostStop?.()
     stop()
   }
 
