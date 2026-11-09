@@ -53,9 +53,13 @@ export const SECTION_META: Record<SettingsSection, { label: string; icon: string
   ai: { label: 'AI 助手', icon: 'activity', blurb: '交互模式、风险策略与执行上限' },
   transfer: { label: '文件传输', icon: 'download', blurb: '并发闸门、进度节流与冲突策略' },
   sync: { label: '同步与云端', icon: 'cloud', blurb: '零知识同步的开关与范围' },
+  vault: { label: '存储与安全', icon: 'lock', blurb: '主密码、凭据加密与锁定' },
 }
 
-export const SETTINGS_FIELDS: Record<Exclude<SettingsSection, 'highlights' | 'hotkeys'>, readonly FieldDef[]> = {
+export const SETTINGS_FIELDS: Record<
+  Exclude<SettingsSection, 'highlights' | 'hotkeys' | 'vault'>,
+  readonly FieldDef[]
+> = {
   app: [
     { path: 'app.theme', label: '主题', kind: 'select', options: THEME_OPTIONS, hint: '浅色主题仍在打磨中' },
     { path: 'app.restoreLastSession', label: '启动时恢复上次会话', kind: 'switch', hint: '只恢复界面状态，不会自动重连主机' },

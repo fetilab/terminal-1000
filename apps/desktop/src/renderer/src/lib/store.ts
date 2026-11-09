@@ -40,6 +40,7 @@ import {
 } from '@t1000/shared'
 import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { invoke, subscribe } from './ipc'
+import { ensureUnlocked } from './vault'
 import { toast } from '../components/Toast'
 import { errorText } from './format'
 
@@ -156,7 +157,7 @@ export type SettingsSectionId =
   | 'completion'
   | 'ai'
   | 'transfer'
-  | 'sync'
+  | 'sync' | 'vault'
 
 /** 分组过滤器：前四个是固定视图，其余是分组 id */
 export const FILTER_ALL = '__all__'
@@ -285,6 +286,8 @@ export interface AppState {
   activeTabId: string | null
 
   monitorOpen: boolean
+  /** 终端工作区左侧的快速命令面板是否展开（应用级，切视图不重置） */
+  quickcmdOpen: boolean
   monitorCards: MonitorCardConfig[]
   snapshots: Record<string, MonitorSnapshot>
   /** 每会话的 CPU 走势采样（最近 N 个点），走势图直接读它 */
@@ -374,6 +377,7 @@ const initialState: AppState = {
   tabs: [],
   activeTabId: null,
   monitorOpen: false,
+  quickcmdOpen: false,
   monitorCards: DEFAULT_MONITOR_CARDS,
   snapshots: {},
   cpuHistory: {},
@@ -724,6 +728,11 @@ export const actions = {
     setState((s) => ({ monitorOpen: !s.monitorOpen }))
   },
 
+  /** 终端左栏的快速命令面板 */
+  toggleQuickcmd() {
+    setState((s) => ({ quickcmdOpen: !s.quickcmdOpen }))
+  },
+
   toggleMonitorCard(kind: MonitorCardConfig['kind']) {
     setState((s) => ({
       monitorCards: s.monitorCards.map((c) => (c.kind === kind ? { ...c, enabled: !c.enabled } : c)),
@@ -859,7 +868,25 @@ export function newConnectionId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+/** 载荷里是否含机密字段（口令/私钥/口令短语）—— 有就要先解锁，否则会被丢弃 */
+function hasCredential(input: Record<string, unknown>): boolean {
+  const SECRET_KEYS = ['password', 'passphrase', 'privateKey', 'privateKeyPath', 'credentialId', 'proxyPassword']
+  return SECRET_KEYS.some((k) => {
+    const v = input[k]
+    return typeof v === 'string' && v.trim() !== ''
+  })
+}
+
 export async function saveConnection(input: UiConnection): Promise<boolean> {
+  // 含机密的连接必须先解锁本地库：未解锁时主进程会 fail-fast，
+  // 这里提前拦一道并就地引导（创建主密码 / 解锁），而不是让保存静默丢凭据。
+  if (hasCredential(input as unknown as Record<string, unknown>)) {
+    const unlocked = await ensureUnlocked('这条连接带有口令或私钥，需要先解锁本地库才能安全保存。')
+    if (!unlocked) {
+      toast.warn('本地库未解锁，已取消保存（避免凭据被丢弃）')
+      return false
+    }
+  }
   setState({ saving: true })
   try {
     const saved = await invoke<'store', 'saveConnection', UiConnection, UiConnection>(
@@ -1526,6 +1553,32 @@ export async function sendBroadcast(groupId: string, data: string): Promise<Broa
     toast.error(`广播发送失败：${errorText(err)}`)
     return null
   }
+}
+
+/* ────────────────────────────────────────────── 会话写入 */
+
+/**
+ * 往会话写数据 —— **唯一**知道各域载荷字段名不同的地方。
+ *
+ * ssh / telnet 用 `sessionId`，pty 用 `ptyId`。
+ * 之前这段逻辑散在 TerminalPane 里，一旦有一处写成 `sessionId`，
+ * 本地终端就会"能显示但打不了字"（zod 拒绝 + 被 catch 吞掉）。
+ * 收敛到这里之后，快速命令面板等调用方不必再关心这个差异。
+ */
+export function sessionWritePayload(
+  kind: TabKind,
+  sessionId: string,
+  data: string,
+): { domain: 'ssh' | 'telnet' | 'pty'; payload: Record<string, unknown> } {
+  if (kind === 'local') return { domain: 'pty', payload: { ptyId: sessionId, data } }
+  if (kind === 'telnet') return { domain: 'telnet', payload: { sessionId, data } }
+  return { domain: 'ssh', payload: { sessionId, data } }
+}
+
+export async function writeToSession(kind: TabKind, sessionId: string, data: string): Promise<void> {
+  if (!sessionId || !data) return
+  const { domain, payload } = sessionWritePayload(kind, sessionId, data)
+  await invoke(domain, 'write', payload)
 }
 
 /* ────────────────────────────────────────────── 终端标签 */

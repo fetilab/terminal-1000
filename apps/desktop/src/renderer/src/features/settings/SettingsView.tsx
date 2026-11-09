@@ -32,6 +32,7 @@ import {
 } from './settingsFields'
 import { HighlightsEditor } from './HighlightsEditor'
 import { HotkeysEditor } from './HotkeysEditor'
+import { VaultSettings } from './VaultSettings'
 import './settings.css'
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
@@ -43,6 +44,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   'ai',
   'transfer',
   'sync',
+  'vault',
 ]
 
 /* ── 数据 ──────────────────────────────────────── */
@@ -288,7 +290,10 @@ export default function SettingsView(): React.JSX.Element {
 
   const meta = SECTION_META[section]
   const defs = useMemo(
-    () => (section === 'highlights' || section === 'hotkeys' ? [] : SETTINGS_FIELDS[section]),
+    () =>
+      section === 'highlights' || section === 'hotkeys' || section === 'vault'
+        ? []
+        : SETTINGS_FIELDS[section],
     [section],
   )
 
@@ -336,7 +341,9 @@ export default function SettingsView(): React.JSX.Element {
       </div>
 
       <div className="content-scroll settings-body">
-        {section === 'highlights' ? (
+        {section === 'vault' ? (
+          <VaultSettings />
+        ) : section === 'highlights' ? (
           <HighlightsEditor rules={settings.highlights} onChange={(rules) => void update('highlights', rules)} />
         ) : section === 'hotkeys' ? (
           <HotkeysEditor bindings={settings.hotkeys} onChange={(list) => void update('hotkeys', list)} />

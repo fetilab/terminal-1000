@@ -19,6 +19,8 @@ import { Badge, EmptyState, Loading } from '../../components/Feedback'
 import { Button, IconButton } from '../../components/Button'
 import { Icon } from '../../components/Icon'
 import type { RdpConnection, TunnelConnection, VncConnection } from '@t1000/shared'
+// 快速命令面板：只有终端类会话才有意义（它要往会话里发东西）
+const QuickCommandPanel = lazy(() => import('../quickcmd/QuickCommandPanel'))
 import {
   actions,
   broadcastGroupOf,
@@ -91,6 +93,7 @@ export default function TerminalWorkspace(): React.JSX.Element {
   const active = tabs.find((t) => t.tabId === activeTabId) ?? null
   /** 当前标签所属的广播组（没有则不在任何组里） */
   /** 只有这几种才用"终端 + 文件"那套界面；vnc/rdp/tunnel 是各自独立的视图 */
+  const quickcmdOpen = useStoreShallow((s) => ({ v: s.quickcmdOpen })).v
   const isTerminalLike =
     active?.kind === 'ssh' || active?.kind === 'local' || active?.kind === 'telnet' || active === undefined
   const activeGroup = broadcastGroupOf(active?.sessionId)
@@ -296,6 +299,14 @@ export default function TerminalWorkspace(): React.JSX.Element {
         <div className="t-toolbar__divider" />
         {isTerminalLike ? (
         <IconButton
+          icon="zap"
+          label={quickcmdOpen ? '关闭快速命令' : '打开快速命令（终端左栏）'}
+          tone={quickcmdOpen ? 'accent' : 'default'}
+          onClick={() => actions.toggleQuickcmd()}
+        />
+        ) : null}
+        {isTerminalLike ? (
+        <IconButton
           icon="activity"
           label={mono.monitorOpen ? '关闭监控' : '打开监控'}
           tone={mono.monitorOpen ? 'accent' : 'default'}
@@ -351,6 +362,14 @@ export default function TerminalWorkspace(): React.JSX.Element {
       ) : null}
 
       <div className="term-workspace">
+        {/* 快速命令：终端自己的左栏（spec §6 的位置） */}
+        {isTerminalLike && quickcmdOpen ? (
+          <aside className="term-quickcmd" aria-label="快速命令">
+            <Suspense fallback={<Loading text="载入快速命令…" />}>
+              <QuickCommandPanel />
+            </Suspense>
+          </aside>
+        ) : null}
         {isTerminalLike && (mono.mode ?? 'terminal') === 'sftp' ? (
           <Suspense fallback={<Loading text="正在载入文件浏览器…" />}>
             <SftpBrowser sessionId={mono.sessionId} title={mono.title} />

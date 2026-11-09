@@ -14,6 +14,7 @@
  */
 
 import { Suspense, lazy, useEffect } from 'react'
+import { VaultGate } from './components/VaultGate'
 import { Icon, type IconName } from './components/Icon'
 import { Loading } from './components/Feedback'
 import { ToastHost } from './components/Toast'
@@ -227,6 +228,8 @@ export function App(): React.JSX.Element {
       <Suspense fallback={<aside className="panel"><Loading text="载入面板…" /></aside>}>
         <Sidebar />
       </Suspense>
+      {/* 主密码闸门：任何需要密钥的操作就地弹窗，而不是把按钮置灰 */}
+      <VaultGate />
       <Suspense fallback={<Loading text="载入视图…" />}>
         <div key={view} className="view-enter" style={{ display: 'contents' }}>
           <View />

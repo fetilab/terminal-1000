@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 terminal-1000 contributors
 
-import { Suspense, lazy, useMemo } from 'react'
+import { Suspense, lazy, useMemo, useState } from 'react'
 import type { ConnectionKind } from '@t1000/shared'
 import { Button } from '../../components/Button'
 import { Banner, EmptyState, Loading } from '../../components/Feedback'
@@ -17,6 +17,7 @@ import {
   useStoreShallow,
 } from '../../lib/store'
 import { ConnectionList } from './ConnectionList'
+import { ImportOpenSshDialog } from './ImportOpenSshDialog'
 import './connections.css'
 
 /** 表单只在真正打开时加载：它是这个视图里最重的模块 */
@@ -59,6 +60,7 @@ export default function ConnectionsView(): React.JSX.Element {
   const { items, totalInProtocol } = useStore(selectVisibleConnections)
   const counts = useStore(selectProtocolCounts)
 
+  const [importOpen, setImportOpen] = useState(false)
   const hasAny = counts.ssh + counts.rdp + counts.telnet + counts.tunnel + counts.vnc > 0
   const filtered = filter !== '__all__' || query.trim().length > 0
 
@@ -130,6 +132,9 @@ export default function ConnectionsView(): React.JSX.Element {
           }}
         >
           刷新
+        </Button>
+        <Button size="sm" variant="outline" icon="upload" onClick={() => setImportOpen(true)}>
+          导入配置
         </Button>
         <Button size="sm" variant="primary" icon="plus" onClick={() => actions.openCreate(protocol)}>
           新建连接
@@ -212,6 +217,12 @@ export default function ConnectionsView(): React.JSX.Element {
       {editing ? (
         <Suspense fallback={<Loading text="正在载入表单…" />}>
           <ConnectionForm />
+        </Suspense>
+      ) : null}
+
+      {importOpen ? (
+        <Suspense fallback={<Loading text="载入导入器…" />}>
+          <ImportOpenSshDialog onClose={() => setImportOpen(false)} />
         </Suspense>
       ) : null}
 

@@ -464,3 +464,15 @@
 .term-bell-flash {
   animation: t1000-bell 160ms var(--t1000-ease);
 }
+
+/* 终端工作区自己的左栏（快速命令） */
+.term-quickcmd {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 286px;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-panel);
+  overflow: hidden;
+}
