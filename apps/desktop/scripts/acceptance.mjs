@@ -557,8 +557,12 @@ async function main() {
 
     cdp.close()
   } finally {
-    globalThis.__sshHostStop?.()
+    // 顺序很重要：**先退出应用，再拆掉 SSH 测试主机**。
+    // 反过来等于"把远端从应用脚下抽走" —— 应用在退出路径上还要处理一堆
+    // 已经断掉的会话/通道，多了一类无关的失败面（我第一版就是反的）。
     stop()
+    await sleep(500)
+    globalThis.__sshHostStop?.()
   }
 
   const fail = results.filter((r) => r.status === 'FAIL')
