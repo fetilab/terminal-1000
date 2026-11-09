@@ -43,6 +43,33 @@ export function rdpInstallHint(): string {
 }
 
 /** RDP 默认端口 */
+/**
+ * 把"进程秒退"翻译成人能看懂的原因。
+ *
+ * 为什么需要：外部客户端失败时只会给一个退出码（例如 wlfreerdp 在 X11 下返回 255），
+ * 用户看到"异常退出 code=255"完全无从下手。而**秒退**（启动后极短时间内退出）
+ * 几乎总是环境问题（显示后端不匹配、二进制不可执行），不是网络或凭据问题 ——
+ * 把这条判据直接写出来，比让用户去猜有用得多。
+ */
+export function explainRdpExit(executable: string, code: number | null, lifetimeMs: number): string {
+  const quickDeath = lifetimeMs < 3000
+  const name = basename(executable)
+
+  if (quickDeath && name.startsWith('wlfreerdp')) {
+    return (
+      '\n提示：wlfreerdp 是 **Wayland** 客户端，当前会话不是 Wayland（或显示未转发）时会立刻退出。' +
+      '在 X11 下请改用 xfreerdp（Debian/Ubuntu 装 freerdp-x11，Fedora 装 freerdp）'
+    )
+  }
+  if (quickDeath && (code === 126 || code === 127)) {
+    return '\n提示：退出码 126/127 表示二进制无法执行或找不到，通常是缺依赖或安装不完整'
+  }
+  if (quickDeath && code === 255) {
+    return '\n提示：客户端启动后立即退出，通常是**显示环境**问题（未找到可用的 DISPLAY/wayland），而不是网络或凭据问题'
+  }
+  return ''
+}
+
 export const RDP_DEFAULT_PORT = 3389
 /** follow-window 模式下的初始窗口尺寸（之后交给 /dynamic-resolution） */
 export const RDP_DEFAULT_WIDTH = 1280
@@ -176,6 +203,8 @@ interface RdpSession {
   options: RdpConnectOptions
   child: RdpChildProcess
   executable: string
+  /** 启动时刻，用于判断"秒退"（秒退几乎总是环境问题，不是网络问题） */
+  startedAt: number
   state: ConnectionState
   /** 我们主动结束（disconnect / resize 重启）→ 不算崩溃 */
   stopping: boolean
@@ -231,6 +260,7 @@ export class RdpManager {
       options,
       child,
       executable,
+      startedAt: Date.now(),
       state: 'connecting',
       stopping: false,
       generation: 0,
@@ -349,7 +379,7 @@ export class RdpManager {
       this.sink.state(
         session.sessionId,
         'disconnected',
-        crashed ? `远程桌面进程异常退出（code=${String(code)}）` : undefined,
+        crashed ? `远程桌面进程异常退出（code=${String(code)}）${explainRdpExit(session.executable, code, Date.now() - session.startedAt)}` : undefined,
       )
       this.sink.exit(session.sessionId, {
         code,

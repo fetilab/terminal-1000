@@ -28,7 +28,10 @@ import {
   type NoteFolder,
   type NoteSummary,
   type PingResult,
+  type RecordingSettings,
+  type RecordingSummary,
   type Settings,
+  type TerminalSettings,
   type ThemeMode,
   type MonitorCardConfig,
   type MonitorSnapshot,
@@ -79,28 +82,10 @@ export type ViewId =
   | 'settings'
 
 /**
- * 会话日志类型。
- *
- * ⚠️ 这几组**仍然只定义在主进程** `services/sessionlog/index.ts`
- * （`LogMeta` / `active()` / `read()` 的返回），`packages/shared` 里没有，
- * 所以这里是渲染层的镜像声明 —— 与 sftp / completion / ai / mcp 不同，
- * 那四组已上移 shared 并改成 re-export，只有这一组还没。
- * 已在反馈里单独提出；上移后应删掉本段改为 import。
+ * 会话日志/录制类型统一从 `@t1000/shared` 引入（原先这里镜像过一份，已上移）。
+ * `ActiveRecording` 是 active() 的返回形状，主进程侧未在 shared 定义，仍在此声明。
  */
-export interface SessionLogMeta {
-  logId: string
-  sessionId: string
-  title: string
-  startedAt: string
-  stoppedAt?: string
-  /** 元信息里记录的字节数（写入时累计） */
-  bytes: number
-  /** 停止原因：用户停止 / 达到上限 / 会话断开 */
-  stopReason?: string
-  /** 磁盘上 .log 的实际大小 */
-  sizeBytes: number
-  hasTiming: boolean
-}
+export type { RecordingSettings, RecordingSummary, SessionLogReplay, ReplayFrame } from '@t1000/shared'
 
 export interface ActiveRecording {
   sessionId: string
@@ -223,16 +208,26 @@ export interface AppState {
   aiMode: 'chat' | 'assistant' | 'confirm' | 'thinking'
   /** 终端/远端响铃设置（来自 settings.terminal.bell）；VNC 的 BELL 事件据此决定是否发声 */
   bellMode: 'none' | 'sound' | 'visual'
+  /**
+   * 终端外观与行为（settings.terminal 的渲染层消费子集）。
+   * 放在 store 是为了**热更新**：设置面板改一项，已经打开的 xterm 要立刻跟着变，
+   * 而不是等下次新建终端。
+   */
+  terminalSettings: TerminalSettings
   /** 外部服务面板当前分区 */
   servicesSection: 'sync' | 'mcp'
+  /** 工具页当前选中的工具 */
+  toolsSection: 'password' | 'manual'
 
   /* ── 会话日志 ── */
-  sessionLogs: SessionLogMeta[]
+  sessionLogs: RecordingSummary[]
   /** 正在录制的会话（终端要据此显示红点指示） */
   activeRecordings: ActiveRecording[]
   logsLoading: boolean
   logsReady: boolean
   logsError: string | null
+  /** 录制设置（间隔 / 自动压缩 / 是否录制） */
+  recordingSettings: RecordingSettings | null
 
   /** 会话 id → 最近的协商记录（只对 telnet 有值；低频，放全局无压力） */
   negotiations: Record<string, NegotiationEntry[]>
@@ -319,7 +314,24 @@ const initialState: AppState = {
   transferConflictPolicy: 'ask',
   aiMode: 'chat',
   bellMode: 'none',
+  terminalSettings: {
+    fontFamily: "'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace",
+    fontSize: 13,
+    lineHeight: 1.2,
+    letterSpacing: 0,
+    cursorStyle: 'bar',
+    cursorBlink: true,
+    copyOnSelect: false,
+    rightClickPaste: false,
+    scrollback: 8000,
+    wrapLines: true,
+    bell: 'none',
+    defaultEncoding: 'utf-8',
+    colorScheme: 'default-dark',
+    linkDetection: true,
+  },
   servicesSection: 'sync',
+  toolsSection: 'password',
   negotiations: {},
   broadcastGroups: [],
   broadcastLastSend: {},
@@ -329,6 +341,7 @@ const initialState: AppState = {
   logsLoading: false,
   logsReady: true,
   logsError: null,
+  recordingSettings: null,
   notes: [],
   noteFolders: [],
   notesFilter: 'all',
@@ -638,6 +651,10 @@ export const actions = {
     setState({ servicesSection: section })
   },
 
+  setToolsSection(section: 'password' | 'manual') {
+    setState({ toolsSection: section })
+  },
+
   setNotesFilter(filter: NotesFilter) {
     // 切分类时关掉当前详情：它可能不属于新分类，留着会让人误以为还在同一个列表里
     setState({ notesFilter: filter, noteDraft: null, noteDirty: false })
@@ -738,6 +755,11 @@ export function applyTheme(theme: ThemeMode): void {
   document.documentElement.dataset.theme = resolved
 }
 
+/** 设置面板改了 terminal.* 时同步进 store，让已打开的终端热更新 */
+export function applyTerminalSettings(next: TerminalSettings): void {
+  setState({ terminalSettings: next, bellMode: next.bell })
+}
+
 /** 跟随系统主题变化（只在 theme === 'system' 时生效） */
 export function watchSystemTheme(): () => void {
   const mq = window.matchMedia('(prefers-color-scheme: light)')
@@ -764,6 +786,7 @@ export async function loadInitialSettings(): Promise<void> {
       transferConflictPolicy: settings.transfer.conflictPolicy,
       aiMode: settings.ai.mode,
       bellMode: settings.terminal.bell,
+      terminalSettings: settings.terminal,
     })
   } catch {
     applyTheme('dark')
@@ -1235,7 +1258,7 @@ export async function loadSessionLogs(): Promise<void> {
       'sessionlog',
       'list',
       Record<string, never>,
-      { logs: SessionLogMeta[]; active: ActiveRecording[] }
+      { logs: RecordingSummary[]; active: ActiveRecording[] }
     >('sessionlog', 'list', {})
     setState({
       sessionLogs: Array.isArray(res?.logs) ? res.logs : [],
@@ -1271,7 +1294,7 @@ async function refreshActiveRecordings(): Promise<void> {
       'sessionlog',
       'list',
       Record<string, never>,
-      { logs: SessionLogMeta[]; active: ActiveRecording[] }
+      { logs: RecordingSummary[]; active: ActiveRecording[] }
     >('sessionlog', 'list', {})
     setState({ activeRecordings: Array.isArray(res?.active) ? res.active : [] })
     syncLogPolling()
@@ -1321,6 +1344,36 @@ export async function deleteSessionLog(logId: string): Promise<void> {
     toast.ok('日志已删除')
   } catch (err) {
     toast.error(`删除失败：${errorText(err)}`)
+  }
+}
+
+export async function loadRecordingSettings(): Promise<void> {
+  try {
+    const res = await invoke<'sessionlog', 'getSettings', Record<string, never>, RecordingSettings>(
+      'sessionlog',
+      'getSettings',
+      {},
+    )
+    setState({ recordingSettings: res })
+  } catch {
+    // 录制设置不可用不影响日志列表
+  }
+}
+
+export async function saveRecordingSettings(patch: Partial<RecordingSettings>): Promise<void> {
+  try {
+    const next = await invoke<'sessionlog', 'setSettings', Record<string, unknown>, RecordingSettings>(
+      'sessionlog',
+      'setSettings',
+      patch,
+    )
+    setState({ recordingSettings: next })
+    // 主进程会把 <1000ms 的间隔抬到 1000，如实告诉用户实际生效值
+    if (patch.intervalMs !== undefined && next.intervalMs !== patch.intervalMs) {
+      toast.info(`快照间隔已调整为 ${next.intervalMs} ms（下限 1000ms）`)
+    }
+  } catch (err) {
+    toast.error(`保存录制设置失败：${errorText(err)}`)
   }
 }
 

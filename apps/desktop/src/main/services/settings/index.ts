@@ -297,6 +297,36 @@ export function resetSettingsCache(): void {
   cache = null
 }
 
+// ── 录制设置（分组形状由 sessionlog 域定义）─────────────
+
+/** 设置文档里存放会话录制设置的分组名 */
+export const RECORDING_SETTINGS_GROUP = 'sessionRecording'
+
+/**
+ * 读会话录制设置分组。
+ *
+ * 为什么不并进 `SettingsPatch`：`Settings` 的形状在 `packages/shared`（lead 维护），
+ * 目前还没有录制分组。设置文档的深合并会**保留未知键**，所以先把
+ * `sessionRecording` 存在同一个设置文档里 —— 这样设置域仍是设置文档的唯一写入者，
+ * 等 shared 加上这一组后把这两个函数换成强类型访问即可，调用方不用改。
+ */
+export function readRecordingSettings(): Record<string, unknown> | undefined {
+  const raw = (getSettings() as unknown as Record<string, unknown>)[RECORDING_SETTINGS_GROUP]
+  return isPlainObject(raw) ? raw : undefined
+}
+
+/** 合并写回会话录制设置分组（只覆盖传入的键） */
+export function updateRecordingSettings(patch: Record<string, unknown>): Record<string, unknown> {
+  const current = getSettings() as unknown as Record<string, unknown>
+  const existing = current[RECORDING_SETTINGS_GROUP]
+  const group = isPlainObject(existing) ? existing : {}
+  const nextGroup: Record<string, unknown> = { ...group, ...patch }
+  const next = { ...current, [RECORDING_SETTINGS_GROUP]: nextGroup } as unknown as Settings
+  writeDoc(next)
+  cache = next
+  return nextGroup
+}
+
 // ── IPC ─────────────────────────────────────────────
 
 const setSchema = z.object({

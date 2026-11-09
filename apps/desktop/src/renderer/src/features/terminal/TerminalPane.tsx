@@ -139,6 +139,23 @@ function sessionPayload(
   return kind === 'local' ? { ptyId: sessionId, ...extra } : { sessionId, ...extra }
 }
 
+
+/**
+ * 从剪贴板粘贴到终端。
+ *
+ * 读剪贴板可能因为权限被拒 —— **不能静默什么都不做**，
+ * 那会让用户以为"右键/快捷键坏了"（跟之前 pty 载荷被空 catch 吞掉是同一类坑）。
+ */
+function pasteFromClipboard(target: Terminal | null): void {
+  void navigator.clipboard
+    .readText()
+    .then((text) => {
+      if (text) target?.paste(text)
+      else toast.info('剪贴板是空的，没有可粘贴的内容')
+    })
+    .catch(() => toast.warn('读取剪贴板失败：系统可能未授予剪贴板权限'))
+}
+
 const TERMINAL_THEME = {
   background: '#0d0f14',
   foreground: '#e4e7ee',
@@ -162,6 +179,28 @@ const TERMINAL_THEME = {
   brightCyan: '#63dde8',
   brightWhite: '#f2f4f8',
 } as const
+
+/** 高对比配色：给弱视/强光环境用，前景纯白、背景近黑 */
+const TERMINAL_THEME_HC = {
+  ...TERMINAL_THEME,
+  background: '#000000',
+  foreground: '#ffffff',
+  cursor: '#ffff00',
+  selectionBackground: 'rgba(255, 255, 0, 0.32)',
+  brightBlack: '#8a8a8a',
+} as const
+
+/**
+ * 选配色。
+ *
+ * 语义：`default-dark` 是"跟随应用主题"（应用切浅色时终端也跟着浅），
+ * 另外两套是**显式覆盖** —— 用户既然挑了就照他挑的来。
+ */
+function themeFor(colorScheme: string, resolved: 'light' | 'dark'): import('@xterm/xterm').ITheme {
+  if (colorScheme === 'light') return TERMINAL_THEME_LIGHT
+  if (colorScheme === 'high-contrast') return TERMINAL_THEME_HC
+  return resolved === 'light' ? TERMINAL_THEME_LIGHT : TERMINAL_THEME
+}
 
 /** 浅色下的终端配色：底色与整体主题一致，前景用深色保证对比度 */
 const TERMINAL_THEME_LIGHT = {
@@ -211,6 +250,16 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
 
   // 首次可见前不创建 xterm：隐藏容器尺寸为 0，此时 open() 会得到畸形布局
   const resolvedTheme = useStoreShallow((s) => ({ resolvedTheme: s.resolvedTheme })).resolvedTheme
+  // 终端外观/行为设置：从 store 读，改动即时热更新到已打开的 xterm
+  const termCfg = useStoreShallow((s) => ({ t: s.terminalSettings })).t
+  /** WebLinksAddon 的构造器：热更新时要用它重新挂载 */
+  const linksCtorRef = useRef<typeof import('@xterm/addon-web-links').WebLinksAddon | null>(null)
+  const linksAddonRef = useRef<import('@xterm/addon-web-links').WebLinksAddon | null>(null)
+  /** 创建与事件回调里要读最新设置，但那些闭包不该因为设置变化而重建 */
+  const termSettingsRef = useRef(termCfg)
+  termSettingsRef.current = termCfg
+  const resolvedThemeRef = useRef(resolvedTheme)
+  resolvedThemeRef.current = resolvedTheme
   // 录制状态来自全局 store（低频），终端标签/状态栏据此显示红点
   const recording = useStoreShallow((s) => ({
     rec: s.activeRecordings.find((r) => r.sessionId === tab.sessionId),
@@ -313,19 +362,20 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
           ])
         if (disposed) return
 
+        // 初值全部来自 settings.terminal（不再是硬编码），随后的改动由热更新 effect 负责
+        const st = termSettingsRef.current
         const term = new XTerm({
-          fontFamily:
-            "'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, 'Noto Sans Mono', monospace",
-          fontSize: 13,
-          lineHeight: 1.22,
-          letterSpacing: 0,
-          cursorBlink: true,
-          cursorStyle: 'bar',
-          scrollback: 8000,
+          fontFamily: st.fontFamily,
+          fontSize: st.fontSize,
+          lineHeight: st.lineHeight,
+          letterSpacing: st.letterSpacing,
+          cursorBlink: st.cursorBlink,
+          cursorStyle: st.cursorStyle,
+          scrollback: st.scrollback,
           allowProposedApi: true,
           convertEol: false,
           macOptionIsMeta: true,
-          theme: resolvedTheme === 'light' ? TERMINAL_THEME_LIGHT : TERMINAL_THEME,
+          theme: themeFor(st.colorScheme, resolvedThemeRef.current),
         })
         const fit = new Fit()
         const search = new Search()
@@ -333,14 +383,21 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         term.loadAddon(search)
         // 链接点击交给主进程用系统浏览器打开（app.openExternal 内置协议白名单校验），
         // 避免渲染层自己 window.open 出一个裸的 Electron 窗口。
-        term.loadAddon(
+        linksCtorRef.current = Links
+        const makeLinks = (): import('@xterm/addon-web-links').WebLinksAddon =>
           new Links((event, uri) => {
             event.preventDefault()
             void invoke<'app', 'openExternal', { url: string }, unknown>('app', 'openExternal', {
               url: uri,
             }).catch(() => undefined)
-          }),
-        )
+          })
+
+        // 设置里关掉链接识别就不挂这个 addon（可热开关，见下方 effect）
+        if (st.linkDetection) {
+          const addon = makeLinks()
+          linksAddonRef.current = addon
+          term.loadAddon(addon)
+        }
         term.open(host)
 
         termRef.current = term
@@ -403,6 +460,46 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         })
         cleanups.push(() => dataSub.dispose())
 
+        // 「选中即复制」：设置开启时，选中一次就把内容放到剪贴板
+        const selSub = term.onSelectionChange(() => {
+          if (!termSettingsRef.current.copyOnSelect) return
+          const sel = term.getSelection()
+          if (sel) void navigator.clipboard.writeText(sel).catch(() => undefined)
+        })
+        cleanups.push(() => selSub.dispose())
+
+        // 响铃：xterm 自己不会发声，按设置决定"出声 / 闪一下 / 不管"
+        const bellSub = term.onBell(() => {
+          const mode = termSettingsRef.current.bell
+          if (mode === 'none') return
+          if (mode === 'sound') {
+            try {
+              const Ctx =
+                window.AudioContext ??
+                (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+              if (Ctx) {
+                const ac = new Ctx()
+                const osc = ac.createOscillator()
+                const gain = ac.createGain()
+                gain.gain.value = 0.03
+                osc.frequency.value = 760
+                osc.connect(gain).connect(ac.destination)
+                osc.start()
+                osc.stop(ac.currentTime + 0.07)
+              }
+            } catch {
+              /* 发声失败无所谓 */
+            }
+            return
+          }
+          // visual：闪一下画面边缘，不打断阅读
+          const el = hostRef.current
+          if (!el) return
+          el.classList.add('term-bell-flash')
+          window.setTimeout(() => el.classList.remove('term-bell-flash'), 160)
+        })
+        cleanups.push(() => bellSub.dispose())
+
         // 立即做一次 fit，把真实尺寸报上去
         requestAnimationFrame(() => {
           if (disposed) return
@@ -439,13 +536,42 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     }
   }
 
-  /* ── 主题热切换 ───────────────────────────────── */
+  /* ── 设置热更新 ───────────────────────────────── */
+  /**
+   * 改设置要**即时生效**，不能等下次新建终端。
+   * xterm 的多数外观项都是可写的 `term.options.X`，直接赋值即可；
+   * 只有 addon 需要自己挂/卸（链接识别）。
+   */
   useEffect(() => {
     const term = termRef.current
     if (!term) return
-    // 只换主题，不重建实例 —— 重建会丢掉滚动回看与远端状态
-    term.options.theme = resolvedTheme === 'light' ? TERMINAL_THEME_LIGHT : TERMINAL_THEME
-  }, [resolvedTheme, ready])
+    term.options.fontFamily = termCfg.fontFamily
+    term.options.fontSize = termCfg.fontSize
+    term.options.lineHeight = termCfg.lineHeight
+    term.options.letterSpacing = termCfg.letterSpacing
+    term.options.cursorBlink = termCfg.cursorBlink
+    term.options.cursorStyle = termCfg.cursorStyle
+    term.options.scrollback = termCfg.scrollback
+    term.options.theme = themeFor(termCfg.colorScheme, resolvedTheme)
+
+    // 链接识别：开关切换时挂/卸 addon
+    const ctor = linksCtorRef.current
+    if (ctor) {
+      if (termCfg.linkDetection && !linksAddonRef.current) {
+        const addon = new ctor((event, uri) => {
+          event.preventDefault()
+          void invoke<'app', 'openExternal', { url: string }, unknown>('app', 'openExternal', {
+            url: uri,
+          }).catch(() => undefined)
+        })
+        linksAddonRef.current = addon
+        term.loadAddon(addon)
+      } else if (!termCfg.linkDetection && linksAddonRef.current) {
+        linksAddonRef.current.dispose()
+        linksAddonRef.current = null
+      }
+    }
+  }, [termCfg, resolvedTheme, ready])
 
   /* ── 尺寸跟踪 ─────────────────────────────────── */
   useEffect(() => {
@@ -552,9 +678,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       }
       if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
         e.preventDefault()
-        void navigator.clipboard.readText().then((text) => {
-          if (text) term.paste(text)
-        })
+        pasteFromClipboard(term)
         return
       }
       if (e.ctrlKey && !e.shiftKey && (e.key === 'l' || e.key === 'L')) {
@@ -586,11 +710,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         label: '粘贴',
         icon: 'download',
         hint: 'Ctrl+Shift+V',
-        onSelect: () => {
-          void navigator.clipboard.readText().then((text) => {
-            if (text) termRef.current?.paste(text)
-          })
-        },
+        onSelect: () => pasteFromClipboard(termRef.current),
       },
       { id: 'find', label: '查找', icon: 'search', hint: 'Ctrl+Shift+F', onSelect: () => setFindOpen(true) },
       { id: 'clear', label: '清屏', icon: 'close', onSelect: () => termRef.current?.clear() },

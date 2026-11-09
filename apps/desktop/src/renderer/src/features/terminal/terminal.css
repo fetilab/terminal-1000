@@ -454,3 +454,13 @@
   opacity: 0.6;
   text-decoration: line-through;
 }
+
+/* 视觉响铃：只闪边缘，不整屏反白（整屏反白很打断阅读） */
+@keyframes t1000-bell {
+  0%, 100% { box-shadow: inset 0 0 0 0 transparent; }
+  50% { box-shadow: inset 0 0 0 2px var(--t1000-warn); }
+}
+
+.term-bell-flash {
+  animation: t1000-bell 160ms var(--t1000-ease);
+}

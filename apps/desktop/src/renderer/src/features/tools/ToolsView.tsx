@@ -16,21 +16,22 @@ import { Badge, EmptyState } from '../../components/Feedback'
 import { Field, Switch, TextInput } from '../../components/Form'
 import { Icon, type IconName } from '../../components/Icon'
 import { toast } from '../../components/Toast'
-import { actions } from '../../lib/store'
+import { actions, useStoreShallow } from '../../lib/store'
+import { CommandManual } from './CommandManual'
+import './tools.css'
 
-type ToolId = 'password' | 'manual' | 'ai'
+type ToolId = 'password' | 'manual'
 
 interface ToolEntry {
   id: ToolId
   label: string
   icon: IconName
-  ready: boolean
+  blurb: string
 }
 
 const TOOLS: ToolEntry[] = [
-  { id: 'password', label: '密码生成器', icon: 'key', ready: true },
-  { id: 'manual', label: '命令手册', icon: 'list', ready: false },
-  { id: 'ai', label: 'AI 助手', icon: 'zap', ready: false },
+  { id: 'password', label: '密码生成器', icon: 'key', blurb: '本机生成，不落盘不联网' },
+  { id: 'manual', label: '命令手册', icon: 'list', blurb: '离线命令速查（214 条 / 9 类）' },
 ]
 
 /* ── 密码生成器 ─────────────────────────────────── */
@@ -167,37 +168,52 @@ function PasswordTool(): React.JSX.Element {
 /* ── 视图 ───────────────────────────────────────── */
 
 export function ToolsSidebar(): React.JSX.Element {
+  const section = useStoreShallow((s) => ({ section: s.toolsSection })).section
   return (
     <aside className="panel" aria-label="工具">
       <header className="panel-header">
         <span className="panel-title">工具</span>
       </header>
       <div className="panel-body">
-        <div className="sessions">
-          {TOOLS.map((tool, i) => (
-            <div
+        <nav className="sessions">
+          {TOOLS.map((tool) => (
+            <button
               key={tool.id}
-              className={`session-item${i === 0 ? ' session-item--active' : ''}`}
-              role="button"
-              tabIndex={0}
+              type="button"
+              className={`settings-nav${tool.id === section ? ' settings-nav--active' : ''}`}
+              aria-current={tool.id === section || undefined}
+              onClick={() => actions.setToolsSection(tool.id)}
             >
               <Icon name={tool.icon} size={14} />
-              <div className="session-item__body">
-                <div className="session-item__title">{tool.label}</div>
-                <div className="session-item__meta">{tool.ready ? '可用' : '待接入'}</div>
-              </div>
-            </div>
+              <span className="settings-nav__body">
+                <span className="settings-nav__title">{tool.label}</span>
+                <span className="settings-nav__desc">{tool.blurb}</span>
+              </span>
+            </button>
           ))}
-        </div>
+        </nav>
       </div>
       <div className="panel-footer">
-        <span className="form-footer-hint">1 / {TOOLS.length} 个工具已可用</span>
+        <span className="form-footer-hint">
+          AI 助手与命令手册已各自成页（左侧导航「AI 助手」）
+        </span>
       </div>
     </aside>
   )
 }
 
 export default function ToolsView(): React.JSX.Element {
+  const section = useStoreShallow((s) => ({ section: s.toolsSection })).section
+
+  // 命令手册自带完整工具栏与左右分栏，所以单独成块、不套外层 content-scroll
+  if (section === 'manual') {
+    return (
+      <main className="content" aria-label="命令手册">
+        <CommandManual />
+      </main>
+    )
+  }
+
   return (
     <main className="content" aria-label="工具">
       <div className="t-toolbar">

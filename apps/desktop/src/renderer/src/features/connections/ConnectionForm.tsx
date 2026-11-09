@@ -697,7 +697,10 @@ export default function ConnectionForm(): React.JSX.Element {
       {/* ── 2. 连接设置 ───────────────────────── */}
       <Section>连接设置</Section>
       <div className="t-grid t-grid--2 form-section-body">
-        <Field label="终端显示编码">
+        <Field
+          label="终端显示编码"
+          hint="⚠️ 尚未生效：主进程目前把 SSH/PTY 输出固定按 UTF-8 解码，非 UTF-8 的远端会乱码。这里保留字段是为了主进程改造后即可生效（需改为传原始字节）。"
+        >
           <Select
             value={draft.encoding}
             onChange={(e) => patch('encoding', e.target.value as TerminalEncoding)}

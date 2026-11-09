@@ -23,13 +23,18 @@ import { toast } from '../../components/Toast'
 import { formatBytes, formatDate, formatRelativeTime } from '../../lib/format'
 import {
   deleteSessionLog,
+  loadRecordingSettings,
   loadSessionLogs,
   readSessionLog,
+  saveRecordingSettings,
   stopSessionLog,
   useStoreShallow,
   type LogReadResult,
-  type SessionLogMeta,
+  type RecordingSummary,
 } from '../../lib/store'
+import { Switch, TextInput } from '../../components/Form'
+import { Section } from '../../components/Button'
+import { ReplayPlayer } from './ReplayPlayer'
 import './sessionlog.css'
 
 const READ_LIMIT = 256 * 1024
@@ -111,7 +116,7 @@ export function SessionLogSidebar(): React.JSX.Element {
 
 /* ── 内容查看器 ───────────────────────────────── */
 
-function Viewer({ log }: { log: SessionLogMeta }): React.JSX.Element {
+function Viewer({ log }: { log: RecordingSummary }): React.JSX.Element {
   const [page, setPage] = useState<LogReadResult | null>(null)
   const [loading, setLoading] = useState(false)
   const scrollerRef = useRef<HTMLPreElement | null>(null)
@@ -151,6 +156,16 @@ function Viewer({ log }: { log: SessionLogMeta }): React.JSX.Element {
         <Icon name="notes" size={14} />
         <span className="log-viewer__title">{log.title}</span>
         <Badge tone="outline">{formatBytes(log.sizeBytes)}</Badge>
+        {log.hasRecording ? (
+          <Badge tone="accent">
+            含录制 {log.frames ?? 0} 帧
+            {log.recBytes ? ` · ${formatBytes(log.recBytes)}` : ''}
+            {log.compressed ? '（已压缩）' : ''}
+          </Badge>
+        ) : (
+          <Badge tone="warn">无录制数据</Badge>
+        )}
+        {log.skippedTicks ? <Badge>增量跳过 {log.skippedTicks}</Badge> : null}
         {log.hasTiming ? <Badge tone="accent">含时间线</Badge> : null}
         {log.stopReason ? (
           <Badge tone={log.stopReason.includes('上限') ? 'warn' : 'default'}>{log.stopReason}</Badge>
@@ -211,13 +226,20 @@ export default function SessionLogView(): React.JSX.Element {
     error: s.logsError,
   }))
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<SessionLogMeta | null>(null)
+  const [replayId, setReplayId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<RecordingSummary | null>(null)
+  const recording = useStoreShallow((s) => ({ cfg: s.recordingSettings })).cfg
+
+  useEffect(() => {
+    void loadRecordingSettings()
+  }, [])
 
   useEffect(() => {
     void loadSessionLogs()
   }, [])
 
   const selected = logs.find((l) => l.logId === selectedId) ?? null
+  const replayTarget = logs.find((l) => l.logId === replayId) ?? null
 
   return (
     <main className="content" aria-label="会话日志">
@@ -241,6 +263,46 @@ export default function SessionLogView(): React.JSX.Element {
           分享或上传日志前请先自行检查与脱敏。
         </Banner>
       </div>
+
+      {recording ? (
+        <>
+          <Section right={<Badge tone={recording.enabled ? 'accent' : 'default'}>{recording.enabled ? '允许录制' : '未启用'}</Badge>}>
+            录制设置
+          </Section>
+          <div className="rec-settings">
+            <div className="settings-switch-row">
+              <Switch
+                checked={recording.enabled}
+                onChange={(v) => void saveRecordingSettings({ enabled: v })}
+                label="允许录制（默认关闭）"
+              />
+              <div className="t-field__hint">
+                录制会把终端输出**原样**写进快照文件，可能含口令与 token。
+                默认关闭是刻意的：不该替用户决定留痕。
+              </div>
+            </div>
+            <div className="settings-switch-row">
+              <Switch
+                checked={recording.autoCompress}
+                onChange={(v) => void saveRecordingSettings({ autoCompress: v })}
+                label="结束后自动压缩"
+              />
+              <div className="t-field__hint">实测可减少约 89% 体积，代价是停止时多等一点。</div>
+            </div>
+            <div className="settings-switch-row">
+              <label className="t-field__label" htmlFor="rec-interval">快照间隔 (ms)</label>
+              <TextInput
+                id="rec-interval"
+                type="number"
+                mono
+                value={String(recording.intervalMs)}
+                onChange={(e) => void saveRecordingSettings({ intervalMs: Number(e.target.value) || 1000 })}
+              />
+              <div className="t-field__hint">最小 1000ms；填更小的值会被自动抬到 1000。</div>
+            </div>
+          </div>
+        </>
+      ) : null}
 
       {!ready && error ? (
         <div style={{ padding: '10px 12px 0' }}>
@@ -275,25 +337,49 @@ export default function SessionLogView(): React.JSX.Element {
                 <div className="log-item__meta">
                   <span>{formatDate(log.startedAt)}</span>
                   <span>{formatBytes(log.sizeBytes)}</span>
+                  {log.hasRecording ? <span>{log.frames ?? 0} 帧</span> : <span>无录制</span>}
                   {log.stopReason ? <span>{log.stopReason}</span> : null}
                 </div>
-                <IconButton
-                  icon="trash"
-                  label={`删除 ${log.title}`}
-                  size={12}
-                  tone="danger"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setPendingDelete(log)
-                  }}
-                />
+                <div className="log-item__actions">
+                  <IconButton
+                    icon="eye"
+                    label={
+                      log.hasRecording
+                        ? `回放 ${log.title}`
+                        : `${log.title} 无录制数据（仅文本日志），无法回放`
+                    }
+                    size={12}
+                    tone={log.hasRecording ? 'accent' : 'default'}
+                    disabled={!log.hasRecording}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setReplayId(log.logId)
+                    }}
+                  />
+                  <IconButton
+                    icon="trash"
+                    label={`删除 ${log.title}`}
+                    size={12}
+                    tone="danger"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setPendingDelete(log)
+                    }}
+                  />
+                </div>
               </div>
             ))
           )}
         </div>
 
         <div className="log-detail">
-          {selected ? (
+          {replayTarget ? (
+            <ReplayPlayer
+              logId={replayTarget.logId}
+              title={replayTarget.title}
+              onClose={() => setReplayId(null)}
+            />
+          ) : selected ? (
             <Viewer log={selected} key={selected.logId} />
           ) : (
             <EmptyState

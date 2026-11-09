@@ -44,8 +44,6 @@ const THEME_OPTIONS: readonly SelectOption[] = [
   { value: 'light', label: '浅色' },
 ]
 
-const ENCODINGS = ['utf-8', 'gbk', 'gb18030', 'big5', 'latin1', 'euc-jp', 'shift_jis'] as const
-
 export const SECTION_META: Record<SettingsSection, { label: string; icon: string; blurb: string }> = {
   app: { label: '外观与通用', icon: 'eye', blurb: '主题、语言与启动行为' },
   terminal: { label: '终端行为', icon: 'terminal', blurb: '字体、光标、回看与编码' },
@@ -60,16 +58,6 @@ export const SECTION_META: Record<SettingsSection, { label: string; icon: string
 export const SETTINGS_FIELDS: Record<Exclude<SettingsSection, 'highlights' | 'hotkeys'>, readonly FieldDef[]> = {
   app: [
     { path: 'app.theme', label: '主题', kind: 'select', options: THEME_OPTIONS, hint: '浅色主题仍在打磨中' },
-    {
-      path: 'app.language',
-      label: '界面语言',
-      kind: 'select',
-      options: [
-        { value: 'zh-CN', label: '简体中文' },
-        { value: 'en-US', label: 'English' },
-      ],
-      hint: '目前界面文案为中文，多语言资源尚未接入',
-    },
     { path: 'app.restoreLastSession', label: '启动时恢复上次会话', kind: 'switch', hint: '只恢复界面状态，不会自动重连主机' },
     { path: 'app.minimizeToTray', label: '关闭窗口时最小化到托盘', kind: 'switch' },
     { path: 'app.showTrayIcon', label: '显示托盘图标', kind: 'switch' },
@@ -83,12 +71,6 @@ export const SETTINGS_FIELDS: Record<Exclude<SettingsSection, 'highlights' | 'ho
         { value: 'beta', label: '测试版' },
         { value: 'dev', label: '开发版' },
       ],
-    },
-    {
-      path: 'app.telemetry',
-      label: '匿名使用统计',
-      kind: 'switch',
-      hint: '默认关闭（隐私优先）。开启后也只上报聚合计数，不含命令与地址。',
     },
   ],
 
@@ -117,7 +99,6 @@ export const SETTINGS_FIELDS: Record<Exclude<SettingsSection, 'highlights' | 'ho
     { path: 'terminal.copyOnSelect', label: '选中即复制', kind: 'switch' },
     { path: 'terminal.rightClickPaste', label: '右键粘贴', kind: 'switch' },
     { path: 'terminal.scrollback', label: '回看行数', kind: 'number', min: 100, max: 200000, step: 1000, hint: '越大越占内存' },
-    { path: 'terminal.wrapLines', label: '自动换行', kind: 'switch' },
     {
       path: 'terminal.bell',
       label: '响铃',
@@ -129,12 +110,16 @@ export const SETTINGS_FIELDS: Record<Exclude<SettingsSection, 'highlights' | 'ho
       ],
     },
     {
-      path: 'terminal.defaultEncoding',
-      label: '默认编码',
+      path: 'terminal.colorScheme',
+      label: '配色主题',
       kind: 'select',
-      options: ENCODINGS.map((e) => ({ value: e, label: e })),
+      hint: '内置三套；改完立即生效',
+      options: [
+        { value: 'default-dark', label: '深色（默认）' },
+        { value: 'light', label: '浅色' },
+        { value: 'high-contrast', label: '高对比' },
+      ],
     },
-    { path: 'terminal.colorScheme', label: '配色主题', kind: 'text', hint: '内置 default-dark；自定义主题后续接入' },
     { path: 'terminal.linkDetection', label: '识别终端内链接', kind: 'switch' },
   ],
 

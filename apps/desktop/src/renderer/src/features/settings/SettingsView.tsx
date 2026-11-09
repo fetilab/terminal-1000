@@ -21,7 +21,7 @@ import { Icon, type IconName } from '../../components/Icon'
 import { toast } from '../../components/Toast'
 import { invoke } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
-import { actions, applyTheme, useStoreShallow } from '../../lib/store'
+import { actions, applyTerminalSettings, applyTheme, useStoreShallow } from '../../lib/store'
 import {
   SECTION_META,
   SETTINGS_FIELDS,
@@ -93,6 +93,8 @@ function useSettings(): {
         )
         setSettings(next)
         if (path === 'app.theme') applyTheme(next.app.theme)
+        // 终端相关改一项就推一次，已打开的 xterm 立刻跟着变（热更新）
+        if (path.startsWith('terminal.')) applyTerminalSettings(next.terminal)
       } catch (err) {
         toast.error(`设置保存失败：${errorText(err)}`)
         void reload()
@@ -110,6 +112,7 @@ function useSettings(): {
       )
       setSettings(next)
       applyTheme(next.app.theme)
+      applyTerminalSettings(next.terminal)
       toast.ok(`「${SECTION_META[section].label}」已恢复默认值`)
     } catch (err) {
       toast.error(`重置失败：${errorText(err)}`)

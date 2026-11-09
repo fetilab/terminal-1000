@@ -4,10 +4,12 @@
 /**
  * sessionlog 域：会话日志与录制。
  *
- * 两种产物：
- * - `.log`    纯文本输出（给人看、给 grep 用）
- * - `.timing` JSONL 时间线（每行 `{t, n}`：距开始的毫秒偏移 + 本次写入的字符数），
- *             用于按原始节奏回放（对齐 asciinema 的思路，但格式自定）
+ * spec §5.7 的两种记录方式都在这里：
+ * - **会话日志**：`.log` 纯文本输出（给人看、给 grep 用）
+ *   + `.timing` JSONL 时间线（每行 `{t, n}`：距开始的毫秒偏移 + 本次写入的字符数）
+ * - **会话录制**：`.rec`（JSONL：header + 带时间戳的输出增量帧），停止时可自动压成 `.rec.gz`
+ *   供回放工具逐帧/拖拽/变速播放。**我们录的是输出流而不是屏幕快照**
+ *   （主进程没有 VT 仿真器，渲染层有 xterm）—— 详见 recording.ts 开头的差异说明。
  *
  * 设计要点：
  * - 走 `subscribeSessionData`（中立契约）而不是监听渲染层的 SSH_DATA ——
@@ -33,8 +35,20 @@ import {
 } from 'node:fs'
 import { basename, join } from 'node:path'
 import { z } from 'zod'
+import {
+  DEFAULT_RECORDING_SETTINGS,
+  MAX_INTERVAL_MS,
+  MIN_INTERVAL_MS,
+  RecordingWriter,
+  clampInterval,
+  normalizeRecordingSettings,
+  readRecordingLines,
+  type RecordingSettings,
+  type RecordingSummary,
+} from './recording'
 import { AppError, parseInput } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
+import { readRecordingSettings, updateRecordingSettings } from '../settings'
 import { createLogger } from '../../logger'
 import { subscribeSessionClosed, subscribeSessionData } from '../session-registry'
 
@@ -57,8 +71,13 @@ interface Recording {
   title: string
   logPath: string
   timingPath: string
+  /** 快照录制文件（未开启录制时为 ''） */
+  recPath: string
   logStream: WriteStream
   timingStream: WriteStream
+  /** 增量帧写入器（未开启录制时为 null） */
+  writer: RecordingWriter | null
+  intervalMs: number
   startedAt: number
   bytes: number
   /** 达到上限或出错后停止写入 */
@@ -94,13 +113,45 @@ interface LogMeta {
   bytes: number
   /** 停止原因：正常停止 / 达到上限 / 会话断开 */
   stopReason?: string
+  // ── 快照录制（.rec）的统计；未录制时缺省 ─────────────────────────────
+  /** 快照帧数（帧 = 一个间隔内的输出增量） */
+  frames?: number
+  /** 因"内容与上一帧相同"而跳过的 tick 次数（增量效果的证据） */
+  skippedTicks?: number
+  /** 未压缩时 .rec 的字节数 */
+  recBytes?: number
+  /** 压缩后 .rec.gz 的字节数 */
+  gzBytes?: number
+  /** 是否已压缩（压缩后 .rec 被删除，只留 .rec.gz） */
+  compressed?: boolean
+  /** 快照间隔 */
+  intervalMs?: number
+}
+
+export interface SessionLogServiceOptions {
+  /**
+   * 读当前录制设置（间隔 / 自动压缩 / 是否录制）。
+   * 注入而不是直接 import settings：单测不需要拉进 store。
+   */
+  loadSettings?: () => RecordingSettings
+  /** 注入时钟与定时器（测试可精确驱动"间隔到点"） */
+  now?: () => number
+  timer?: import('./recording').RecordingTimer
 }
 
 export class SessionLogService {
   private readonly recordings = new Map<string, Recording>()
 
-  constructor(private readonly logDir: string) {
+  constructor(
+    private readonly logDir: string,
+    private readonly options: SessionLogServiceOptions = {},
+  ) {
     if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true })
+  }
+
+  /** 当前生效的录制设置（外部输入一律过 normalize，间隔 <1s 会被抬到 1s） */
+  recordingSettings(): RecordingSettings {
+    return normalizeRecordingSettings(this.options.loadSettings?.() ?? DEFAULT_RECORDING_SETTINGS)
   }
 
   private metaPath(logId: string): string {
@@ -119,7 +170,11 @@ export class SessionLogService {
    * 开始录制。
    * @returns logId（供 stop / read / delete 使用）
    */
-  start(sessionId: string, title?: string): { logId: string; logPath: string } {
+  start(
+    sessionId: string,
+    title?: string,
+    startOptions: { cols?: number; rows?: number; snapshot?: boolean } = {},
+  ): { logId: string; logPath: string; recPath?: string; frames?: number } {
     if (this.recordings.has(sessionId)) {
       throw AppError.conflict('该会话已在录制中')
     }
@@ -128,19 +183,50 @@ export class SessionLogService {
     const logPath = join(this.logDir, `${logId}.log`)
     const timingPath = join(this.logDir, `${logId}.timing`)
 
-    const startedAt = Date.now()
+    const settings = this.recordingSettings()
+    // 「是否录制终端数据」= 是否产生快照；调用方也可按会话显式要求
+    const wantSnapshot = settings.enabled || startOptions.snapshot === true
+    const recPath = join(this.logDir, `${logId}.rec`)
+    const startedAt = this.options.now?.() ?? Date.now()
+
     const recording: Recording = {
       logId,
       sessionId,
       title: title ?? sessionId,
       logPath,
       timingPath,
+      recPath: wantSnapshot ? recPath : '',
       logStream: createWriteStream(logPath, { flags: 'a' }),
       timingStream: createWriteStream(timingPath, { flags: 'a' }),
+      writer: null,
+      intervalMs: settings.intervalMs,
       startedAt,
       bytes: 0,
       stopped: false,
       unsubscribe: () => {},
+    }
+
+    if (wantSnapshot) {
+      const writer = new RecordingWriter({
+        path: recPath,
+        intervalMs: settings.intervalMs,
+        header: {
+          logId,
+          sessionId,
+          title: recording.title,
+          startedAt: new Date(startedAt).toISOString(),
+          ...(startOptions.cols === undefined ? {} : { cols: startOptions.cols }),
+          ...(startOptions.rows === undefined ? {} : { rows: startOptions.rows }),
+        },
+        ...(this.options.now === undefined ? {} : { clock: this.options.now }),
+        ...(this.options.timer === undefined ? {} : { timer: this.options.timer }),
+        onError: (err) => {
+          log.warn(`快照录制写入失败（停止录制）: ${err.message}`)
+          this.stop(sessionId, `快照写入失败：${err.message}`)
+        },
+      })
+      writer.start()
+      recording.writer = writer
     }
 
     // 必须挂 error 处理：磁盘满、目录被删、权限被撤销都会让写流出错，
@@ -166,8 +252,12 @@ export class SessionLogService {
       bytes: 0,
     })
 
-    log.info(`开始录制会话 ${sessionId} → ${basename(logPath)}`)
-    return { logId, logPath }
+    log.info(
+      `开始录制会话 ${sessionId} → ${basename(logPath)}${wantSnapshot ? `（快照，间隔 ${settings.intervalMs}ms）` : ''}`,
+    )
+    return wantSnapshot
+      ? { logId, logPath, recPath, frames: 0 }
+      : { logId, logPath }
   }
 
   /** 追加一段输出（含上限保护） */
@@ -183,18 +273,49 @@ export class SessionLogService {
 
     recording.bytes += chunk.length
     recording.logStream.write(chunk)
+    // 快照侧只做缓冲，按间隔合并成帧（空缓冲的 tick 会被跳过 → 增量）
+    recording.writer?.push(chunk)
     // 时间线：偏移 + 本次字符数
     recording.timingStream.write(`${JSON.stringify({ t: Date.now() - recording.startedAt, n: chunk.length })}\n`)
   }
 
-  /** 停止录制（不传 sessionId 则停全部） */
+  /**
+   * 停止录制（不传 sessionId 则停全部）。
+   *
+   * 保持**同步**契约（既有调用方如 ssh 断开时是 fire-and-forget）：
+   * 文本日志与元信息立刻落盘；快照的补帧/压缩是异步的，由 `finalize()` 完成。
+   * 需要拿到压缩结果时用 `stopAndFinalize()`。
+   */
   stop(sessionId?: string, reason = '用户停止'): { stopped: string[] } {
+    const pending = this.finalize(sessionId, reason)
+    // 不等待，但要吞掉 rejection：没人 await 时不能让未处理异常冒出来
+    pending.catch((err: unknown) => log.warn('录制收尾失败', err))
+    return { stopped: this.lastStopped }
+  }
+
+  /** 停止并等待快照收尾（补最后一帧 + 可选压缩）完成 */
+  async stopAndFinalize(
+    sessionId?: string,
+    reason = '用户停止',
+  ): Promise<{ stopped: string[]; recordings: RecordingSummary[] }> {
+    return this.finalize(sessionId, reason)
+  }
+
+  private lastStopped: string[] = []
+
+  private async finalize(
+    sessionId: string | undefined,
+    reason: string,
+  ): Promise<{ stopped: string[]; recordings: RecordingSummary[] }> {
     const targets = sessionId ? [sessionId] : [...this.recordings.keys()]
     const stopped: string[] = []
+    const summaries: RecordingSummary[] = []
+    const settings = this.recordingSettings()
 
+    const pending: Array<Promise<void>> = []
     for (const id of targets) {
       const rec = this.recordings.get(id)
-      if (!rec) continue
+      if (!rec || rec.stopped) continue
 
       rec.stopped = true
       rec.unsubscribe()
@@ -205,7 +326,8 @@ export class SessionLogService {
         /* 已关闭 */
       }
 
-      this.writeMeta({
+      const writer = rec.writer
+      const meta: LogMeta = {
         logId: rec.logId,
         sessionId: rec.sessionId,
         title: rec.title,
@@ -213,14 +335,42 @@ export class SessionLogService {
         stoppedAt: new Date().toISOString(),
         bytes: rec.bytes,
         stopReason: reason,
-      })
+        ...(writer === null ? {} : { intervalMs: rec.intervalMs, ...writer.liveStats() }),
+      }
+      this.writeMeta(meta)
+
+      if (writer !== null) {
+        const done = writer
+          .stop({ compress: settings.autoCompress })
+          .then((summary) => {
+            summaries.push(summary)
+            this.writeMeta({
+              ...meta,
+              frames: summary.frames,
+              skippedTicks: summary.skippedTicks,
+              recBytes: summary.gzBytes === undefined ? summary.bytes : summary.bytes,
+              ...(summary.gzBytes === undefined ? {} : { gzBytes: summary.gzBytes }),
+              compressed: summary.compressed,
+            })
+            log.info(
+              `快照收尾 ${rec.logId}：${summary.frames} 帧 / 跳过 ${summary.skippedTicks} 次` +
+                ` / ${summary.bytes} 字节${summary.compressed ? ` → ${summary.gzBytes} 字节（gzip）` : ''}`,
+            )
+          })
+          .catch((err: unknown) => {
+            log.warn('快照收尾失败（保留 .rec）', err)
+          })
+        pending.push(done)
+      }
 
       this.recordings.delete(id)
       stopped.push(rec.logId)
       log.info(`停止录制 ${rec.logId}（${reason}，${rec.bytes} 字节）`)
     }
 
-    return { stopped }
+    this.lastStopped = stopped
+    await Promise.all(pending)
+    return { stopped, recordings: summaries }
   }
 
   /** 会话断开时自动收尾（由 ssh 服务在会话关闭时调用） */
@@ -229,18 +379,45 @@ export class SessionLogService {
   }
 
   /** 正在录制的会话 */
-  active(): Array<{ sessionId: string; logId: string; title: string; bytes: number; startedAt: string }> {
-    return [...this.recordings.values()].map((r) => ({
-      sessionId: r.sessionId,
-      logId: r.logId,
-      title: r.title,
-      bytes: r.bytes,
-      startedAt: new Date(r.startedAt).toISOString(),
-    }))
+  active(): Array<{
+    sessionId: string
+    logId: string
+    title: string
+    bytes: number
+    startedAt: string
+    /** 是否在录快照 */
+    recording: boolean
+    /** 已写出的快照帧数 */
+    frames: number
+    /** 因内容未变而跳过的 tick 数 */
+    skippedTicks: number
+  }> {
+    return [...this.recordings.values()].map((r) => {
+      const stats = r.writer?.liveStats()
+      return {
+        sessionId: r.sessionId,
+        logId: r.logId,
+        title: r.title,
+        bytes: r.bytes,
+        startedAt: new Date(r.startedAt).toISOString(),
+        recording: r.writer !== null,
+        frames: stats?.frames ?? 0,
+        skippedTicks: stats?.skippedTicks ?? 0,
+      }
+    })
   }
 
   /** 列出已保存的日志（按开始时间倒序） */
-  list(): Array<LogMeta & { sizeBytes: number; hasTiming: boolean }> {
+  list(): Array<
+    LogMeta & {
+      sizeBytes: number
+      hasTiming: boolean
+      /** 是否存在快照（.rec 或 .rec.gz） */
+      hasRecording: boolean
+      /** 快照文件实际占用（压缩后取 .gz 大小） */
+      recBytes: number
+    }
+  > {
     let files: string[] = []
     try {
       files = readdirSync(this.logDir)
@@ -248,17 +425,25 @@ export class SessionLogService {
       return []
     }
 
-    const metas: Array<LogMeta & { sizeBytes: number; hasTiming: boolean }> = []
+    const metas: Array<
+      LogMeta & { sizeBytes: number; hasTiming: boolean; hasRecording: boolean; recBytes: number }
+    > = []
     for (const f of files) {
       if (!f.endsWith('.meta.json')) continue
       try {
         const meta = JSON.parse(readFileSync(join(this.logDir, f), 'utf8')) as LogMeta
         const logFile = join(this.logDir, `${meta.logId}.log`)
         const timingFile = join(this.logDir, `${meta.logId}.timing`)
+        const recFile = join(this.logDir, `${meta.logId}.rec`)
+        const gzFile = join(this.logDir, `${meta.logId}.rec.gz`)
+        const hasGz = existsSync(gzFile)
+        const hasRec = existsSync(recFile)
         metas.push({
           ...meta,
           sizeBytes: existsSync(logFile) ? statSync(logFile).size : 0,
           hasTiming: existsSync(timingFile),
+          hasRecording: hasRec || hasGz,
+          recBytes: hasGz ? statSync(gzFile).size : hasRec ? statSync(recFile).size : 0,
         })
       } catch {
         /* 跳过损坏的元信息 */
@@ -326,8 +511,103 @@ export class SessionLogService {
   }
 
   /** 删除日志（连同时间线与元信息） */
+  /**
+   * 回放数据读取：按**时间区间**取快照帧（不把整场录制塞给渲染层）。
+   *
+   * - `fromMs` / `toMs`：相对录制开始的毫秒区间（闭开区间 [from, to)）
+   * - `limit`：本次最多返回多少帧（默认 2000，上限 20000）；超出时 `hasMore=true`
+   * - `totalMs`：整场录制的总时长（渲染层用它画进度条）
+   *
+   * 实现是流式扫一遍文件：内存只保留窗口内的帧（有 limit 上限），
+   * 时间轴信息在全扫描中得到。`.rec` 与 `.rec.gz` 都能读。
+   */
+  async replay(
+    logId: string,
+    options: { fromMs?: number; toMs?: number; limit?: number } = {},
+  ): Promise<{
+    logId: string
+    frames: Array<{ tMs: number; data: string }>
+    fromMs: number
+    toMs: number | null
+    totalMs: number
+    /** 窗口内（未截断前）共有多少帧 */
+    frameCount: number
+    /** 是否还有更多（limit 截断） */
+    hasMore: boolean
+    intervalMs: number
+    cols?: number
+    rows?: number
+    /** 数据源是否为压缩文件 */
+    compressed: boolean
+    /** 文件路径（UI 上"打开所在目录"用） */
+    path: string
+  }> {
+    const { filePath, compressed } = this.locateRecording(logId)
+    const fromMs = Math.max(0, options.fromMs ?? 0)
+    const toMs = options.toMs === undefined ? null : Math.max(0, options.toMs)
+    const limit = Math.min(20000, Math.max(1, Math.trunc(options.limit ?? 2000)))
+
+    const frames: Array<{ tMs: number; data: string }> = []
+    let frameCount = 0
+    let totalMs = 0
+    let hasMore = false
+    let header: { intervalMs: number; cols?: number; rows?: number } = { intervalMs: 0 }
+
+    await readRecordingLines(
+      filePath,
+      (line) => {
+        if (line.kind === 'header') {
+          header = {
+            intervalMs: line.header.intervalMs,
+            ...(line.header.cols === undefined ? {} : { cols: line.header.cols }),
+            ...(line.header.rows === undefined ? {} : { rows: line.header.rows }),
+          }
+          return
+        }
+        const { t, d } = line.frame
+        if (t > totalMs) totalMs = t
+        if (t < fromMs) return
+        if (toMs !== null && t >= toMs) return
+        frameCount += 1
+        if (frames.length < limit) frames.push({ tMs: t, data: d })
+        else hasMore = true
+      },
+      compressed,
+    )
+
+    return {
+      logId,
+      frames,
+      fromMs,
+      toMs,
+      totalMs,
+      frameCount,
+      hasMore,
+      intervalMs: header.intervalMs,
+      ...(header.cols === undefined ? {} : { cols: header.cols }),
+      ...(header.rows === undefined ? {} : { rows: header.rows }),
+      compressed,
+      path: filePath,
+    }
+  }
+
+  /** 找到某场录制的快照文件（优先压缩版）；没有则报 NOT_FOUND */
+  private locateRecording(logId: string): { filePath: string; compressed: boolean } {
+    const gz = join(this.logDir, `${logId}.rec.gz`)
+    if (existsSync(gz)) return { filePath: gz, compressed: true }
+    const rec = join(this.logDir, `${logId}.rec`)
+    if (existsSync(rec)) return { filePath: rec, compressed: false }
+    throw AppError.notFound(`该录制没有快照数据: ${logId}`)
+  }
+
   remove(logId: string): { deleted: boolean } {
-    const files = [`${logId}.log`, `${logId}.timing`, `${logId}.meta.json`]
+    const files = [
+      `${logId}.log`,
+      `${logId}.timing`,
+      `${logId}.rec`,
+      `${logId}.rec.gz`,
+      `${logId}.meta.json`,
+    ]
     let deleted = false
     for (const f of files) {
       const p = join(this.logDir, f)
@@ -349,12 +629,47 @@ export class SessionLogService {
 
 let service: SessionLogService | null = null
 
+/**
+ * 从设置域读取录制设置（形状由本模块定义，见 recording.ts）。
+ *
+ * 为什么这样绕：`Settings` 的形状在 `packages/shared`（lead 维护），
+ * 目前还没有录制分组。设置文档的深合并会**保留未知键**，所以先把
+ * `sessionRecording` 存在同一个设置文档里；等 shared 加上这组后，
+ * 只需把 loadSettings 换成读 `settings.sessionRecording` 即可，本模块不用改。
+ */
+function readRecordingSettingsFromSettings(): RecordingSettings {
+  try {
+    return normalizeRecordingSettings(readRecordingSettings())
+  } catch {
+    // 设置文档损坏/不可读时退回默认值：录制不能因此整个不可用
+    return DEFAULT_RECORDING_SETTINGS
+  }
+}
+
+/**
+ * 写录制设置（间隔一律过 clamp：<1s 抬到 1s）。
+ *
+ * 注意生效范围：**对之后新开始的录制生效**；正在进行的录制保持开始时读到的间隔，
+ * 避免帧节奏中途变化导致时间轴忽长忽短。
+ */
+function updateRecordingSettingsFromSettings(
+  patch: Partial<RecordingSettings>,
+): RecordingSettings {
+  const next = normalizeRecordingSettings({ ...readRecordingSettings(), ...patch })
+  updateRecordingSettings({ ...next })
+  return next
+}
+
 /** 单例创建时挂一次"会话关闭"订阅（只挂一次，避免重复注册） */
 let closedWired = false
 
 export function getSessionLogService(logDir: string): SessionLogService {
   if (!service) {
-    service = new SessionLogService(logDir)
+    service = new SessionLogService(logDir, {
+      // 录制设置存在设置域文档里（`sessionRecording` 分组）。
+      // 延迟到调用时读取，避免模块加载期就去碰 store。
+      loadSettings: () => readRecordingSettingsFromSettings(),
+    })
     if (!closedWired) {
       // 走中立契约订阅：不依赖 ssh 服务反过来调用我们。
       // 会话断开后必须收尾，否则写入流会一直挂着（句柄泄漏）。
@@ -374,6 +689,10 @@ export function _setSessionLogService(next: SessionLogService | null): void {
 
 const startSchema = z.object({
   sessionId: z.string().min(1),
+  cols: z.number().int().min(1).max(10000).optional(),
+  rows: z.number().int().min(1).max(10000).optional(),
+  /** 显式要求录制快照（即使设置里"是否录制"为关） */
+  snapshot: z.boolean().optional(),
   title: z.string().max(200).optional(),
 })
 
@@ -391,15 +710,36 @@ const readSchema = z.object({
 
 const deleteSchema = z.object({ logId: z.string().min(1) })
 
+const replaySchema = z.object({
+  logId: z.string().min(1),
+  fromMs: z.number().int().min(0).optional(),
+  toMs: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1).max(20000).optional(),
+})
+
+const recordingSettingsSchema = z.object({
+  /** 是否录制终端数据 */
+  enabled: z.boolean().optional(),
+  /** 快照间隔（毫秒）；<1000 会被抬到 1000 */
+  intervalMs: z.number().int().optional(),
+  /** 停止录制时自动压缩 */
+  autoCompress: z.boolean().optional(),
+})
+
 export const sessionlogHandlers: Record<string, IpcHandler> = {
   start: (payload, ctx: IpcContext) => {
-    const { sessionId, title } = parseInput(startSchema, payload)
-    return getSessionLogService(ctx.paths.sessionLogDir).start(sessionId, title)
+    const { sessionId, title, cols, rows, snapshot } = parseInput(startSchema, payload)
+    return getSessionLogService(ctx.paths.sessionLogDir).start(sessionId, title, {
+      ...(cols === undefined ? {} : { cols }),
+      ...(rows === undefined ? {} : { rows }),
+      ...(snapshot === undefined ? {} : { snapshot }),
+    })
   },
 
-  stop: (payload, ctx: IpcContext) => {
+  /** 停止并**等待**快照收尾（补帧 + 可选压缩）完成，返回每场录制的汇总 */
+  stop: async (payload, ctx: IpcContext) => {
     const { sessionId } = parseInput(stopSchema, payload ?? {})
-    return getSessionLogService(ctx.paths.sessionLogDir).stop(sessionId)
+    return getSessionLogService(ctx.paths.sessionLogDir).stopAndFinalize(sessionId)
   },
 
   /** 列出已保存日志 + 正在录制的会话 */
@@ -421,5 +761,29 @@ export const sessionlogHandlers: Record<string, IpcHandler> = {
   delete: (payload, ctx: IpcContext) => {
     const { logId } = parseInput(deleteSchema, payload)
     return getSessionLogService(ctx.paths.sessionLogDir).remove(logId)
+  },
+
+  /**
+   * 回放：按时间区间取快照帧（播放/暂停/拖拽/逐帧/变速都由渲染层实现，
+   * 主进程只负责"给我某个时间区间的帧"）。
+   */
+  replay: (payload, ctx: IpcContext) => {
+    const { logId, fromMs, toMs, limit } = parseInput(replaySchema, payload)
+    return getSessionLogService(ctx.paths.sessionLogDir).replay(logId, {
+      ...(fromMs === undefined ? {} : { fromMs }),
+      ...(toMs === undefined ? {} : { toMs }),
+      ...(limit === undefined ? {} : { limit }),
+    })
+  },
+
+  /** 读录制设置（间隔下限、自动压缩、是否录制） */
+  getSettings: (_payload, ctx: IpcContext) => {
+    return getSessionLogService(ctx.paths.sessionLogDir).recordingSettings()
+  },
+
+  /** 改录制设置（间隔 <1000ms 会被抬到 1000ms） */
+  setSettings: (payload, ctx: IpcContext) => {
+    const patch = parseInput(recordingSettingsSchema, payload ?? {})
+    return updateRecordingSettingsFromSettings(patch)
   },
 }

@@ -470,6 +470,74 @@
   line-height: 1.7;
 }
 
+/* ── 侧栏导航项（设置 / 外部服务 / 工具 共用） ─────────
+ *
+ * 放在全局 components.css（随入口 chunk 加载）而不是某个 feature 里：
+ * 它已被三个 feature 使用，而 feature 级 CSS 只在对应 chunk 加载时才生效 ——
+ * 那样「先打开 A 再打开 B」与「直接打开 B」会渲染成两个样子。
+ *
+ * 这个坑在同一个项目里踩了两次（先是复用 terminal 的 .session-item，
+ * 后是把本类放进 settings.css 又被 tools/services 复用），
+ * 所以判定规则写死：**被 ≥2 个 feature 用 → 提到这里**。
+ */
+.settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+}
+
+.settings-nav {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--t1000-radius-sm);
+  background: transparent;
+  color: var(--t1000-fg-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t1000-fast) var(--t1000-ease),
+    border-color var(--t1000-fast) var(--t1000-ease), color var(--t1000-fast) var(--t1000-ease);
+}
+
+.settings-nav:hover {
+  background: var(--t1000-bg-hover);
+  color: var(--t1000-fg);
+}
+
+.settings-nav--active {
+  background: var(--t1000-bg-active);
+  border-color: var(--t1000-border-accent);
+  color: var(--t1000-fg);
+}
+
+.settings-nav__body {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-nav__title {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.5;
+}
+
+.settings-nav__desc {
+  display: block;
+  color: var(--t1000-fg-faint);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── 分段控件（协议标签） ───────────────────────── */
 .t-segmented {
   display: inline-flex;
