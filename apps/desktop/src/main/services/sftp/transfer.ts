@@ -216,6 +216,13 @@ interface InternalTask {
   startedAtMs: number
   /** 上次进度事件时刻（节流用） */
   lastProgressAt: number
+  /**
+   * 解析后的保留语义：**请求级参数优先，其次全局设置**。
+   * 之前只读全局设置，导致 TransferRequest.preservePermissions 被静默忽略
+   * （真实服务端 e2e 才发现：远端 mode 停在 0644 而不是源的 0750）。
+   */
+  preservePermissions: boolean
+  preserveTimestamps: boolean
 }
 
 /** 闸门释放函数 */
@@ -411,6 +418,8 @@ export class TransferEngine {
       finishNotified: false,
       startedAtMs: 0,
       lastProgressAt: Number.NEGATIVE_INFINITY,
+      preservePermissions: request.preservePermissions ?? this.settings.preservePermissions,
+      preserveTimestamps: request.preserveTimestamps ?? this.settings.preserveTimestamps,
     }
     this.tasks.set(id, internal)
     this.order.push(id)
@@ -611,12 +620,12 @@ export class TransferEngine {
         this.reportFileProgress(internal, remotePath, position, meta.size)
       }
 
-      if (this.settings.preservePermissions) {
+      if (internal.preservePermissions) {
         await sftpFs.chmod(sftp, remotePath, meta.mode & 0o7777).catch((err: unknown) => {
           this.logger?.warn(`保留远端权限失败: ${remotePath}`, err)
         })
       }
-      if (this.settings.preserveTimestamps && sftp.utimes) {
+      if (internal.preserveTimestamps && sftp.utimes) {
         const seconds = meta.mtimeMs / 1000
         await sftpFs.utimes(sftp, remotePath, seconds, seconds).catch((err: unknown) => {
           this.logger?.warn(`保留远端时间戳失败: ${remotePath}`, err)
@@ -759,12 +768,12 @@ export class TransferEngine {
         this.reportFileProgress(internal, file.absolutePath, position, file.size)
       }
 
-      if (this.settings.preservePermissions && this.local.chmod) {
+      if (internal.preservePermissions && this.local.chmod) {
         await this.local.chmod(localPath, file.mode & 0o7777).catch((err: unknown) => {
           this.logger?.warn(`保留本地权限失败: ${localPath}`, err)
         })
       }
-      if (this.settings.preserveTimestamps && this.local.utimes) {
+      if (internal.preserveTimestamps && this.local.utimes) {
         const seconds = file.mtime
         await this.local.utimes(localPath, seconds, seconds).catch((err: unknown) => {
           this.logger?.warn(`保留本地时间戳失败: ${localPath}`, err)

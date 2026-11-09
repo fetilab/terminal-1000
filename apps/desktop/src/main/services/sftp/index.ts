@@ -103,6 +103,18 @@ function sftpFor(id: string): Promise<SftpLike> {
   if (cached) return cached.then(toSftpLike)
 
   const handle = requireSessionOrThrow(id)
+
+  // ★ TCP_NODELAY：ssh2 默认**不**设它，而我们的传输引擎是"一个 chunk 一个往返"，
+  // 于是每个往返都要吃一次 Nagle + delayed-ACK。真实服务端 e2e 实测（服务端按真实 sshd
+  // 设了 noDelay，只差客户端这一侧）：
+  //   3MB 上传：noDelay=true **57ms** ／ noDelay=false **6117ms**（约 107 倍）
+  // 这里在打开 SFTP 通道时补上；顺带也让同一连接的终端交互更跟手。
+  try {
+    ;(handle.client as unknown as { setNoDelay?: (v: boolean) => void }).setNoDelay?.(true)
+  } catch {
+    /* 某些实现没有该方法，忽略即可（不影响功能） */
+  }
+
   const pending = new Promise<SFTPWrapper>((resolve, reject) => {
     handle.client.sftp((err, sftp) => {
       if (err) reject(AppError.notConnected(`打开 SFTP 通道失败: ${err.message}`))
