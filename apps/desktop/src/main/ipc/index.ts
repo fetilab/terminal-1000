@@ -47,6 +47,7 @@ export function registerAllHandlers(): void {
   registerLazyDomain('broadcast', async () =>
     (await import('../services/broadcast')).broadcastHandlers,
   )
+  registerLazyDomain('quickcmd', async () => (await import('../services/quickcmd')).quickcmdHandlers)
 
   // 分两段报：否则"动作数变少"会让人误以为有域没挂上
   log.info(

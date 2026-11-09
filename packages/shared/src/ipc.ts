@@ -34,6 +34,7 @@ export const IPC_DOMAINS = [
   'sync',
   'hotkey',
   'broadcast',
+  'quickcmd',
 ] as const
 
 export type IpcDomain = (typeof IPC_DOMAINS)[number]
@@ -242,6 +243,28 @@ export const Actions = {
     'send',
     'list',
     'status',
+  ] as const,
+
+  quickcmd: [
+    'list',
+    'listGroups',
+    'save',
+    'delete',
+    'move',
+    'reorder',
+    'saveGroup',
+    'deleteGroup',
+    'previewGroupDelete',
+    'search',
+    'render',
+    'parameterDialog',
+    'execute',
+    'paste',
+    'analyze',
+    'variables',
+    'history',
+    'clearHistory',
+    'storage',
   ] as const,
 
   hotkey: [
