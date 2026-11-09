@@ -121,10 +121,15 @@ describe('buildRdpArgs：连接参数 → xfreerdp 命令行', () => {
     expect(args).toContain('/p:pw')
   })
 
-  it('没有口令/域时不生成对应参数', () => {
+  it('★ 没有口令时仍然生成 `/p:`（空值），以防 xfreerdp 转去命令行交互提问', () => {
     const args = buildRdpArgs(connection({ password: undefined, domain: undefined }))
-    expect(args.some((a) => a.startsWith('/p:'))).toBe(false)
+    // 域缺失 → 不生成 /d:
     expect(args.some((a) => a.startsWith('/d:'))).toBe(false)
+    // 但口令**必须**给一个（哪怕是空）：
+    // 不给的话 xfreerdp 会在命令行交互式索要凭据，而我们是以管道启动的（stdin 非 tty），
+    // 于是它以 ioctl 错误立即退出 —— 表现为无窗口、只留一个退出码（实测 145）。
+    // 给空值则会直接连上，由远端弹登录界面。
+    expect(args).toContain('/p:')
   })
 
   it('固定分辨率 → /size:WxH；跟随窗口 → 初始尺寸 + /dynamic-resolution', () => {

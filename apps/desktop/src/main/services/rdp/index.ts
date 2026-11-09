@@ -108,10 +108,15 @@ export function buildRdpArgs(connection: RdpConnection, options: RdpConnectOptio
   if (connection.domain !== undefined && connection.domain !== '') {
     args.push(`/d:${connection.domain}`)
   }
-  if (connection.password !== undefined && connection.password !== '') {
-    // 注意：口令会出现在本机进程列表里（见文件头"已知取舍"）
-    args.push(`/p:${connection.password}`)
-  }
+  // **必须显式给出 `/p:`，即使没有口令**。
+  //
+  // 否则 xfreerdp 会转去**命令行交互式索要凭据**；而我们是以管道启动的（stdin 不是 tty），
+  // 它会以 "ioctl 对设备不适当" 失败并立即退出 —— 表现为**没有窗口、只留一个退出码**
+  // （实测退出码 145），用户完全无从下手。
+  // 传空值则不同：它直接连上去，由**远端**弹出登录界面（参考产品也是这个表现）。
+  //
+  // 注意：口令会出现在本机进程列表里（见文件头"已知取舍"）。
+  args.push(`/p:${connection.password ?? ''}`)
   // 自签证书是 RDP 的常态；不忽略会让用户卡在证书对话框
   args.push('/cert:ignore')
 
@@ -179,6 +184,11 @@ function defaultExecutableExists(path: string): boolean {
 
 export interface RdpChildProcess {
   readonly pid?: number | undefined
+  /** 子进程 stderr（用于把失败原因带给用户）；注入式实现可以不给 */
+  readonly stderr?:
+    | { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown }
+    | null
+    | undefined
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
   on(event: 'error', listener: (err: Error) => void): unknown
   kill(signal?: NodeJS.Signals): boolean
@@ -205,6 +215,8 @@ interface RdpSession {
   executable: string
   /** 启动时刻，用于判断"秒退"（秒退几乎总是环境问题，不是网络问题） */
   startedAt: number
+  /** stderr 最后几行（失败时附给用户；只保留尾部，避免无限增长） */
+  stderrTail: string[]
   state: ConnectionState
   /** 我们主动结束（disconnect / resize 重启）→ 不算崩溃 */
   stopping: boolean
@@ -224,7 +236,12 @@ export class RdpManager {
     this.spawnProcess =
       options.spawn ??
       ((file, args) =>
-        spawn(file, [...args], { stdio: 'ignore' }) as unknown as RdpChildProcess)
+        spawn(file, [...args], {
+          // 早先这里是 'ignore'：结果 xfreerdp 的报错全被丢掉，
+          // 用户只看到一个退出码（例如 145），无人能判断原因。
+          // 改成捕获 stderr —— 客户端几乎总是把失败原因写在 stderr 上。
+          stdio: ['ignore', 'ignore', 'pipe'],
+        }) as unknown as RdpChildProcess)
   }
 
   list(): Array<{ sessionId: string; state: ConnectionState; host: string; executable: string }> {
@@ -261,6 +278,7 @@ export class RdpManager {
       child,
       executable,
       startedAt: Date.now(),
+      stderrTail: [],
       state: 'connecting',
       stopping: false,
       generation: 0,
@@ -363,6 +381,17 @@ export class RdpManager {
       session.state = 'failed'
     })
 
+    // 客户端几乎总把失败原因写在 stderr 上；只留尾部若干行避免无限增长
+    child.stderr?.on('data', (chunk) => {
+      const text = String(chunk)
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed.length === 0) continue
+        session.stderrTail.push(trimmed)
+        if (session.stderrTail.length > 8) session.stderrTail.shift()
+      }
+    })
+
     child.on('exit', (code, signal) => {
       if (exited) return
       exited = true
@@ -379,7 +408,14 @@ export class RdpManager {
       this.sink.state(
         session.sessionId,
         'disconnected',
-        crashed ? `远程桌面进程异常退出（code=${String(code)}）${explainRdpExit(session.executable, code, Date.now() - session.startedAt)}` : undefined,
+        crashed
+          ? `远程桌面进程异常退出（code=${String(code)}）` +
+            explainRdpExit(session.executable, code, Date.now() - session.startedAt) +
+            // 附上客户端自己的报错 —— 比任何我们自己猜的解释都准
+            (session.stderrTail.length > 0
+              ? `\n客户端输出：${session.stderrTail.slice(-3).join(' | ')}`
+              : '')
+          : undefined,
       )
       this.sink.exit(session.sessionId, {
         code,
