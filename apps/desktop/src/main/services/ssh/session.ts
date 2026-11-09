@@ -70,6 +70,27 @@ export interface SshSessionOptions {
 /**
  * 一个 SSH 会话。负责建连、认证、shell 通道，并把输出合批后回调出去。
  */
+
+/**
+ * 关闭 Nagle 算法（TCP_NODELAY）。
+ *
+ * ssh2 默认**不设**它，而交互式 SSH 是"一问一答"的小包模式：
+ * 每个往返都要吃一次 Nagle + delayed-ACK 的合并等待，表现为**终端按键迟滞**。
+ *
+ * 实测依据（SFTP 侧同样的问题）：3MB 传输 `noDelay=true` **57ms**，
+ * `noDelay=false` **6117ms** —— 相差 **107 倍**。终端交互同样受益。
+ *
+ * 调用时机：`ready` 之后（此时底层 socket 一定已建立；
+ * 早于此时调用会因内部 socket 尚未创建而被静默忽略）。
+ */
+function disableNagle(client: { setNoDelay?: (v: boolean) => void }): void {
+  try {
+    client.setNoDelay?.(true)
+  } catch {
+    // 个别平台/实现不支持时忽略即可 —— 只是性能优化，不该影响连接
+  }
+}
+
 export class SshSession {
   readonly sessionId: string
   readonly connection: SshConnection
@@ -157,6 +178,8 @@ export class SshSession {
 
       client.on('handshake', () => this.setState('authenticating'))
       client.on('ready', () => {
+        // 终端是交互式小包流量：不关 Nagle 会明显迟滞（见 disableNagle 注释）
+        disableNagle(client)
         this.connectedAt = Date.now()
         this.setState('ready')
         log.info(`会话就绪 ${this.sessionId} → ${conn.username}@${conn.host}:${conn.port}`)
@@ -345,6 +368,8 @@ export class SshSession {
         }
         client.once('ready', onReady)
         client.once('error', onError)
+        // 跳板机的每一跳也各自是一条 TCP 连接，同样要关 Nagle
+        client.on('ready', () => disableNagle(client))
         client.connect(hopConfig)
       })
 

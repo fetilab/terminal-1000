@@ -442,7 +442,8 @@ describe('execute 经中立契约真正写进终端（不注入发送器）', ()
       username: 'mosfet',
       localIp: '127.0.0.1',
     }
-    return new QuickCmdService({ store, context, now: () => FIXED.getTime() })
+    // deps 的字段名是 `variableContext`（不是 context）——我第一版照印象写错了
+    return new QuickCmdService({ store, variableContext: () => context, now: () => FIXED.getTime() })
   }
 
   it('★ 已登记的会话能收到命令（此前鸭子类型摸 session.write 必然失败）', async () => {
