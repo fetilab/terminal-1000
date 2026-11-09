@@ -17,7 +17,7 @@ import type { ForwardType, TunnelConnection } from '@t1000/shared'
 import { randomUUID } from 'node:crypto'
 import { AppError } from '../../errors'
 import { createLogger } from '../../logger'
-import { requireSession } from '../session-registry'
+import { getSession, listSessions, type SshSessionHandle } from '../session-registry'
 
 const log = createLogger('forward')
 
@@ -42,6 +42,35 @@ const DEFAULT_RECONNECT: ReconnectPolicy = { baseMs: 1000, maxMs: 30_000, attemp
  * 一条隧道的运行时实例。
  * 生命周期：open() → ready → (断开) → 退避重连 → ... → close()
  */
+
+/**
+ * 解析"承载这条隧道的 SSH 会话"。
+ *
+ * **为什么要这一层**：配置里的 `serverId` 是**连接** id（界面的"承载服务器"下拉
+ * 选的就是连接库里的条目），而会话注册表是按**会话** id 索引的（随机 UUID）。
+ * 早先这里直接把 `serverId` 当会话 id 查表，于是 `requireSession` 必然抛
+ * "会话不存在或已断开" —— **隧道从来没能真正打开过**。
+ * （UI 侧是用契约桩验证的，桩里 id 对得上，所以没暴露。）
+ *
+ * 解析顺序：
+ * 1. 先按会话 id 命中（兼容运行时直接拿 sessionId 传进来的调用）
+ * 2. 否则找该连接**当前就绪**的会话 —— 这正是"复用已有终端连接"的实现点：
+ *    用户先连上服务器，隧道借这条连接建立转发通道，无需重新认证
+ */
+export function resolveCarrierSession(serverId: string): SshSessionHandle {
+  const direct = getSession(serverId)
+  if (direct && direct.state === 'ready') return direct
+
+  const byConnection = listSessions().find(
+    (s) => s.connectionId === serverId && s.state === 'ready',
+  )
+  if (byConnection) return byConnection
+
+  throw new Error(
+    `没有可用的 SSH 会话承载该隧道（承载服务器：${serverId}）。请先连接到该服务器，再启动隧道。`,
+  )
+}
+
 export class Tunnel {
   readonly tunnelId: string
   private state: TunnelState = 'idle'
@@ -118,7 +147,7 @@ export class Tunnel {
   /** 本地转发：本地监听，每个连接经 SSH forwardOut 到远端目标 */
   private async startLocal(): Promise<void> {
     const c = this.config
-    const session = requireSession(c.serverId)
+    const session = resolveCarrierSession(c.serverId)
 
     const server = createServer((local) => {
       this.trackSocket(local)
@@ -159,7 +188,7 @@ export class Tunnel {
   /** 远程转发：请求远端监听，收到连接时转回本机目标 */
   private async startRemote(): Promise<void> {
     const c = this.config
-    const session = requireSession(c.serverId)
+    const session = resolveCarrierSession(c.serverId)
 
     await new Promise<void>((resolve, reject) => {
       session.client.forwardIn(c.remoteHost, c.remotePort, (err) => {
@@ -217,7 +246,7 @@ export class Tunnel {
   /** 动态转发：本地起一个 SOCKS5 服务，按请求目标经 SSH 出站 */
   private async startDynamic(): Promise<void> {
     const c = this.config
-    const session = requireSession(c.serverId)
+    const session = resolveCarrierSession(c.serverId)
 
     const server = createServer((client) => {
       this.trackSocket(client)
