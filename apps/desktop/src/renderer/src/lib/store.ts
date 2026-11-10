@@ -157,7 +157,9 @@ export type SettingsSectionId =
   | 'completion'
   | 'ai'
   | 'transfer'
-  | 'sync' | 'vault'
+  | 'sync'
+  | 'security'
+  | 'vault'
 
 /** 分组过滤器：前四个是固定视图，其余是分组 id */
 export const FILTER_ALL = '__all__'
@@ -219,6 +221,18 @@ export interface AppState {
   servicesSection: 'sync' | 'mcp'
   /** 工具页当前选中的工具 */
   toolsSection: 'password' | 'manual'
+  /** 全局搜索面板是否打开（放 store 是为了任何视图都能开它，不用逐层传 prop） */
+  globalSearchOpen: boolean
+  /**
+   * 会话 → 远端 shell 当前目录。
+   *
+   * 来源是终端输出里的 **OSC 7**（`\x1b]7;file://host/path\x07`）。
+   * 主进程**没有**提供"当前 cwd"的动作（`Actions.ssh` 里没有），
+   * 所以在渲染层用 xterm 的 OSC handler 自己解析 —— 不必为这件事改主进程。
+   * ⚠️ 代价：只有远端 shell 配置了发 OSC 7 才有值（bash 需要 PROMPT_COMMAND 钩子、
+   * zsh/fish 常见配置自带），拿不到时界面上要如实说明，而不是默默失效。
+   */
+  sessionCwd: Record<string, string>
 
   /* ── 会话日志 ── */
   sessionLogs: RecordingSummary[]
@@ -335,6 +349,8 @@ const initialState: AppState = {
   },
   servicesSection: 'sync',
   toolsSection: 'password',
+  globalSearchOpen: false,
+  sessionCwd: {},
   negotiations: {},
   broadcastGroups: [],
   broadcastLastSend: {},
@@ -657,6 +673,14 @@ export const actions = {
 
   setToolsSection(section: 'password' | 'manual') {
     setState({ toolsSection: section })
+  },
+
+  toggleGlobalSearch() {
+    setState((s) => ({ globalSearchOpen: !s.globalSearchOpen }))
+  },
+
+  closeGlobalSearch() {
+    setState({ globalSearchOpen: false })
   },
 
   setNotesFilter(filter: NotesFilter) {
@@ -1553,6 +1577,13 @@ export async function sendBroadcast(groupId: string, data: string): Promise<Broa
     toast.error(`广播发送失败：${errorText(err)}`)
     return null
   }
+}
+
+export function setSessionCwd(sessionId: string, path: string): void {
+  setState((s) => {
+    if (s.sessionCwd[sessionId] === path) return {} // 同一个值不触发更新
+    return { sessionCwd: { ...s.sessionCwd, [sessionId]: path } }
+  })
 }
 
 /* ────────────────────────────────────────────── 会话写入 */

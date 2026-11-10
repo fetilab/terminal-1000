@@ -11,9 +11,20 @@ import { getAppPaths } from './paths'
 import { broadcast, createWindow, getMainWindow, setWindowBoundsFile } from './window'
 import { destroyTray, hasTray, markQuitting, syncTray } from './tray'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
+import {
+  applyEarlySettings,
+  applyRuntimeSettings,
+  shutdownSystem,
+  startAutoLock,
+  startDailyBackup,
+} from './services/system'
 import { subscribeSessionClosed } from './services/session-registry'
 
 const log = createLogger('bootstrap')
+
+// 硬件加速**只能在 ready 之前**设置（ready 之后再调是空操作，用户会以为设置没生效）。
+// 这里读过一次设置；读失败会退回默认（开启），绝不让一个显示设置阻止启动。
+applyEarlySettings()
 
 /** 单实例：第二次启动时聚焦已有窗口 */
 const gotLock = app.requestSingleInstanceLock()
@@ -38,6 +49,8 @@ function installIpcBridge(ctx: IpcContext): void {
     // 二是 settings 服务当前正被队友修改，避免并行编辑同一文件。
     if (isSettingsWrite(raw) && !(res as { error?: unknown })?.error) {
       applyTraySettings()
+      // 开机自启等运行期系统项也要立刻跟上（否则用户改了要重启才生效，而它本可立即生效）
+      applyRuntimeSettings()
     }
     return res
   })
@@ -66,7 +79,14 @@ async function bootstrap(): Promise<void> {
   installIpcBridge(ctx)
   registerAllHandlers()
 
+  // ready 之后才能用的系统项：开机自启
+  applyRuntimeSettings()
+
   const mainWindow = createWindow()
+
+  // 自动锁屏（系统级空闲计时）与每日自动备份
+  startAutoLock(ctx)
+  startDailyBackup(ctx, paths.backupDir)
 
   // 托盘：按设置启用（原先 app.showTrayIcon / app.minimizeToTray 没有任何消费者）
   applyTraySettings()
@@ -102,14 +122,35 @@ async function bootstrap(): Promise<void> {
     void (async () => {
       try {
         const { getSettings } = await import('./services/settings')
-        const minimize = getSettings().app?.minimizeToTray ?? false
+        const appSettings = getSettings().app
+
+        // 「关闭窗口前确认」：先问一句，用户取消就什么都不做。
+        // 注意这里已经是异步路径（close 已被 preventDefault 拦下），所以可以放心 await 对话框。
+        if (appSettings?.confirmOnClose === true) {
+          const { dialog } = await import('electron')
+          const { response } = await dialog.showMessageBox(mainWindow, {
+            type: 'question',
+            buttons: ['关闭', '取消'],
+            defaultId: 1, // 默认落在"取消"：避免一个回车就把窗口关了
+            cancelId: 1,
+            title: '确认关闭',
+            message: '确定要关闭 terminal-1000 吗？',
+            detail: '正在运行的终端会话会被断开。',
+          })
+          if (response !== 0) {
+            log.info('用户在关闭确认中选择了取消')
+            return
+          }
+        }
+
+        const minimize = appSettings?.minimizeToTray ?? false
         if (minimize && hasTray()) {
           mainWindow.hide()
           log.info('窗口已最小化到托盘')
           return
         }
       } catch (err) {
-        log.warn('读取托盘设置失败，按直接退出处理', err)
+        log.warn('读取关闭相关设置失败，按直接退出处理', err)
       }
       // 真的退出：放行这次 close
       allowClose = true
@@ -193,6 +234,7 @@ function applyTraySettings(): void {
 async function shutdownServices(): Promise<void> {
   markQuitting()
   destroyTray()
+  shutdownSystem()
 
   type Cleanup = { label: string; run: () => void | Promise<void> }
 

@@ -86,5 +86,13 @@ export const PENDING_CONSUMERS: Record<string, string> = {
   'app.showTrayIcon': '主进程托盘图标（lead 实现中）',
   'app.autoCheckUpdate': '主进程更新检查（lead 实现中）',
   'app.updateChannel': '主进程更新通道（lead 实现中）',
+  'app.openAtLogin': 'services/system applyRuntimeSettings() → app.setLoginItemSettings；设置写入后经 IPC 钩子立即重应用',
+  'app.confirmOnClose': 'main/index.ts 窗口 close 处理器 → dialog.showMessageBox（默认落在「取消」，避免误关）',
+  'app.hardwareAcceleration': 'services/system applyEarlySettings() → app.disableHardwareAcceleration()（**必须在 ready 之前**，故需重启生效）',
+  'app.dailyBackup': 'services/system startDailyBackup() → 启动后 1 分钟首备、之后每 24 小时；未解锁时明确跳过',
+
+  // ── 锁定与备份 ──
+  'security.autoLockMinutes': 'services/system startAutoLock() → powerMonitor.getSystemIdleTime() 每 15s 检查，到点 store.lock() 并发 SECURITY_LOCKED',
+  'security.backupRetentionDays': 'services/system pruneBackups() → 只清理本应用生成的备份文件（前缀+后缀双匹配，绝不误删目录里其它文件）',
   'sync.scopes.credentials': '凭证同步范围（lead 实现中）',
 }

@@ -53,6 +53,9 @@ export const SECTION_META: Record<SettingsSection, { label: string; icon: string
   ai: { label: 'AI 助手', icon: 'activity', blurb: '交互模式、风险策略与执行上限' },
   transfer: { label: '文件传输', icon: 'download', blurb: '并发闸门、进度节流与冲突策略' },
   sync: { label: '同步与云端', icon: 'cloud', blurb: '零知识同步的开关与范围' },
+  // 命名刻意与 vault 的「存储与安全」区分：这里只管**锁定行为与备份保留**，
+  // vault 管**主密码与加解密**。两者混在一个分区里会让用户找不到东西。
+  security: { label: '锁定与备份', icon: 'clock', blurb: '空闲自动锁定与备份保留' },
   vault: { label: '存储与安全', icon: 'lock', blurb: '主密码、凭据加密与锁定' },
 }
 
@@ -75,6 +78,42 @@ export const SETTINGS_FIELDS: Record<
         { value: 'beta', label: '测试版' },
         { value: 'dev', label: '开发版' },
       ],
+    },
+    { path: 'app.openAtLogin', label: '开机自启', kind: 'switch', hint: '登录系统时自动启动' },
+    { path: 'app.confirmOnClose', label: '关闭窗口前确认', kind: 'switch', hint: '避免误关' },
+    {
+      path: 'app.hardwareAcceleration',
+      label: '硬件加速',
+      kind: 'switch',
+      hint: '关闭可解决个别显卡/驱动的花屏问题；**需重启生效**（画面变慢是正常代价）',
+    },
+    {
+      path: 'app.dailyBackup',
+      label: '每日自动备份',
+      kind: 'switch',
+      hint: '需要本地库已解锁；备份保留天数见「安全与锁屏」',
+    },
+  ],
+
+  security: [
+    {
+      path: 'security.autoLockMinutes',
+      label: '空闲自动锁定',
+      kind: 'select',
+      hint: '按**系统级空闲**判定 —— 离开电脑（哪怕窗口失焦）也会计时',
+      options: [
+        { value: '0', label: '不自动锁定' },
+        { value: '1', label: '1 分钟' },
+        { value: '5', label: '5 分钟' },
+        { value: '15', label: '15 分钟' },
+        { value: '30', label: '30 分钟' },
+      ],
+    },
+    {
+      path: 'security.backupRetentionDays',
+      label: '备份保留天数',
+      kind: 'number',
+      hint: '超过天数的自动备份会被清理（只清理本应用生成的备份文件）',
     },
   ],
 

@@ -62,6 +62,12 @@ export const Events = {
   /** 某个成员写入失败（广播的"部分失败"必须让用户看得见） */
   BROADCAST_ERROR: 'BROADCAST_ERROR',
 
+  // 安全 / 锁屏
+  SECURITY_LOCKED: 'SECURITY_LOCKED',
+  SECURITY_UNLOCKED: 'SECURITY_UNLOCKED',
+  /** 备份结果（供界面如实显示成功/失败，而不是静默） */
+  BACKUP_RESULT: 'BACKUP_RESULT',
+
   // VNC（RFB）
   VNC_STATE: 'VNC_STATE',
   VNC_FRAME: 'VNC_FRAME',
@@ -182,6 +188,23 @@ export interface EventPayloads {
     sessionId: string
     title: string
     message: string
+  }
+
+  /** 本地库被锁定（自动锁屏或手动）——渲染层据此弹出遮罩 */
+  [Events.SECURITY_LOCKED]: {
+    /** 锁定原因 */
+    reason: 'idle' | 'manual'
+    /** 空闲了多少秒（idle 时才有） */
+    idleSeconds?: number
+  }
+  [Events.SECURITY_UNLOCKED]: Record<string, never>
+  [Events.BACKUP_RESULT]: {
+    ok: boolean
+    filePath?: string
+    bytes?: number
+    /** 本次清理掉的旧备份数 */
+    pruned?: number
+    message?: string
   }
 
   [Events.VNC_STATE]: { sessionId: string; state: ConnectionState; message?: string }

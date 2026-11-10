@@ -22,6 +22,7 @@ import type {
   SyncSettings,
   TerminalSettings,
   TransferSettings,
+  SecuritySettings,
 } from '@t1000/shared'
 import { AppError, parseInput } from '../../errors'
 import type { IpcHandler } from '../../ipc/router'
@@ -53,6 +54,21 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   updateChannel: 'stable',
   // 遥测默认关闭（隐私优先）
   telemetry: false,
+  // 开机自启默认关闭（不替用户决定开机行为）
+  openAtLogin: false,
+  // 关闭确认默认关闭（不额外打断）
+  confirmOnClose: false,
+  // 硬件加速默认开启（关掉会明显变慢，只有兼容性问题时才需要关）
+  hardwareAcceleration: true,
+  // 每日自动备份默认开启：这是**数据安全**项，默认保护更划算
+  dailyBackup: true,
+}
+
+export const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
+  // 默认不自动锁：不替用户决定"多久没操作就锁屏"
+  autoLockMinutes: 0,
+  // spec：备份保留 7 天
+  backupRetentionDays: 7,
 }
 
 export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
@@ -178,6 +194,7 @@ export const DEFAULT_HOTKEYS: HotkeyBinding[] = [
 export function defaultSettings(): Settings {
   return {
     app: { ...DEFAULT_APP_SETTINGS },
+    security: { ...DEFAULT_SECURITY_SETTINGS },
     terminal: { ...DEFAULT_TERMINAL_SETTINGS },
     completion: { ...DEFAULT_COMPLETION_SETTINGS },
     highlights: DEFAULT_HIGHLIGHTS.map((r) => ({ ...r })),

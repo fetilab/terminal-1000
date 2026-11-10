@@ -297,6 +297,56 @@ async function main() {
       record('S1', '设置读写', 'FAIL', String(err.message ?? err))
     }
 
+    // ── 系统域：备份真的产出、备份列表可读、设置分区存在 ──
+    try {
+      const backupDir = join(PROFILE, 'backups')
+      // 捕获备份事件，失败时能把**真实原因**带出来（否则只能看到"0 个文件"）
+      await cdp.eval(`(() => {
+        window.__accBackup = null;
+        window.t1000.on('BACKUP_RESULT', (p) => { window.__accBackup = p; });
+        return true;
+      })()`)
+      const started = await cdp.eval(INVOKE('system', 'backupNow', { dir: backupDir }))
+      // 备份是异步的（导出 + 清理），等它落盘
+      let backups = []
+      for (let i = 0; i < 40; i++) {
+        await sleep(250)
+        const r = await cdp.eval(INVOKE('system', 'listBackups', { dir: backupDir }))
+        backups = r?.backups ?? []
+        if (backups.length > 0) break
+      }
+      const first = backups[0]
+      const evt = await cdp.eval('JSON.stringify(window.__accBackup || null)')
+      record('S10', '每日备份：真的产出备份文件（可读回大小）',
+        backups.length > 0 && (first?.size ?? 0) > 0 ? 'PASS' : 'FAIL',
+        `备份 ${backups.length} 个，最新 ${first?.name?.slice(0, 40) ?? '无'} / ${first?.size ?? 0} 字节；事件=${evt}`)
+    } catch (err) {
+      record('S10', '每日备份', 'FAIL', String(err.message ?? err))
+    }
+
+    try {
+      // 自动锁屏的阈值语义：设置可读可写（真实空闲触发需要等人离开，不适合自动化）
+      await cdp.eval(INVOKE('settings', 'set', { path: 'security.autoLockMinutes', value: 5 }))
+      const v = await cdp.eval(INVOKE('settings', 'get', { path: 'security.autoLockMinutes' }))
+      const got = v?.value ?? v
+      record('S11', '锁定设置可读写（空闲自动锁定的配置面）', got === 5 ? 'PASS' : 'FAIL', `读回 ${JSON.stringify(got)}`)
+    } catch (err) {
+      record('S11', '锁定设置', 'FAIL', String(err.message ?? err))
+    }
+
+    try {
+      await cdp.eval(INVOKE('system', 'lockNow', {}))
+      // ⚠️ `store.isUnlocked` 返回的是 **{unlocked, initialized}** 而不是布尔
+      // （我第一版直接和 false 比较，于是拿到了 "[object Object]"）
+      const st = await cdp.eval(INVOKE('store', 'isUnlocked', {}))
+      record('S12', '立即锁定：调用后本地库确实已锁定',
+        st?.unlocked === false ? 'PASS' : 'FAIL', `unlocked=${st?.unlocked} initialized=${st?.initialized}`)
+      // 还原，避免影响后续条目
+      await cdp.eval(INVOKE('store', 'unlock', { password: 'Acceptance#2026' }))
+    } catch (err) {
+      record('S12', '立即锁定', 'FAIL', String(err.message ?? err))
+    }
+
     for (const [id, title, domain, action] of [
       ['S2', '同步域可用（status）', 'sync', 'status'],
       ['S3', 'MCP 域可用（status）', 'mcp', 'status'],
@@ -345,18 +395,43 @@ async function main() {
         return cdp.eval(`window.__acc['${sessionId}'] || ''`)
       }
 
-      // 首次连接会弹"主机密钥指纹确认"（spec 要求的能力）。脚本要像 UI 一样应答，
-      // 否则握手会一直等用户决定直到超时 —— 我第一版就因此判了 6 条失败，
-      // 实际是"信任流程在正常工作，只是没人点确认"。
-      await cdp.eval(`(() => {
-        window.__accAskedKeys = [];
-        window.t1000.on('SSH_HOST_KEY_ASK', (p) => {
-          window.__accAskedKeys.push({ host: p.host, port: p.port, keyType: p.keyType, fingerprint: p.fingerprint, mismatch: p.mismatch });
-          // 真实验收场景：接受该主机密钥（等价于用户点"信任并记住"）
-          window.t1000.invoke('ssh', 'verifyHostKey', { requestId: p.requestId, accepted: true });
-        });
-        return true;
-      })()`)
+      /**
+       * 等**真实弹窗**出现并点它。
+       *
+       * ⚠️ 这里刻意**不替产品自动应答**（早先我脚本看到 `SSH_HOST_KEY_ASK` 就自己调
+       * `ssh.verifyHostKey`）：那样会让"渲染层根本没订阅该事件"这个**阻断性缺陷**
+       * 被验收掩盖成绿灯 —— 而真实用户连任何新主机都会卡到握手超时。
+       * 夹具只应"操作产品"，不应"代替产品"。
+       */
+      const clickByText = async (includes, timeoutMs = 15000) => {
+        const ok = await cdp.eval(`(async () => {
+          const deadline = Date.now() + ${timeoutMs};
+          while (Date.now() < deadline) {
+            const btn = [...document.querySelectorAll('button')]
+              .find((b) => (b.textContent || '').includes(${JSON.stringify(includes)}) && !b.disabled);
+            if (btn) { btn.click(); return true; }
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          return false;
+        })()`)
+        return ok === true
+      }
+      /** 等某个标题的弹窗出现（证明 UI 真的在处理该询问） */
+      const waitForDialog = async (titleIncludes, timeoutMs = 15000) => {
+        const found = await cdp.eval(`(async () => {
+          const deadline = Date.now() + ${timeoutMs};
+          while (Date.now() < deadline) {
+            const t = document.body.innerText || '';
+            if (t.includes(${JSON.stringify(titleIncludes)})) return true;
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          return false;
+        })()`)
+        return found === true
+      }
+      /** 从弹窗正文里把指纹抠出来当证据 */
+      const readFingerprint = async () =>
+        cdp.eval(`(document.body.innerText || '').match(/SHA256:[A-Za-z0-9+/=]+/)?.[0] ?? ''`)
 
       const sshConnection = {
         kind: 'ssh',
@@ -371,21 +446,30 @@ async function main() {
         updatedAt: '',
       }
 
-      // ════ 第 1 条：SSH 连接出终端（真实握手 + 真实 shell 输出）════
+      // ════ 第 1 条：SSH 连接出终端（真实握手 + 真实命令回显 + **真实指纹弹窗**）════
       let sessionId = null
       try {
-        const res = await cdp.eval(INVOKE('ssh', 'connect', { connection: sshConnection }))
+        // connect 是异步的：它会等在 UI 应答指纹后才完成，所以这里**不 await**，
+        // 而是并行去等弹窗（否则会卡在超时上，正是真实用户遇到的现象）
+        const connectPromise = cdp.eval(INVOKE('ssh', 'connect', { connection: sshConnection }))
+
+        const dialogShown = await waitForDialog('主机指纹')
+        const fingerprint = dialogShown ? await readFingerprint() : ''
+        const accepted = dialogShown ? await clickByText('接受并保存') : false
+
+        const res = await connectPromise
         sessionId = res?.sessionId
-        const got = await collect(sessionId, 1200)
-        await cdp.eval(INVOKE('ssh', 'write', { sessionId, data: 'echo ACCEPT_TERMINAL_OK\n' }))
-        const out = await collect(sessionId, 2500)
-        const ok = out.includes('ACCEPT_TERMINAL_OK')
-        const asked = await cdp.eval('JSON.stringify(window.__accAskedKeys || [])')
-        const askedKeys = JSON.parse(asked || '[]')
-        record('1', 'SSH 连接出终端（真实握手 + 真实命令回显）', ok ? 'PASS' : 'FAIL',
-          ok
-            ? `已建立会话并收到回显；主机密钥确认流程也走通了（${askedKeys.length} 次询问，指纹 ${askedKeys[0]?.fingerprint?.slice(0, 24) ?? '—'}…）`
-            : `未见回显，累计输出 ${JSON.stringify((got + out).slice(0, 120))}`)
+
+        const out = await (async () => {
+          await collect(sessionId, 1000)
+          await cdp.eval(INVOKE('ssh', 'write', { sessionId, data: 'echo ACCEPT_TERMINAL_OK\n' }))
+          return collect(sessionId, 2500)
+        })()
+
+        const echoed = typeof out === 'string' && out.includes('ACCEPT_TERMINAL_OK')
+        record('1', 'SSH 连接出终端（真实握手 + 真实命令回显）',
+          dialogShown && accepted && echoed ? 'PASS' : 'FAIL',
+          `指纹弹窗=${dialogShown} 已接受=${accepted} 回显=${echoed} 指纹=${fingerprint.slice(0, 30) || '—'}`)
       } catch (err) {
         record('1', 'SSH 连接出终端', 'FAIL', String(err.message ?? err))
       }
@@ -444,10 +528,18 @@ async function main() {
 
         // 下载回来再比对
         const backPath = join(PROFILE, 'acc-download.bin')
-        await cdp.eval(INVOKE('sftp', 'download', {
+        const down = await cdp.eval(INVOKE('sftp', 'download', {
           sessionId, direction: 'download', sourcePath: remotePath, targetPath: backPath,
         }))
-        for (let i = 0; i < 40 && !existsSync(backPath); i++) await sleep(250)
+        // ⚠️ 必须等**传输到终态**，不能只等"文件出现" —— 文件一创建就存在了，
+        // 此时内容还在写，比对必然失败（我第一版就偷懒只等 existsSync，于是出现间歇失败）。
+        for (let i = 0; i < 60; i++) {
+          await sleep(250)
+          const list = await cdp.eval(INVOKE('sftp', 'listTransfers', { sessionId }))
+          const d0 = (list?.transfers ?? list ?? []).find?.((x) => x.transferId === down?.transferId)
+          if (d0 && ['done', 'completed', 'finished', 'failed', 'cancelled'].includes(d0.state)) break
+        }
+        await sleep(200) // 给落盘的最后一小段留出时间
         const back = existsSync(backPath) ? readFileSync(backPath) : null
         const roundTrip = back ? back.equals(payload) : false
 

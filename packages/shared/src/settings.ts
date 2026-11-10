@@ -23,6 +23,19 @@ export interface AppSettings {
   updateChannel: 'stable' | 'beta' | 'dev'
   /** 匿名使用统计（默认关闭） */
   telemetry: boolean
+  /** 开机自启（登录时启动） */
+  openAtLogin: boolean
+  /** 关闭窗口前二次确认 */
+  confirmOnClose: boolean
+  /**
+   * 硬件加速（重启生效）。
+   *
+   * 注意：`app.disableHardwareAcceleration()` **必须在应用 ready 之前调用**，
+   * 所以它在启动最早期被读取并应用（见 main/index.ts），运行时改动只能等下次启动。
+   */
+  hardwareAcceleration: boolean
+  /** 每日自动备份（保留 N 天，见 security.backupRetentionDays） */
+  dailyBackup: boolean
 }
 
 /** 终端外观与行为 */
@@ -253,6 +266,22 @@ export interface RecordingSummary {
   skippedTicks?: number
 }
 
+/**
+ * 安全与锁屏设置。
+ */
+export interface SecuritySettings {
+  /**
+   * 空闲多少分钟后自动锁定。0 = 不自动锁。
+   *
+   * 允许值按 spec 为 1 / 5 / 15 / 30（0 表示关闭）。
+   * 判定用 `powerMonitor.getSystemIdleTime()`（系统级空闲），
+   * 而不是自己在渲染层数事件 —— 后者在窗口失焦时就不准了。
+   */
+  autoLockMinutes: 0 | 1 | 5 | 15 | 30
+  /** 备份保留天数（配合 app.dailyBackup） */
+  backupRetentionDays: number
+}
+
 export interface Settings {
   app: AppSettings
   terminal: TerminalSettings
@@ -263,6 +292,8 @@ export interface Settings {
   hotkeys: HotkeyBinding[]
   /** 会话录制（快照间隔 / 自动压缩 / 是否录制） */
   sessionRecording?: RecordingSettings
+  /** 安全与锁屏 */
+  security?: SecuritySettings
   sync: SyncSettings
 }
 

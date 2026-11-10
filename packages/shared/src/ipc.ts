@@ -35,6 +35,7 @@ export const IPC_DOMAINS = [
   'hotkey',
   'broadcast',
   'quickcmd',
+  'system',
 ] as const
 
 export type IpcDomain = (typeof IPC_DOMAINS)[number]
@@ -243,6 +244,17 @@ export const Actions = {
     'send',
     'list',
     'status',
+  ] as const,
+
+  system: [
+    /** 立即锁定本地库（与自动锁屏共用事件） */
+    'lockNow',
+    /** 立即执行一次备份 */
+    'backupNow',
+    /** 列出已有备份（供恢复界面用） */
+    'listBackups',
+    /** 设置变更后重新应用运行期系统项（如开机自启） */
+    'applyRuntime',
   ] as const,
 
   quickcmd: [
