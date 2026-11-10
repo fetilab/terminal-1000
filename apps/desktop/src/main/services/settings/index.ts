@@ -81,6 +81,8 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   copyOnSelect: false,
   rightClickPaste: false,
   scrollback: 10000,
+  // 默认关闭：斑马纹是辅助，不该替用户改变默认观感
+  zebraStripes: false,
   wrapLines: true,
   bell: 'none',
   defaultEncoding: 'utf-8',

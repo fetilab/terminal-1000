@@ -52,6 +52,13 @@ export interface TerminalSettings {
   rightClickPaste: boolean
   /** 滚动回看行数 */
   scrollback: number
+  /**
+   * 行间斑马纹（交替行底色）。
+   *
+   * 仅 **DOM 渲染器**能实现（canvas/webgl 把整屏画在位图上，没有逐行元素）；
+   * 渲染层会做运行时检测，不支持时如实提示而不是让开关点了没反应。
+   */
+  zebraStripes: boolean
   /** 自动换行 */
   wrapLines: boolean
   /** 响铃 */

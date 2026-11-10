@@ -35,6 +35,7 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'terminal.scrollback': '同上（term.options.scrollback）',
   'terminal.bell': 'TerminalPane onBell + VNC 查看器 BELL → sound 时发声、visual 时提示',
   'terminal.colorScheme': 'TerminalPane themeFor() → 三套内置配色，热切换',
+  'terminal.zebraStripes': 'TerminalPane → .term-zebra 交替行底色；**运行时检测渲染器**，非 DOM 时在状态栏如实说明不可用',
   'terminal.linkDetection': 'TerminalPane 挂/卸 WebLinksAddon（热开关）',
 
   // ── 命令补全（消费点在主进程引擎） ──

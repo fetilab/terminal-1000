@@ -224,6 +224,15 @@ export interface AppState {
   /** 全局搜索面板是否打开（放 store 是为了任何视图都能开它，不用逐层传 prop） */
   globalSearchOpen: boolean
   /**
+   * 终端行间斑马纹（spec §5.9）。
+   *
+   * ⚠️ 这是**渲染层本地偏好**（localStorage），不在 settings 面板里：
+   * `TerminalSettings`（shared）没有这个字段，而 `settings.set` 会按主进程的 schema 校验，
+   * 加一个不存在的键会被拒/丢弃。已反馈给 lead：要进设置面板需要 shared 侧补字段。
+   * 另外它**只在 DOM 渲染器下有效** —— canvas/webgl 渲染器不产生逐行 DOM，做不出行背景。
+   */
+  zebraStripes: boolean
+  /**
    * 会话 → 远端 shell 当前目录。
    *
    * 来源是终端输出里的 **OSC 7**（`\x1b]7;file://host/path\x07`）。
@@ -324,6 +333,28 @@ export const DEFAULT_MONITOR_CARDS: MonitorCardConfig[] = [
   { kind: 'gpu', enabled: false, order: 6, tier: 'slow' },
 ]
 
+/** 斑马纹偏好键。**必须定义在 initialState 之前** —— initialState 里会调 readZebraPref()，
+ *  而 `const` 在声明前访问会抛 TDZ ReferenceError；那个 try/catch 会把它吞成"没有偏好"，
+ *  表现成"开关不持久"，极难从现象反推。 */
+const ZEBRA_KEY = 't1000.terminal.zebra.v1'
+
+/** 斑马纹偏好：读失败按关闭处理（默认关，spec 要求） */
+function readZebraPref(): boolean {
+  try {
+    return window.localStorage.getItem(ZEBRA_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeZebraPref(on: boolean): void {
+  try {
+    window.localStorage.setItem(ZEBRA_KEY, on ? '1' : '0')
+  } catch {
+    /* 隐私模式/配额满：不持久但本次仍生效 */
+  }
+}
+
 const initialState: AppState = {
   view: 'connections',
   protocol: 'ssh',
@@ -346,10 +377,14 @@ const initialState: AppState = {
     defaultEncoding: 'utf-8',
     colorScheme: 'default-dark',
     linkDetection: true,
+    // 与主进程默认值保持一致（这个对象是"设置还没加载出来"时的兜底，
+    // 少一个字段就会让类型不完整 —— 补契约字段时必须一起补这里）
+    zebraStripes: false,
   },
   servicesSection: 'sync',
   toolsSection: 'password',
   globalSearchOpen: false,
+  zebraStripes: readZebraPref(),
   sessionCwd: {},
   negotiations: {},
   broadcastGroups: [],
@@ -673,6 +708,14 @@ export const actions = {
 
   setToolsSection(section: 'password' | 'manual') {
     setState({ toolsSection: section })
+  },
+
+  toggleZebra() {
+    setState((st) => {
+      const next = !st.zebraStripes
+      writeZebraPref(next)
+      return { zebraStripes: next }
+    })
   },
 
   toggleGlobalSearch() {

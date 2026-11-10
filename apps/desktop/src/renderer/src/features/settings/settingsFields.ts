@@ -119,6 +119,12 @@ export const SETTINGS_FIELDS: Record<
 
   terminal: [
     {
+      path: 'terminal.zebraStripes',
+      label: '行间斑马纹',
+      kind: 'switch',
+      hint: '交替行浅底色，便于横向读数；**仅 DOM 渲染器可用**（不支持时终端状态栏会说明）',
+    },
+    {
       path: 'terminal.fontFamily',
       label: '字体',
       kind: 'text',
