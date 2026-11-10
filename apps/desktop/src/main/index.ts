@@ -11,6 +11,7 @@ import { getAppPaths } from './paths'
 import { broadcast, createWindow, getMainWindow, setWindowBoundsFile } from './window'
 import { destroyTray, hasTray, markQuitting, syncTray } from './tray'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
+import { installCwdTracking } from './services/session-cwd'
 import {
   applyEarlySettings,
   applyRuntimeSettings,
@@ -83,6 +84,10 @@ async function bootstrap(): Promise<void> {
   applyRuntimeSettings()
 
   const mainWindow = createWindow()
+
+  // 全局跟踪各会话的当前目录（解析 OSC 7）。**必须在会话产生输出之前装好**，
+  // 否则早期输出里的 OSC 7 会因为"无人订阅"而丢失，消费方要等下一次提示符才有值。
+  installCwdTracking()
 
   // 自动锁屏（系统级空闲计时）与每日自动备份
   startAutoLock(ctx)

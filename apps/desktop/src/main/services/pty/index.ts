@@ -20,6 +20,7 @@ import { z } from 'zod'
 import { Events } from '@t1000/shared'
 import { AppError } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
+import { getCwd as getSessionCwd } from '../session-cwd'
 import { OutputBatcher } from '../output-batcher'
 import {
   publishSessionClosed,
@@ -443,6 +444,17 @@ const resizeSchema = z.object({
 })
 
 export const ptyHandlers: Record<string, IpcHandler> = {
+  /** 本地终端当前目录：与 SSH 走同一套 OSC 7 跟踪（能力一致） */
+  getCwd: (payload) => {
+    const { ptyId } = ptyIdSchema.parse(payload)
+    const cwd = getSessionCwd(ptyId)
+    if (cwd !== null) return { cwd, source: 'osc7' as const }
+    return {
+      cwd: null,
+      reason: '还没拿到终端的当前目录（shell 需要发 OSC 7；zsh/fish 常见配置自带）',
+    }
+  },
+
   open: (payload, ctx) => getManager(ctx).open(openSchema.parse(payload ?? {})),
 
   close: (payload, ctx) => {

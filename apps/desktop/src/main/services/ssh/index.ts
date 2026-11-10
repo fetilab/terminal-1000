@@ -13,6 +13,7 @@ import { z } from 'zod'
 import { Events, type SshConnection } from '@t1000/shared'
 import { AppError } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
+import { getCwd as getSessionCwd } from '../session-cwd'
 import { createLogger } from '../../logger'
 import { SshManager } from './manager'
 
@@ -170,6 +171,24 @@ const setEncodingSchema = z.object({
 })
 
 export const sshHandlers: Record<string, IpcHandler> = {
+  /**
+   * 读取交互式 shell 的当前目录（来自主进程解析的 OSC 7，见 services/session-cwd）。
+   *
+   * 因为那个模块用**全局数据挂钩**覆盖所有会话类型，消费方**何时来问都有值**。
+   * 拿不到时返回 `cwd: null` + `reason`，让界面能**如实说明原因**
+   * （而不是"点了没反应"——那对用户是最差的结果）。
+   */
+  getCwd: (payload) => {
+    const { sessionId } = sessionIdSchema.parse(payload)
+    const cwd = getSessionCwd(sessionId)
+    if (cwd !== null) return { cwd, source: 'osc7' as const }
+    return {
+      cwd: null,
+      reason:
+        '还没拿到终端的当前目录：需要远端 shell 发 OSC 7 才能识别（bash 可在 PROMPT_COMMAND 里输出，zsh/fish 常见配置自带）',
+    }
+  },
+
   connect: async (payload, ctx) => {
     const { connection } = connectSchema.parse(payload)
     const sessionId = await getManager(ctx).connect(connection as unknown as SshConnection)

@@ -145,6 +145,8 @@ export const Actions = {
     'testConnection',
     'reconnect',
     'setEncoding',
+    /** 读取交互式 shell 的当前目录（来自 OSC 7；未知时 cwd 为 null） */
+    'getCwd',
   ] as const,
 
   sftp: [
@@ -169,7 +171,10 @@ export const Actions = {
 
   forward: ['open', 'close', 'list'] as const,
 
-  pty: ['open', 'close', 'write', 'resize', 'list', 'listProfiles', 'listShells'] as const,
+  // pty 也要 getCwd：本地终端与 SSH 终端应有一致的能力
+  pty: ['open', 'close', 'write', 'resize', 'list', 'listProfiles', 'listShells',
+    'getCwd',
+  ] as const,
 
   telnet: ['connect', 'disconnect', 'write'] as const,
 

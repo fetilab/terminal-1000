@@ -474,6 +474,34 @@ async function main() {
         record('1', 'SSH 连接出终端', 'FAIL', String(err.message ?? err))
       }
 
+      // ════ 主进程 cwd 跟踪（ssh.getCwd，来自 OSC 7）════
+      try {
+        // 先确认"还没拿到"时返回 null + 可操作原因（而不是抛错或空对象）
+        const before = await cdp.eval(INVOKE('ssh', 'getCwd', { sessionId }))
+
+        // 让远端 shell 输出一个 OSC 7（用 printf 直接发字节，不依赖 shell 配置）
+        const target = '/tmp/t1000-cwd-verify'
+        await cdp.eval(
+          INVOKE('ssh', 'write', {
+            sessionId,
+            data: `printf '\\033]7;file://%s${target}\\007' "$HOSTNAME"\n`,
+          }),
+        )
+        let after = null
+        for (let i = 0; i < 30; i++) {
+          await sleep(250)
+          after = await cdp.eval(INVOKE('ssh', 'getCwd', { sessionId }))
+          if (after?.cwd) break
+        }
+        const ok = after?.cwd === target
+        record('S13', '主进程 cwd 跟踪（OSC 7 → ssh.getCwd）', ok ? 'PASS' : 'FAIL',
+          ok
+            ? `读到 ${after.cwd}（source=${after.source}）；未拿到时的原因文案=${before?.reason ? '有' : '无'}`
+            : `未读到，after=${JSON.stringify(after)}`)
+      } catch (err) {
+        record('S13', '主进程 cwd 跟踪', 'FAIL', String(err.message ?? err))
+      }
+
       // ════ 第 11 条：监控面板（真实 exec 采集）════
       try {
         await cdp.eval(INVOKE('monitor', 'start', { sessionId }))

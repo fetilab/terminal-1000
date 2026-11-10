@@ -133,7 +133,35 @@ export function subscribeSessionData(sessionId: string, listener: (chunk: string
 }
 
 /** 由会话生产者调用：把输出分发给所有订阅者 */
+/**
+ * 订阅**所有会话**的输出（会话 id + 内容）。
+ *
+ * 为什么需要它：`subscribeSessionData` 要求先知道 sessionId，而注册表没有"会话建立"事件，
+ * 所以"想对所有会话做同一件事"的消费方（例如在主进程解析 OSC 7 跟踪 shell 当前目录）
+ * 没法在会话出现时挂上去。这个全局挂钩让它们**一次订阅就覆盖所有会话类型**（ssh/pty/telnet）。
+ *
+ * 返回值是取消订阅函数；监听器抛错不影响其它监听器。
+ */
+const allDataListeners = new Set<(sessionId: string, chunk: string) => void>()
+
+export function subscribeAllSessionData(
+  listener: (sessionId: string, chunk: string) => void,
+): () => void {
+  allDataListeners.add(listener)
+  return () => {
+    allDataListeners.delete(listener)
+  }
+}
+
 export function publishSessionData(sessionId: string, chunk: string): void {
+  for (const listener of allDataListeners) {
+    try {
+      listener(sessionId, chunk)
+    } catch {
+      // 全局挂钩的异常绝不能影响会话本身的输出分发
+    }
+  }
+
   const set = dataListeners.get(sessionId)
   if (!set || set.size === 0) return
   for (const listener of set) {
