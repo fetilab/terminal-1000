@@ -68,7 +68,17 @@ export const SETTINGS_FIELDS: Record<
     { path: 'app.restoreLastSession', label: '启动时恢复上次会话', kind: 'switch', hint: '只恢复界面状态，不会自动重连主机' },
     { path: 'app.minimizeToTray', label: '关闭窗口时最小化到托盘', kind: 'switch' },
     { path: 'app.showTrayIcon', label: '显示托盘图标', kind: 'switch' },
-    { path: 'app.autoCheckUpdate', label: '自动检查更新', kind: 'switch' },
+    { path: 'app.autoCheckUpdate', label: '自动检查更新', kind: 'switch', hint: '启动时检查；关闭后完全不再检查' },
+    {
+      path: 'app.updatePromptMode',
+      label: '有新版本时',
+      kind: 'select',
+      hint: '仅在上面开启"自动检查更新"时有意义',
+      options: [
+        { value: 'prompt', label: '提示我' },
+        { value: 'silent', label: '静默（我自己去看）' },
+      ],
+    },
     {
       path: 'app.updateChannel',
       label: '更新通道',

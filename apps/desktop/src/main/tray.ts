@@ -58,7 +58,12 @@ export interface TrayOptions {
  *
  * @returns 托盘当前是否可用
  */
-export function syncTray(enabled: boolean, options: TrayOptions): boolean {
+export function syncTray(
+  enabled: boolean,
+  options: TrayOptions,
+  /** 可选：由调用方注入「检查更新」的行为 —— 托盘不自己实现业务，避免两处行为分叉 */
+  onCheckUpdate?: () => void,
+): boolean {
   if (!enabled) {
     destroyTray()
     return false
@@ -71,6 +76,15 @@ export function syncTray(enabled: boolean, options: TrayOptions): boolean {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: '显示主窗口', click: () => options.showWindow() },
+        { type: 'separator' },
+        {
+          label: '检查更新…',
+          click: () => {
+            // 托盘菜单里的"检查更新"要走**同一个**服务与提示路径，
+            // 不另起一套（否则两处行为会慢慢分叉）
+            void onCheckUpdate?.()
+          },
+        },
         { type: 'separator' },
         { label: '退出 terminal-1000', click: () => options.quit() },
       ]),

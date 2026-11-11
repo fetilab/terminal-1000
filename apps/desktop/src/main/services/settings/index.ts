@@ -52,6 +52,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   showTrayIcon: true,
   autoCheckUpdate: true,
   updateChannel: 'stable',
+  // 默认提示（不打扰与有更新知道之间，选让用户知道）
+  updatePromptMode: 'prompt',
   // 遥测默认关闭（隐私优先）
   telemetry: false,
   // 开机自启默认关闭（不替用户决定开机行为）

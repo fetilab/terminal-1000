@@ -36,6 +36,7 @@ export const IPC_DOMAINS = [
   'broadcast',
   'quickcmd',
   'system',
+  'update',
 ] as const
 
 export type IpcDomain = (typeof IPC_DOMAINS)[number]
@@ -249,6 +250,15 @@ export const Actions = {
     'send',
     'list',
     'status',
+  ] as const,
+
+  update: [
+    /** 当前版本与上次检查结果（不发网络请求） */
+    'getInfo',
+    /** 主动检查更新 */
+    'check',
+    /** 用系统浏览器打开下载页（不自动下载/安装） */
+    'openDownload',
   ] as const,
 
   system: [

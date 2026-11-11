@@ -12,6 +12,7 @@ import { broadcast, createWindow, getMainWindow, setWindowBoundsFile } from './w
 import { destroyTray, hasTray, markQuitting, syncTray } from './tray'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
 import { installCwdTracking } from './services/session-cwd'
+import { scheduleStartupCheck } from './services/update'
 import {
   applyEarlySettings,
   applyRuntimeSettings,
@@ -88,6 +89,9 @@ async function bootstrap(): Promise<void> {
   // 全局跟踪各会话的当前目录（解析 OSC 7）。**必须在会话产生输出之前装好**，
   // 否则早期输出里的 OSC 7 会因为"无人订阅"而丢失，消费方要等下一次提示符才有值。
   installCwdTracking()
+
+  // 启动后检查更新（按设置；未配置更新源时会如实返回"未配置"，不假装检查过）
+  scheduleStartupCheck()
 
   // 自动锁屏（系统级空闲计时）与每日自动备份
   startAutoLock(ctx)
@@ -229,7 +233,47 @@ function applyTraySettings(): void {
           markQuitting()
           app.quit()
         },
-      })
+      },
+      // 「检查更新」由调用方注入：托盘只放菜单项，业务与设置面板共用同一服务
+      () => {
+        // 与设置面板的"检查更新"走**同一个服务**，结果也共用同一份缓存
+        void (async () => {
+          try {
+            const [{ checkForUpdate }, { getSettings }] = await Promise.all([
+              import('./services/update'),
+              import('./services/settings'),
+            ])
+            const channel = (getSettings().app?.updateChannel ?? 'stable') as
+              | 'stable'
+              | 'beta'
+              | 'dev'
+            const r = await checkForUpdate(channel)
+            const { dialog } = await import('electron')
+            const w = getMainWindow()
+            const body = r.hasUpdate
+              ? `发现新版本 ${r.latest}（当前 ${r.current}）${r.notes ? `\n\n${r.notes}` : ''}`
+              : (r.reason ?? `已是最新版本（当前 ${r.current}）`)
+            const opts = {
+              type: r.hasUpdate ? ('info' as const) : ('info' as const),
+              title: '检查更新',
+              message: r.hasUpdate ? '有可用更新' : '检查更新',
+              detail: body,
+              buttons: r.hasUpdate && r.downloadUrl ? ['打开发布页', '关闭'] : ['关闭'],
+              defaultId: 0,
+              cancelId: r.hasUpdate && r.downloadUrl ? 1 : 0,
+            }
+            const { response } = w
+              ? await dialog.showMessageBox(w, opts)
+              : await dialog.showMessageBox(opts)
+            if (response === 0 && r.downloadUrl) {
+              void (await import('electron')).shell.openExternal(r.downloadUrl)
+            }
+          } catch (err) {
+            log.warn('托盘检查更新失败', err)
+          }
+        })()
+      },
+      )
     } catch (err) {
       log.warn('同步托盘设置失败', err)
     }

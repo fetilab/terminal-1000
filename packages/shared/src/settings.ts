@@ -21,6 +21,16 @@ export interface AppSettings {
   autoCheckUpdate: boolean
   /** 更新通道 */
   updateChannel: 'stable' | 'beta' | 'dev'
+  /**
+   * 有新版本时的提示方式。
+   *
+   * 与 `autoCheckUpdate` 的关系：后者决定**检查不检查**，本项决定**检查到之后怎么提示**。
+   * 因此"不检查更新"= `autoCheckUpdate: false`；本项在那种情况下无意义。
+   *
+   * - `prompt`：有更新就提示（默认）
+   * - `silent`：只记录，不打扰（用户主动去"检查更新"时才看得到）
+   */
+  updatePromptMode: 'prompt' | 'silent'
   /** 匿名使用统计（默认关闭） */
   telemetry: boolean
   /** 开机自启（登录时启动） */

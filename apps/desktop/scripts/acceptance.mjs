@@ -133,6 +133,7 @@ function startSshHost() {
       detached: true,
     })
     let buf = ''
+    let settled = false
     const timer = setTimeout(() => reject(new Error('测试主机启动超时')), 20000)
     const onData = (chunk) => {
       buf += chunk.toString()
@@ -140,6 +141,7 @@ function startSshHost() {
       const password = buf.match(/password\s*:\s*(\S+)/)?.[1]
       const username = buf.match(/username\s*:\s*(\S+)/)?.[1]
       if (port && username && password) {
+        settled = true
         clearTimeout(timer)
         resolve({
           host: '127.0.0.1',
@@ -147,13 +149,33 @@ function startSshHost() {
           username,
           password,
           workspace: root,
+          stderrTail,
           stop: () => {
+            settled = true
             try { process.kill(-child.pid, 'SIGTERM') } catch { /* 已退出 */ }
             rmSync(root, { recursive: true, force: true })
           },
         })
       }
     }
+    // ⚠️ stderr **必须消费**：只挂不读时管道缓冲区会写满，子进程随即阻塞/退出 ——
+    // 而那看起来像"测试主机莫名死了"（整机验收里表现为 ECONNREFUSED）。
+    // 顺手留最后几行，失败时能把主机自己的报错带出来。
+    const stderrTail = []
+    child.stderr.on('data', (c) => {
+      const s = c.toString()
+      for (const line of s.split('\n')) {
+        if (line.trim()) stderrTail.push(line.trim())
+      }
+      while (stderrTail.length > 20) stderrTail.shift()
+    })
+    child.on('exit', (code, signal) => {
+      // 主机在验收还没结束就退出，是最需要被看见的事件
+      if (!settled) {
+        console.log(`\n⚠️ SSH 测试主机提前退出（code=${code} signal=${signal}）`)
+        for (const l of stderrTail.slice(-8)) console.log(`   [host] ${l}`)
+      }
+    })
     child.stdout.on('data', onData)
     child.on('error', (e) => { clearTimeout(timer); reject(e) })
   })
@@ -172,7 +194,14 @@ async function main() {
       `--remote-debugging-port=${CDP_PORT}`,
       `--user-data-dir=${PROFILE}`,
     ],
-    { cwd: DESKTOP, stdio: 'ignore', detached: true },
+    {
+      cwd: DESKTOP,
+      stdio: 'ignore',
+      detached: true,
+      // 更新源通过环境变量注入（便于用本地 http 源做真实验证）；
+      // 允许的协议约束仍由主进程的 isAllowedUpdateUrl 把关
+      env: { ...process.env, ...(process.env.T1000_UPDATE_URL ? {} : { T1000_UPDATE_URL: '' }) },
+    },
   )
   const stop = () => {
     try {
@@ -345,6 +374,22 @@ async function main() {
       await cdp.eval(INVOKE('store', 'unlock', { password: 'Acceptance#2026' }))
     } catch (err) {
       record('S12', '立即锁定', 'FAIL', String(err.message ?? err))
+    }
+
+    // ── 更新检查 ──
+    try {
+      const info = await cdp.eval(INVOKE('update', 'getInfo', {}))
+      const checked = await cdp.eval(INVOKE('update', 'check', {}))
+      const ok = typeof info?.current === 'string'
+      // 配置了更新源时：应能报出更新源里的版本；没配时：必须如实说"未配置"而不是假装已是最新
+      const honest =
+        checked?.source === null
+          ? typeof checked?.reason === 'string' && checked.reason.includes('未配置')
+          : typeof checked?.latest === 'string'
+      record('S14', '更新检查（版本读取 + 未配置时如实告知）', ok && honest ? 'PASS' : 'FAIL',
+        `当前 ${info?.current} / 通道 ${info?.channel}；检查结果 latest=${checked?.latest ?? '—'} source=${checked?.source ?? '未配置'} reason=${(checked?.reason ?? '').slice(0, 60)}`)
+    } catch (err) {
+      record('S14', '更新检查', 'FAIL', String(err.message ?? err))
     }
 
     for (const [id, title, domain, action] of [
