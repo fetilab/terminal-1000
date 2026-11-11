@@ -15,6 +15,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '../../lib/ipc'
 import { errorText, formatBytes, formatDate } from '../../lib/format'
 import { actions, useStoreShallow } from '../../lib/store'
+import {
+  addBookmark,
+  listBookmarks,
+  removeBookmark,
+  renameBookmark,
+  type SftpBookmark,
+} from './bookmarks'
 import { Button, IconButton } from '../../components/Button'
 import { Badge, Banner, EmptyState, Loading } from '../../components/Feedback'
 import { Checkbox, Field, TextInput } from '../../components/Form'
@@ -233,6 +240,18 @@ export interface SftpBrowserProps {
 
 export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): React.JSX.Element {
   const [cwd, setCwd] = useState('')
+  // 书签按 connectionId 存（跨重连保留）；终端 cwd 来自 OSC 7（见 TerminalPane）
+  const { connectionId, terminalCwd } = useStoreShallow((s) => {
+    const tab = s.tabs.find((t) => t.sessionId === sessionId)
+    return {
+      connectionId: tab?.connectionId,
+      terminalCwd: sessionId ? s.sessionCwd[sessionId] : undefined,
+    }
+  })
+  const [bookmarks, setBookmarks] = useState<SftpBookmark[]>([])
+  const [bmDialog, setBmDialog] = useState<
+    { mode: 'add' | 'rename'; id?: string; path: string; name: string } | null
+  >(null)
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -319,6 +338,60 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     })
     return copy
   }, [entries])
+
+  const refreshBookmarks = useCallback((): void => {
+    setBookmarks(listBookmarks(connectionId))
+  }, [connectionId])
+
+  useEffect(() => {
+    refreshBookmarks()
+  }, [refreshBookmarks])
+
+  /**
+   * 「定位到终端目录」。
+   *
+   * 我们**没有**主进程的 cwd 动作，这里的路径来自渲染层解析的 OSC 7。
+   * 拿不到时要**说清楚为什么**（远端 shell 没发 OSC 7），
+   * 而不是点了没反应 —— 那会让人以为是书签/定位功能坏了。
+   */
+  const locateToTerminal = useCallback((): void => {
+    if (!sessionId) return
+    void (async () => {
+      // 优先主进程的权威值：`ssh.getCwd` 在主进程用全局会话订阅解析 OSC 7（跨 TCP 分块可靠），
+      // 渲染层解析的那份只作兜底。
+      let target = terminalCwd
+      let getCwdError: string | null = null
+      try {
+        const res = await invoke<
+          'ssh',
+          'getCwd',
+          { sessionId: string },
+          { cwd: string | null; reason?: string }
+        >('ssh', 'getCwd', { sessionId })
+        if (res?.cwd) target = res.cwd
+        else if (!target) {
+          // 主进程给的原因比我写死的那句更准（它会说明具体缺什么）
+          toast.info(res?.reason ?? '还没拿到终端的当前目录。')
+          return
+        }
+      } catch (err) {
+        // getCwd 不可用（例如更早的主进程）：落回 OSC 7 的值，别因此让按钮失灵。
+        // 但**必须留痕** —— 静默 catch 会把"动作名写错/主进程没实现"伪装成
+        // "远端 shell 没发 OSC 7"，排查方向直接跑偏。
+        getCwdError = errorText(err)
+        console.warn('[sftp] 定位：ssh.getCwd 调用失败，回退到渲染层 OSC 7 值', err)
+      }
+      if (!target) {
+        toast.info(
+          getCwdError
+            ? `拿不到终端当前目录，且主进程查询失败：${getCwdError}`
+            : '还没拿到终端的当前目录：需要远端 shell 发 OSC 7 才能识别（bash 可在 PROMPT_COMMAND 里输出，zsh/fish 常见配置自带）。也可以在下方书签里手动收藏常用目录。',
+        )
+        return
+      }
+      void load(target)
+    })()
+  }, [sessionId, terminalCwd, load])
 
   const reload = (): void => {
     if (cwd) void load(cwd)
@@ -434,10 +507,71 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
 
   return (
     <main className="content" aria-label={`${title} 文件`}>
+      {bookmarks.length > 0 ? (
+        <div className="sftp-bookmarks" aria-label="目录书签">
+          <Icon name="star" size={12} />
+          {bookmarks.map((b) => (
+            <span key={b.id} className={`sftp-bm${b.path === cwd ? ' sftp-bm--active' : ''}`}>
+              <button
+                type="button"
+                className="sftp-bm__go"
+                title={b.path}
+                onClick={() => void load(b.path)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  setBmDialog({ mode: 'rename', id: b.id, path: b.path, name: b.name })
+                }}
+              >
+                {b.name}
+              </button>
+              <button
+                type="button"
+                className="sftp-bm__del"
+                aria-label={`删除书签 ${b.name}`}
+                onClick={() => {
+                  removeBookmark(b.id)
+                  refreshBookmarks()
+                  toast.ok(`已删除书签「${b.name}」`)
+                }}
+              >
+                <Icon name="close" size={10} />
+              </button>
+            </span>
+          ))}
+          {/* 如实告知存储范围：书签在 localStorage，不参与零知识同步、也不随备份走 */}
+          <span
+            className="sftp-bookmarks__note"
+            title="书签保存在本机存储里，不会同步到其它设备，也不随本地库备份导出"
+          >
+            仅本机保存，不参与同步
+          </span>
+        </div>
+      ) : null}
       <div className="t-toolbar">
         <IconButton icon="chevron-left" label="上一级" disabled={!cwd || cwd === '/'} onClick={() => void load(parentRemote(cwd))} />
         <IconButton icon="home" label="主目录" onClick={() => void load('~')} />
         <IconButton icon="refresh" label="刷新" loading={loading} onClick={reload} />
+        <IconButton
+          icon="route"
+          label={
+            terminalCwd
+              ? `定位到终端目录（${terminalCwd}）`
+              : '定位到终端目录（尚未拿到终端 cwd）'
+          }
+          onClick={locateToTerminal}
+        />
+        <IconButton
+          icon="star"
+          label="把当前目录加为书签"
+          disabled={!cwd}
+          onClick={() =>
+            setBmDialog({
+              mode: 'add',
+              path: cwd,
+              name: cwd.split('/').filter(Boolean).pop() ?? '/',
+            })
+          }
+        />
         <div className="t-toolbar__divider" />
         <IconButton icon="folder" label="新建文件夹" onClick={() => setMkdir(true)} />
         <IconButton
@@ -811,6 +945,60 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           </span>
         </div>
       </Modal>
-    </main>
+    
+      {bmDialog ? (
+        <Modal
+          open
+          size="sm"
+          title={bmDialog.mode === 'add' ? '添加目录书签' : '重命名书签'}
+          onClose={() => setBmDialog(null)}
+          footer={
+            <>
+              <div className="t-modal__footer-spacer" />
+              <Button variant="ghost" onClick={() => setBmDialog(null)}>
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  const name = bmDialog.name.trim()
+                  if (bmDialog.mode === 'add') {
+                    if (!connectionId) {
+                      toast.error('这条会话还没有对应连接，无法保存书签')
+                      return
+                    }
+                    addBookmark(connectionId, bmDialog.path, name)
+                    toast.ok(`已收藏「${name || bmDialog.path}」`)
+                  } else if (bmDialog.id) {
+                    renameBookmark(bmDialog.id, name)
+                  }
+                  refreshBookmarks()
+                  setBmDialog(null)
+                }}
+              >
+                保存
+              </Button>
+            </>
+          }
+        >
+          <Field label="书签名称" hint={`目录：${bmDialog.path}`}>
+            <TextInput
+              value={bmDialog.name}
+              autoFocus
+              onChange={(e) => setBmDialog({ ...bmDialog, name: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const name = bmDialog.name.trim()
+                  if (bmDialog.mode === 'add' && connectionId) addBookmark(connectionId, bmDialog.path, name)
+                  else if (bmDialog.id) renameBookmark(bmDialog.id, name)
+                  refreshBookmarks()
+                  setBmDialog(null)
+                }
+              }}
+            />
+          </Field>
+        </Modal>
+      ) : null}
+</main>
   )
 }

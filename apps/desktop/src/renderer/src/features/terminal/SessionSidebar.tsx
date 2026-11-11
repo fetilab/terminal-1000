@@ -88,6 +88,14 @@ export function SessionSidebar(): React.JSX.Element {
       <header className="panel-header">
         <span className="panel-title">会话</span>
         <span className="t-badge">{active}/{tabs.length}</span>
+        <div className="t-toolbar__spacer" />
+        {/* 全局搜索的可见入口：Ctrl+K 是加速键，但不该只有键盘才知道 */}
+        <IconButton
+          icon="search"
+          label="全局搜索（Ctrl+K）"
+          size={13}
+          onClick={() => actions.toggleGlobalSearch()}
+        />
       </header>
 
       <div className="panel-body">

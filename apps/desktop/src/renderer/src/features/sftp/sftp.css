@@ -218,3 +218,79 @@
   color: var(--t1000-warn);
   font-size: 11px;
 }
+
+/* ── 目录书签 ─────────────────────────────────────── */
+
+.sftp-bookmarks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-raised);
+  color: var(--t1000-fg-faint);
+}
+
+.sftp-bm {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-bg-panel);
+  overflow: hidden;
+}
+
+/* 当前目录对应的书签高亮：一眼看出"我就在这儿" */
+.sftp-bm--active {
+  border-color: var(--t1000-accent);
+  background: var(--t1000-accent-softer);
+}
+
+.sftp-bm__go {
+  padding: 1px 4px 1px 9px;
+  border: none;
+  background: transparent;
+  color: var(--t1000-fg-muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sftp-bm__go:hover {
+  color: var(--t1000-accent);
+}
+
+.sftp-bm--active .sftp-bm__go {
+  color: var(--t1000-accent);
+  font-weight: 600;
+}
+
+.sftp-bm__del {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 3px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--t1000-fg-faint);
+  cursor: pointer;
+}
+
+.sftp-bm__del:hover {
+  background: var(--t1000-danger-soft);
+  color: var(--t1000-danger);
+}
+
+/* 书签的存储范围说明：靠右、弱化，不抢书签本身的注意力 */
+.sftp-bookmarks__note {
+  margin-left: auto;
+  padding-left: 10px;
+  color: var(--t1000-fg-faint);
+  font-size: 10.5px;
+  white-space: nowrap;
+  cursor: help;
+}

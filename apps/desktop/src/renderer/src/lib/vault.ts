@@ -13,7 +13,6 @@
  * 由挂在应用根部的 `<VaultGate/>` 负责真正渲染对话框。
  */
 
-import type { IpcDomain } from '@t1000/shared'
 import { invoke } from './ipc'
 
 export interface VaultState {
@@ -71,7 +70,12 @@ export async function unlockVault(password: string): Promise<unknown> {
   return invoke<'store', 'unlock', { password: string }, unknown>('store', 'unlock', { password })
 }
 
+/**
+ * 立即锁定。
+ *
+ * 走 `system.lockNow` 而不是直接清内存密钥：锁定要**广播事件**（`SECURITY_LOCKED`），
+ * 遮罩靠事件驱动；只清密钥不发事件的话，界面会停在解锁态但功能已经不可用。
+ */
 export async function lockVault(): Promise<unknown> {
-  // lock 的 domain 可能是 store；如果主进程没提供就由调用方兜底提示
-  return invoke('store' as IpcDomain, 'lock', {}) as Promise<unknown>
+  return invoke<'system', 'lockNow', Record<string, never>, unknown>('system', 'lockNow', {})
 }

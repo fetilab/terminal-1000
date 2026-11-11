@@ -13,8 +13,17 @@
  * xterm / 监控面板 / 连接表单这类重模块在真正用到时才拉取。
  */
 
-import { Suspense, lazy, useEffect } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
+import { Events } from '@t1000/shared'
 import { VaultGate } from './components/VaultGate'
+import { subscribe } from './lib/ipc'
+import { SshPrompts } from './features/terminal/SshPrompts'
+
+/** 全局搜索面板：独立 chunk，只有按 Ctrl/Cmd+K 才加载 */
+const GlobalSearch = lazy(() => import('./features/search/GlobalSearch'))
+
+/** 锁屏遮罩：独立 chunk，锁定时才加载 */
+const LockScreen = lazy(() => import('./features/security/LockScreen'))
 import { Icon, type IconName } from './components/Icon'
 import { Loading } from './components/Feedback'
 import { ToastHost } from './components/Toast'
@@ -122,6 +131,14 @@ function Rail(): React.JSX.Element {
 
 function Sidebar(): React.JSX.Element {
   const view = useStoreShallow((s) => ({ view: s.view })).view
+
+  /**
+   * 全局搜索（Ctrl/Cmd+K）。
+   *
+   * 走渲染层 keydown 而不是 hotkey 服务：hotkey 是给系统级/全局快捷键用的，
+   * 这个只在应用有焦点时才该生效。我核对过默认绑定，Ctrl+K 没有被占用。
+   */
+
   switch (view) {
     case 'connections':
       return <ConnectionsSidebar />
@@ -222,20 +239,74 @@ export function App(): React.JSX.Element {
 
   const view = useStoreShallow((s) => ({ view: s.view })).view
 
+  const searchOpen = useStoreShallow((s) => ({ v: s.globalSearchOpen })).v
+
+  /**
+   * 锁屏状态：**由主进程事件驱动**。
+   * 空闲计时在主进程（powerMonitor 是系统级空闲，窗口失焦时渲染层数不准），
+   * 这里只响应「被锁了 / 解锁了」，不自己数时间。
+   */
+  const [lock, setLock] = useState<{ reason: 'idle' | 'manual'; idleSeconds?: number } | null>(null)
+
+  useEffect(() => {
+    const offLocked = subscribe(Events.SECURITY_LOCKED, (p) =>
+      setLock({ reason: p.reason, ...(p.idleSeconds === undefined ? {} : { idleSeconds: p.idleSeconds }) }),
+    )
+    const offUnlocked = subscribe(Events.SECURITY_UNLOCKED, () => setLock(null))
+    return () => {
+      offLocked()
+      offUnlocked()
+    }
+  }, [])
+  const toggleSearch = useCallback(() => actions.toggleGlobalSearch(), [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        // 别让 xterm 同时把 ^K 发给远端 shell
+        e.stopPropagation()
+        toggleSearch()
+      }
+    }
+    // 用**捕获阶段**：终端里的 xterm 会把 Ctrl+K 当 kill-line 吞掉，
+    // 冒泡阶段收不到，全局搜索在终端聚焦时就打不开
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [toggleSearch])
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell${lock ? ' app-shell--locked' : ''}`}>
       <Rail />
       <Suspense fallback={<aside className="panel"><Loading text="载入面板…" /></aside>}>
         <Sidebar />
       </Suspense>
       {/* 主密码闸门：任何需要密钥的操作就地弹窗，而不是把按钮置灰 */}
       <VaultGate />
+      {/* SSH 主机指纹确认 / 交互式认证：主进程会挂起握手等这两个回答，
+          没接就会出现"连接新主机一直转圈直到超时" */}
+      <SshPrompts />
+      {searchOpen ? (
+        <Suspense fallback={null}>
+          <GlobalSearch onClose={() => actions.closeGlobalSearch()} />
+        </Suspense>
+      ) : null}
       <Suspense fallback={<Loading text="载入视图…" />}>
         <div key={view} className="view-enter" style={{ display: 'contents' }}>
           <View />
         </div>
       </Suspense>
       <ToastHost />
+      {/* 遮罩放在 app-shell **外面**：里面已经被 visibility:hidden 了 */}
+      {lock ? (
+        <Suspense fallback={null}>
+          <LockScreen
+            reason={lock.reason}
+            {...(lock.idleSeconds === undefined ? {} : { idleSeconds: lock.idleSeconds })}
+            onUnlocked={() => setLock(null)}
+          />
+        </Suspense>
+      ) : null}
     </div>
   )
 }

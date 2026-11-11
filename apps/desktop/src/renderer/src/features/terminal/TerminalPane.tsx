@@ -32,6 +32,7 @@ import type { TabKind } from '../../lib/store'
 import {
   actions,
   broadcastGroupOf,
+  setSessionCwd,
   loadSessionLogs,
   sendBroadcast,
   recordingOf,
@@ -196,6 +197,24 @@ const TERMINAL_THEME_HC = {
  * 语义：`default-dark` 是"跟随应用主题"（应用切浅色时终端也跟着浅），
  * 另外两套是**显式覆盖** —— 用户既然挑了就照他挑的来。
  */
+/**
+ * 解析 OSC 7 载荷：`file://hostname/path`（也容忍 `file:///path`）。
+ * 返回解码后的路径；无法解析返回 null。
+ */
+function parseOsc7(data: string): string | null {
+  const raw = data.trim()
+  const withoutScheme = raw.startsWith('file://') ? raw.slice('file://'.length) : raw
+  // 跳过 host 部分：第一个 `/` 之后才是路径
+  const slash = withoutScheme.indexOf('/')
+  if (slash < 0) return null
+  const path = withoutScheme.slice(slash)
+  try {
+    return decodeURIComponent(path) || null
+  } catch {
+    return path || null
+  }
+}
+
 function themeFor(colorScheme: string, resolved: 'light' | 'dark'): import('@xterm/xterm').ITheme {
   if (colorScheme === 'light') return TERMINAL_THEME_LIGHT
   if (colorScheme === 'high-contrast') return TERMINAL_THEME_HC
@@ -250,12 +269,21 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
 
   // 首次可见前不创建 xterm：隐藏容器尺寸为 0，此时 open() 会得到畸形布局
   const resolvedTheme = useStoreShallow((s) => ({ resolvedTheme: s.resolvedTheme })).resolvedTheme
+  const sessionCwd = useStoreShallow((s) => ({
+    v: tab.sessionId ? s.sessionCwd[tab.sessionId] : undefined,
+  })).v
   // 终端外观/行为设置：从 store 读，改动即时热更新到已打开的 xterm
   const termCfg = useStoreShallow((s) => ({ t: s.terminalSettings })).t
+  // 斑马纹是正式设置项（shared TerminalSettings.zebraStripes），随热更新生效
+  const zebra = termCfg.zebraStripes
+  /** 只有 DOM 渲染器才有逐行 DOM；canvas/webgl 下这个开关无效，要如实说明 */
+  const [zebraSupported, setZebraSupported] = useState(true)
   /** WebLinksAddon 的构造器：热更新时要用它重新挂载 */
   const linksCtorRef = useRef<typeof import('@xterm/addon-web-links').WebLinksAddon | null>(null)
   const linksAddonRef = useRef<import('@xterm/addon-web-links').WebLinksAddon | null>(null)
   /** 创建与事件回调里要读最新设置，但那些闭包不该因为设置变化而重建 */
+  const sessionIdRef = useRef(tab.sessionId)
+  sessionIdRef.current = tab.sessionId
   const termSettingsRef = useRef(termCfg)
   termSettingsRef.current = termCfg
   const resolvedThemeRef = useRef(resolvedTheme)
@@ -500,6 +528,19 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         })
         cleanups.push(() => bellSub.dispose())
 
+        /**
+         * OSC 7：远端 shell 报告当前目录（`\x1b]7;file://host/path\x07`）。
+         * 主进程没有 cwd 动作，所以在这里解析 —— SFTP 的「定位到终端目录」靠它。
+         * 拿不到（shell 没配）时 SFTP 侧会明确提示，而不是点了没反应。
+         */
+        const oscSub = term.parser.registerOscHandler(7, (data: string) => {
+          const sid = sessionIdRef.current
+          const path = parseOsc7(data)
+          if (path && sid) setSessionCwd(sid, path)
+          return false // 不拦截，其它处理器仍可看到
+        })
+        cleanups.push(() => oscSub.dispose())
+
         // 立即做一次 fit，把真实尺寸报上去
         requestAnimationFrame(() => {
           if (disposed) return
@@ -535,6 +576,16 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       /* xterm 在极端尺寸下会抛，忽略即可，下一次 resize 会纠正 */
     }
   }
+
+  /* ── 行间斑马纹 ───────────────────────────────── */
+  useEffect(() => {
+    const el = hostRef.current
+    if (!el) return
+    const rows = el.querySelector('.xterm-rows')
+    // DOM 渲染器会生成 .xterm-rows>div；canvas/webgl 用 <canvas>，没有逐行 DOM
+    setZebraSupported(Boolean(rows))
+    el.classList.toggle('term-zebra', zebra && Boolean(rows))
+  }, [zebra, ready])
 
   /* ── 设置热更新 ───────────────────────────────── */
   /**
@@ -900,6 +951,19 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         ) : null}
         <span>{stateLabel[tab.state] ?? tab.state}</span>
         {tab.message ? <span title={tab.message}>· {tab.message}</span> : null}
+        {/* 开了斑马纹但当前渲染器做不出行背景：如实说明，不让用户以为开关坏了 */}
+        {zebra && !zebraSupported ? (
+          <span className="term-pane__cwd" title="行间斑马纹需要 xterm 的 DOM 渲染器（逐行元素）；canvas/webgl 渲染器把整屏画在位图上，无法做行背景">
+            · 斑马纹不可用（当前渲染器非 DOM）
+          </span>
+        ) : null}
+        {/* 远端 cwd（来自 OSC 7）：SFTP 的「定位到终端目录」用的就是它，
+            显示出来用户才知道"能不能定位、定位到哪" */}
+        {sessionCwd ? (
+          <span className="term-pane__cwd" title={`远端当前目录：${sessionCwd}（来自 shell 的 OSC 7 报告）`}>
+            · {sessionCwd}
+          </span>
+        ) : null}
         <div style={{ flex: 1 }} />
         <span>编码 {tab.encoding}</span>
         {dims ? (

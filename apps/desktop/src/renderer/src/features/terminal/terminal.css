@@ -476,3 +476,26 @@
   background: var(--t1000-bg-panel);
   overflow: hidden;
 }
+
+/* 状态栏里的远端 cwd：过长时省略，避免把右侧的编码/尺寸挤掉 */
+.term-pane__cwd {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--t1000-font-mono);
+  color: var(--t1000-fg-dim);
+}
+
+/*
+ * 行间斑马纹（spec §5.9）。
+ *
+ * 只能作用于 **DOM 渲染器**：它把每一行渲染成 `.xterm-rows > div`，才有"行"可以上色；
+ * canvas/webgl 渲染器把整屏画在位图上，没有逐行元素，做不出行背景
+ * （这也是 spec 自己注明"仅 DOM 渲染"的原因）。TerminalPane 会检测并在不支持时说明。
+ *
+ * 用很低的对比度：斑马纹是"帮助横向读数"的辅助，不该抢正文的注意力。
+ */
+.term-zebra .xterm-rows > div:nth-child(even) {
+  background: color-mix(in srgb, var(--t1000-accent) 4%, transparent);
+}
