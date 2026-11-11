@@ -16,7 +16,6 @@ export const IPC_CHANNEL = 't1000' as const
 export const IPC_DOMAINS = [
   'app',
   'store',
-  'credential',
   'ssh',
   'sftp',
   'forward',
@@ -131,9 +130,11 @@ export const Actions = {
     'search',
     /** 解析 ~/.ssh/config 并批量导入连接（与 importBackup 是两件事） */
     'importOpenSsh',
+    /** 可复用的登录凭证（实现早已存在，此前漏声明） */
+    'listCredentials',
+    'saveCredential',
   ] as const,
 
-  credential: ['list', 'get', 'save', 'delete'] as const,
 
   ssh: [
     'connect',
@@ -166,18 +167,26 @@ export const Actions = {
     'listTransfers',
     'openEditor',
     // 远端目录监听（轮询实现；SFTP 协议本身无 watch 能力）
-    'watch',
-    'unwatch',
   ] as const,
 
-  forward: ['open', 'close', 'list'] as const,
+  forward: [
+    'open',
+    'close',
+    'list',
+    /** 隧道模板（实现早已存在，此前漏声明 —— 声明缺失会让渲染层拿不到类型） */
+    'templates',
+  ] as const,
 
   // pty 也要 getCwd：本地终端与 SSH 终端应有一致的能力
   pty: ['open', 'close', 'write', 'resize', 'list', 'listProfiles', 'listShells',
     'getCwd',
   ] as const,
 
-  telnet: ['connect', 'disconnect', 'write'] as const,
+  telnet: ['connect', 'disconnect', 'write',
+    /** 会话列表与终端尺寸调整（实现早已存在，此前漏声明） */
+    'list',
+    'resize',
+  ] as const,
 
   vnc: ['connect', 'disconnect', 'sendPointer', 'sendKey'] as const,
 
