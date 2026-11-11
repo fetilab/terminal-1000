@@ -117,6 +117,24 @@ server              可选的同步后端
 | macOS | `~/Library/Application Support/terminal-1000/` |
 | Windows | `%APPDATA%\terminal-1000\` |
 
+## 安全
+
+这个程序会**在本机保存服务器口令、私钥与同步凭据**，并且自带一个可对公网暴露的同步后端。
+安全边界、已明确的取舍、以及**漏洞报告方式**见 [SECURITY.md](SECURITY.md)。
+
+⚠️ 提交 issue 或演示时**永远不要粘贴真实凭据** —— 见 [行为准则](CODE_OF_CONDUCT.md) 中本项目特有的一节。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 进程边界、IPC 契约、服务分层 |
+| [CHANGELOG.md](CHANGELOG.md) | 变更记录（修复类条目尽量写明「现象 → 根因」） |
+| [SECURITY.md](SECURITY.md) | 安全模型、已知边界、漏洞报告 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、提交规范、许可证头 |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 行为准则 |
+| [docs/](docs/) | 部署与性能目标等 |
+
 ## 贡献
 
 欢迎提交 Issue 与 Pull Request。提交前请确保：
@@ -125,6 +143,9 @@ server              可选的同步后端
 2. 新增功能附带测试或可复现的验证步骤
 3. **不要**引入任何第三方的专有代码、二进制或未明确许可的语料资源
 4. 新文件使用项目的许可证头（见 [CONTRIBUTING.md](CONTRIBUTING.md)）
+5. **修复类提交请在信息里写清「现象 → 根因」**，而不只写"修复了 X" ——
+   本项目有一批缺陷属于"看起来正常、实际从未生效"，根因比结论对后来者有用得多
+6. 涉及安全边界的改动请一并更新 [SECURITY.md](SECURITY.md)
 
 所有贡献默认以 GPL-3.0 授权。
 
