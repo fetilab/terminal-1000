@@ -66,8 +66,12 @@ function settings(): AiSettings {
 }
 
 function findProvider(id?: string): AiProviderConfig | undefined {
-  const all = settings().providers
-  const wanted = id ?? activeProviderOverride
+  const s = settings()
+  const all = s.providers
+  // 解析优先级：调用方显式指定 > 运行期 override > **设置里持久化的 activeProviderId** > 第一个。
+  // 中间那两级缺一不可：只认 override 的话，用户选中的供应商**重启后就丢了**
+  // （设置里明明存着，却没人读）。
+  const wanted = id ?? activeProviderOverride ?? s.activeProviderId
   if (wanted !== undefined) {
     const hit = all.find((p) => p.id === wanted)
     if (hit) return hit

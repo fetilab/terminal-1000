@@ -11,6 +11,8 @@ import { getAppPaths } from './paths'
 import { broadcast, createWindow, getMainWindow, setWindowBoundsFile } from './window'
 import { destroyTray, hasTray, markQuitting, syncTray } from './tray'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
+import { configureAi } from './services/ai'
+import { getSettings, updateSettings } from './services/settings'
 import { installCwdTracking } from './services/session-cwd'
 import { scheduleStartupCheck } from './services/update'
 import {
@@ -85,6 +87,19 @@ async function bootstrap(): Promise<void> {
   applyRuntimeSettings()
 
   const mainWindow = createWindow()
+
+  // ⚠️ 必须注入 AI 的运行时依赖。此前 `configureAi()` **只在测试里被调用过**，
+  // 于是 `settings()` 永远回退到 providers 为空的 SAFE_SETTINGS ——
+  // **用户无论怎么填 API Key 与模型，AI 助手都必然报"未配置 AI 供应商"**，
+  // 这个功能在真实应用里完全不可用。而它一直没被发现，是因为从没拿真实 key 测过。
+  // 其余依赖（fetch / exec / listSessions / readRemoteFile）服务内已有生产实现，这里只补设置来源。
+  configureAi({
+    getSettings: () => getSettings().ai,
+    // 选中的供应商要**落库**，否则重启后又回到第一个
+    setActiveProvider: (providerId) => {
+      updateSettings({ ai: { activeProviderId: providerId } })
+    },
+  })
 
   // 全局跟踪各会话的当前目录（解析 OSC 7）。**必须在会话产生输出之前装好**，
   // 否则早期输出里的 OSC 7 会因为"无人订阅"而丢失，消费方要等下一次提示符才有值。

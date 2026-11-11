@@ -200,7 +200,12 @@ async function main() {
       detached: true,
       // 更新源通过环境变量注入（便于用本地 http 源做真实验证）；
       // 允许的协议约束仍由主进程的 isAllowedUpdateUrl 把关
-      env: { ...process.env, ...(process.env.T1000_UPDATE_URL ? {} : { T1000_UPDATE_URL: '' }) },
+      env: {
+        ...process.env,
+        ...(process.env.T1000_UPDATE_URL ? {} : { T1000_UPDATE_URL: '' }),
+        // AI key 只经环境变量传入，**不写进仓库**；没有就跳过真实 AI 验证
+        ...(process.env.T1000_AI_KEY ? { T1000_AI_KEY: process.env.T1000_AI_KEY } : {}),
+      },
     },
   )
   const stop = () => {
@@ -705,8 +710,68 @@ async function main() {
       record('3', '终端搜索/复制/字体/编码/多标签/分屏', 'SKIP',
         '属渲染层交互（已在 UI 侧单独自验），非本脚本的 IPC 链路范围')
       record('2b', 'SOCKS5 代理', 'SKIP', '需要一个外部 SOCKS5 服务端，测试主机不提供')
-      record('9', 'AI 助手配 key 对话 + 风险命令拦截', 'SKIP',
-        '需要真实 AI 供应商 key（护栏本身已有单测覆盖）')
+      // ════ 第 9 条：AI 助手真实对话（需要真实供应商 key）════
+      const aiKey = process.env.T1000_AI_KEY
+      const aiModel = process.env.T1000_AI_MODEL || 'z-ai/glm-5.3-flash'
+      if (!aiKey) {
+        record('9', 'AI 助手配 key 真实对话', 'SKIP',
+          '未提供 T1000_AI_KEY（护栏逻辑由单测覆盖；配 provider/发消息/收回复的链路需要真实供应商）')
+      } else {
+        try {
+          // 配一个 OpenAI 兼容 provider（NVIDIA NIM 即是），并把 key 交给主进程
+          await cdp.eval(
+            INVOKE('settings', 'set', {
+              path: 'ai.providers',
+              value: [
+                {
+                  id: 'acc-nim',
+                  name: '验收用 NIM',
+                  kind: 'openai',
+                  baseUrl: 'https://integrate.api.nvidia.com/v1',
+                  apiKey: aiKey,
+                  model: aiModel,
+                  maxTokens: 64,
+                },
+              ],
+            }),
+          )
+          await cdp.eval(INVOKE('settings', 'set', { path: 'ai.activeProviderId', value: 'acc-nim' }))
+          const providers = await cdp.eval(INVOKE('ai', 'listProviders', {}))
+          // 只断言"已配置密钥"这个布尔，**不回显密钥**
+          const hasKey = JSON.stringify(providers).includes('"hasApiKey":true')
+
+          // 先订阅 AI 事件：回复可能是**流式**到达的，而且失败原因也只在事件里
+          await cdp.eval(`(() => {
+            window.__accAi = { deltas: '', errors: [], done: false };
+            window.t1000.on('AI_DELTA', (p) => { if (p && p.text) window.__accAi.deltas += p.text; });
+            window.t1000.on('AI_ERROR', (p) => { window.__accAi.errors.push(p && (p.message || JSON.stringify(p))); });
+            window.t1000.on('AI_DONE', () => { window.__accAi.done = true; });
+            return true;
+          })()`)
+          const sent = await cdp.eval(
+            INVOKE('ai', 'send', { text: '只回复四个字：验收通过' }),
+          )
+          const chatId = sent?.chatId ?? sent?.id
+          let reply = ''
+          for (let i = 0; i < 60; i++) {
+            await sleep(500)
+            const chat = await cdp.eval(INVOKE('ai', 'getChat', { chatId }))
+            const msgs = chat?.messages ?? chat?.chat?.messages ?? []
+            const last = msgs.filter((m) => m.role === 'assistant').pop()
+            reply = last?.content ?? ''
+            if (reply) break
+          }
+          const evtRaw = await cdp.eval('JSON.stringify(window.__accAi || null)')
+          const evt = JSON.parse(evtRaw || 'null')
+          const streamed = evt?.deltas ?? ''
+          const effective = reply || streamed
+          record('9', 'AI 助手配 key 真实对话（真实供应商往返）',
+            hasKey && effective.length > 0 ? 'PASS' : 'FAIL',
+            `hasApiKey=${hasKey} 模型=${aiModel} 落库回复=${reply.length} 流式累计=${streamed.length} done=${evt?.done} errors=${JSON.stringify(evt?.errors ?? []).slice(0, 200)} 前 40 字=${JSON.stringify(effective.slice(0, 40))}`)
+        } catch (err) {
+          record('9', 'AI 助手真实对话', 'FAIL', String(err.message ?? err))
+        }
+      }
     }
 
     // ── 截图（主界面 + 工具页）──
