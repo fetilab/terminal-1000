@@ -9,7 +9,7 @@
  * - 敏感字段的加密/掩码在这里统一处理（读时按需解密，写时按需加密）。
  */
 
-import type { Connection, ConnectionGroup, Credential, ConnectionKind } from '@t1000/shared'
+import type { Connection, ConnectionGroup, Credential, ConnectionKind, WorkspaceLayout } from '@t1000/shared'
 import { STORE_KEYS, type StoreDb, type KvRow } from './db'
 import {
   ENCRYPTED_FIELD_NAMES,
@@ -286,6 +286,48 @@ export class Repository {
    * `cascade=true`（默认）连子分组一起删，并把孤儿连接的 groupId 清掉；
    * `cascade=false` 时把子分组挂到被删分组的父级（提升一层）。
    */
+
+  // ── 工作区布局 ─────────────────────────────────────
+
+  listLayouts(): WorkspaceLayout[] {
+    const rows = this.db.listIds(STORE_KEYS.layout)
+    const out: WorkspaceLayout[] = []
+    for (const idx of rows) {
+      const row = this.db.get(STORE_KEYS.layout, idx.item_id)
+      if (!row) continue
+      out.push(this.hydrate<WorkspaceLayout>(row))
+    }
+    return out
+  }
+
+  getLayout(id: string): WorkspaceLayout | undefined {
+    const row = this.db.get(STORE_KEYS.layout, id)
+    return row ? this.hydrate<WorkspaceLayout>(row) : undefined
+  }
+
+  /** 取某连接的布局（不含模板） */
+  getLayoutForConnection(connectionId: string): WorkspaceLayout | undefined {
+    return this.listLayouts().find((l) => !l.isTemplate && l.connectionId === connectionId)
+  }
+
+  saveLayout(input: WorkspaceLayout, now: string): WorkspaceLayout {
+    const previous = this.rawPayload(STORE_KEYS.layout, input.id)
+    const existing = previous as Partial<WorkspaceLayout> | undefined
+    const saved: WorkspaceLayout = {
+      ...input,
+      createdAt: existing?.createdAt || input.createdAt || now,
+      updatedAt: now,
+    }
+    this.db.put(STORE_KEYS.layout, saved.id, this.dehydrate(saved, previous), Date.now())
+    return this.hydrate<WorkspaceLayout>(this.db.get(STORE_KEYS.layout, saved.id)!)
+  }
+
+  deleteLayout(id: string): boolean {
+    if (!this.db.get(STORE_KEYS.layout, id)) return false
+    this.db.delete(STORE_KEYS.layout, id)
+    return true
+  }
+
   deleteGroup(id: string, cascade = true): { deletedGroups: string[]; affectedConnections: number } {
     const groups = this.listGroups()
     const target = groups.find((g) => g.id === id)

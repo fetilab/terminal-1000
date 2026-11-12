@@ -17,7 +17,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
-import type { Connection, ConnectionGroup, Credential } from '@t1000/shared'
+import type { Connection, ConnectionGroup, Credential, WorkspaceLayout } from '@t1000/shared'
 import { AppError } from '../../errors'
 import type { IpcHandler } from '../../ipc/router'
 import { StoreDb, type StoreEntity } from './db'
@@ -52,6 +52,52 @@ import {
 const META_VERIFIER = 'master_password_verifier'
 
 // ------------------------------------------------------------------ zod 校验
+
+/**
+ * 工作区布局的校验。
+ *
+ * 分屏树是**递归**的（左右分屏里还能上下分），所以用 `z.lazy`。
+ * 深度限制交给 `splitNodeSchema` 自身递归时的 `depth` 参数 —— 不设限的话
+ * 一份畸形（或恶意）的布局能把主进程的校验栈打爆。
+ */
+const MAX_SPLIT_DEPTH = 8
+
+const layoutTabSchema = z.object({
+  connectionId: z.string().min(1),
+  title: z.string().optional(),
+})
+
+const makeSplitNodeSchema = (depth: number): z.ZodTypeAny =>
+  z.lazy(() =>
+    z.union([
+      z.object({ kind: z.literal('leaf'), tabIndex: z.number().int().min(0) }),
+      z.object({
+        kind: z.literal('split'),
+        direction: z.enum(['horizontal', 'vertical']),
+        ratio: z.number().min(0).max(1),
+        first: depth <= 0 ? z.never() : makeSplitNodeSchema(depth - 1),
+        second: depth <= 0 ? z.never() : makeSplitNodeSchema(depth - 1),
+      }),
+    ]),
+  )
+
+const layoutSchema = z.object({
+  id: z.string().min(1),
+  connectionId: z.string().optional(),
+  name: z.string().max(200).optional(),
+  isTemplate: z.boolean(),
+  tabs: z.array(layoutTabSchema).max(64),
+  split: makeSplitNodeSchema(MAX_SPLIT_DEPTH).nullable().optional(),
+  panels: z
+    .object({
+      left: z.boolean().optional(),
+      right: z.boolean().optional(),
+      bottom: z.boolean().optional(),
+    })
+    .optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
 
 const idSchema = z.string().min(1, 'id 不能为空')
 
@@ -328,6 +374,20 @@ export class StoreService {
   }
 
   // --------------------------------------------------------------- 分组
+
+  /** 工作区布局（按连接独立；isTemplate 的用于跨连接复用） */
+  listLayouts(): WorkspaceLayout[] {
+    return this.repo.listLayouts()
+  }
+
+  saveLayout(input: WorkspaceLayout): WorkspaceLayout {
+    if (!input.id) throw new Error('布局缺少 id')
+    return this.repo.saveLayout(input, new Date().toISOString())
+  }
+
+  deleteLayout(id: string): boolean {
+    return this.repo.deleteLayout(id)
+  }
 
   listGroups(): ConnectionGroup[] {
     return this.repo.listGroups()
@@ -648,6 +708,18 @@ export const storeHandlers: Record<string, IpcHandler> = {
   },
 
   // ------------------------------------------------------------- 分组
+  listLayouts: (_payload, ctx) => ({ layouts: ensureService(ctx).listLayouts() }),
+
+  saveLayout: (payload, ctx) => {
+    const { layout } = parseInput(z.object({ layout: layoutSchema }), payload)
+    return ensureService(ctx).saveLayout(layout)
+  },
+
+  deleteLayout: (payload, ctx) => {
+    const { id } = parseInput(z.object({ id: z.string().min(1) }), payload)
+    return { id, deleted: ensureService(ctx).deleteLayout(id) }
+  },
+
   listGroups: (_payload, ctx) => ensureService(ctx).listGroupTree(),
 
   saveGroup: (payload, ctx) => {

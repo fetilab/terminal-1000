@@ -343,3 +343,46 @@ export interface SessionInfo {
     uptimeSeconds?: number
   }
 }
+
+// ---------------------------------------------------------------------------
+// 工作区布局（spec：分屏布局自动保存、按连接独立、可存为模板）
+// ---------------------------------------------------------------------------
+
+/** 布局里记录的一个标签页（只记"打开过什么"，**不表示要自动重连**） */
+export interface LayoutTab {
+  connectionId: string
+  title?: string
+}
+
+/**
+ * 分屏树。
+ *
+ * 用树而不是"几个格子"：嵌套分屏才表达得下（左右分屏里再上下分），
+ * 而且 `ratio` 能保留用户拖出来的比例。
+ */
+export type LayoutSplitNode =
+  | { kind: 'leaf'; /** 指向 layout.tabs 的下标 */ tabIndex: number }
+  | {
+      kind: 'split'
+      direction: 'horizontal' | 'vertical'
+      /** 第一块占的比例（0~1） */
+      ratio: number
+      first: LayoutSplitNode
+      second: LayoutSplitNode
+    }
+
+export interface WorkspaceLayout {
+  id: string
+  /** 绑定到哪个连接；模板不绑定（undefined） */
+  connectionId?: string
+  /** 模板名（isTemplate 时有意义） */
+  name?: string
+  isTemplate: boolean
+  tabs: LayoutTab[]
+  /** 分屏树；null/undefined 表示单屏 */
+  split?: LayoutSplitNode | null
+  /** 侧边面板开合状态 */
+  panels?: { left?: boolean; right?: boolean; bottom?: boolean }
+  createdAt: string
+  updatedAt: string
+}

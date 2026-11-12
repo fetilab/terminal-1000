@@ -480,6 +480,8 @@ function storeKeyAlias(entity: StoreEntity): keyof typeof STORE_KEYS {
       return 'quickCommandGroup'
     case 'QuickCommandParamHistory':
       return 'quickCommandParamHistory'
+    case 'Layout':
+      return 'layout'
   }
 }
 

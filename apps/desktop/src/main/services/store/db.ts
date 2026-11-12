@@ -29,6 +29,7 @@ export type StoreEntity =
   | 'QuickCommand'
   | 'QuickCommandGroup'
   | 'QuickCommandParamHistory'
+  | 'Layout'
 
 export const STORE_ENTITIES: readonly StoreEntity[] = [
   'Server',
@@ -42,6 +43,7 @@ export const STORE_ENTITIES: readonly StoreEntity[] = [
   'QuickCommand',
   'QuickCommandGroup',
   'QuickCommandParamHistory',
+  'Layout',
 ] as const
 
 /** 拼出参考实现同构的 store_key */
@@ -62,6 +64,7 @@ export const STORE_KEYS = {
   quickCommand: storeKeyOf('QuickCommand'),
   quickCommandGroup: storeKeyOf('QuickCommandGroup'),
   quickCommandParamHistory: storeKeyOf('QuickCommandParamHistory'),
+  layout: storeKeyOf('Layout'),
 } as const
 
 /** 元数据表里保存主密码校验记录、schema 版本等 */

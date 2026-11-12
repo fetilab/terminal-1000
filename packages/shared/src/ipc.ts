@@ -131,6 +131,10 @@ export const Actions = {
     /** 解析 ~/.ssh/config 并批量导入连接（与 importBackup 是两件事） */
     'importOpenSsh',
     /** 可复用的登录凭证（实现早已存在，此前漏声明） */
+    /** 工作区布局：按连接独立保存分屏/标签结构（spec：布局存在本地数据库） */
+    'listLayouts',
+    'saveLayout',
+    'deleteLayout',
     'listCredentials',
     'saveCredential',
   ] as const,
