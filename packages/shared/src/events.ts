@@ -31,6 +31,10 @@ export const Events = {
   SFTP_TRANSFER_ERROR: 'SFTP_TRANSFER_ERROR',
   SFTP_DIR_SCANNED: 'SFTP_DIR_SCANNED',
   SFTP_WATCH_EVENT: 'SFTP_WATCH_EVENT',
+  /** 远端编辑的改动已写回远端 */
+  SFTP_EDIT_SAVED: 'SFTP_EDIT_SAVED',
+  /** 远端编辑写回/监听失败（必须让用户知道，否则他以为存到远端了） */
+  SFTP_EDIT_ERROR: 'SFTP_EDIT_ERROR',
 
   // 端口转发
   FORWARD_STATE: 'FORWARD_STATE',
@@ -147,6 +151,27 @@ export interface EventPayloads {
   }
   [Events.SFTP_TRANSFER_ERROR]: { transferId: string; sessionId: string; file?: string; message: string }
   [Events.SFTP_DIR_SCANNED]: { sessionId: string; path: string; files: number; bytes: number }
+  [Events.SFTP_EDIT_SAVED]: {
+    editId: string
+    sessionId: string
+    remotePath: string
+    bytes: number
+    at: number
+    /** auto=本地变更触发；manual=用户显式保存 */
+    reason: 'auto' | 'manual'
+    /**
+     * 远端文件在"物化 → 写回"期间被改过。
+     * 我们仍然写（用户的编辑是明确意图），但界面应当提示**可能覆盖了别人的修改**。
+     */
+    remoteChangedSinceOpen: boolean
+  }
+  [Events.SFTP_EDIT_ERROR]: {
+    editId: string
+    sessionId?: string
+    remotePath: string
+    message: string
+  }
+
   [Events.SFTP_WATCH_EVENT]: {
     sessionId: string
     path: string

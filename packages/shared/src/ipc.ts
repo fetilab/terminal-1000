@@ -166,6 +166,10 @@ export const Actions = {
     'cancelTransfer',
     'listTransfers',
     'openEditor',
+    /** 把本地编辑副本的改动写回远端（用户在编辑器里保存后调用） */
+    'saveEditor',
+    /** 结束编辑会话（停止监听本地副本） */
+    'closeEditor',
     // 远端目录监听（轮询实现；SFTP 协议本身无 watch 能力）
   ] as const,
 

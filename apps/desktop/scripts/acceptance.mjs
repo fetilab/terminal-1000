@@ -628,6 +628,40 @@ async function main() {
         record('4', 'SFTP 上传下载', 'FAIL', String(err.message ?? err))
       }
 
+      // ════ 远端编辑写回（此前是「能编辑能保存但改动不回传」的静默丢数据）════
+      try {
+        const remoteEditPath = '/edit-target.conf'
+        const hostEditPath = join(workspace, 'edit-target.conf')
+        writeFileSync(hostEditPath, '远端原始内容\n')
+
+        // 走真实链路：物化到本地临时目录
+        const opened = await cdp.eval(
+          INVOKE('sftp', 'openEditor', { sessionId, path: remoteEditPath }),
+        )
+        const localCopy = opened?.localPath
+        const editId = opened?.editId
+        const beforeRemote = readFileSync(hostEditPath, 'utf8')
+
+        // 模拟"用户在系统编辑器里改完保存"
+        writeFileSync(localCopy, '用户在编辑器里改过的内容\n')
+        const saved = await cdp.eval(INVOKE('sftp', 'saveEditor', { editId }))
+
+        // **核对宿主机上的远端文件**（不是看界面说成功）
+        const afterRemote = readFileSync(hostEditPath, 'utf8')
+        const written = afterRemote.includes('用户')
+        const changed = afterRemote !== beforeRemote
+
+        // 顺带验证"内容没变时跳过"
+        const again = await cdp.eval(INVOKE('sftp', 'saveEditor', { editId }))
+        await cdp.eval(INVOKE('sftp', 'closeEditor', { editId }))
+
+        record('S15', '远端编辑写回：改动真的落到远端磁盘',
+          written && changed && again?.skipped === true ? 'PASS' : 'FAIL',
+          `写回字节=${saved?.bytes} 远端已变=${changed} 内容正确=${written} 未变时跳过=${again?.skipped}`)
+      } catch (err) {
+        record('S15', '远端编辑写回', 'FAIL', String(err.message ?? err))
+      }
+
       // ════ 第 5 条：端口转发**真的转发**（本机 TCP → SSH → 远端 TCP）════
       try {
         // 起一个本机 echo 服务当作"远端目标"

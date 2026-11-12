@@ -20,6 +20,12 @@ import { tmpdir } from 'node:os'
 import { z } from 'zod'
 import type { SFTPWrapper } from 'ssh2'
 import type { OpenEditorResult } from '@t1000/shared'
+import { Events } from '@t1000/shared'
+import { subscribeSessionClosed } from '../session-registry'
+import { createLogger } from '../../logger'
+
+const log = createLogger('sftp')
+import { RemoteEditorRegistry, hashContent } from './editor'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { AppError } from '../../errors'
 import { requireSession } from '../session-registry'
@@ -88,6 +94,33 @@ const openEditorSchema = z.object({ sessionId, path: remotePath })
 // ---------------------------------------------------------------------------
 
 const channels = new Map<string, Promise<SFTPWrapper>>()
+
+/**
+ * 远端编辑会话注册表。
+ *
+ * 把 `sftpFor` 以**注入**方式交给它，而不是让它 import 服务内部 —— 跨模块取能力走显式注入。
+ * 事件通过 ctx.emit 发出，所以注册表本身不依赖 Electron。
+ */
+let editors: { registry: RemoteEditorRegistry; ctx: IpcContext } | null = null
+
+function editorRegistry(ctx: IpcContext): { registry: RemoteEditorRegistry; ctx: IpcContext } {
+  if (!editors) {
+    const registry = new RemoteEditorRegistry({
+      sftpFor,
+      // 断言只放在**这一个接线点**：事件的载荷对象在 editor.ts 里按契约构造，
+      // 这里只是把"具体事件名 + 对应载荷"这层关系交给运行期（TS 无法在此处收窄）。
+      emit: (event, payload) => ctx.emit(event, payload as never),
+    })
+    // 会话断开时清掉它的编辑会话：否则本地监听一直留着，而写回必然失败 ——
+    // 用户会在编辑器里继续改，却永远存不回远端（正是本次要修的毛病）。
+    subscribeSessionClosed((sessionId) => {
+      const n = registry.closeBySession(sessionId)
+      if (n > 0) log.info(`会话 ${sessionId} 断开，已结束 ${n} 个远端编辑会话`)
+    })
+    editors = { registry, ctx }
+  }
+  return editors
+}
 
 function requireSessionOrThrow(id: string) {
   try {
@@ -247,7 +280,7 @@ export const sftpHandlers: Record<string, IpcHandler> = {
    * 用 os.tmpdir() 而不是应用数据目录 —— 编辑副本是易失的中间产物，
    * 不该进入用户数据目录、也不该被备份/同步带走。
    */
-  openEditor: async (payload) => {
+  openEditor: async (payload, ctx) => {
     const { sessionId: id, path } = openEditorSchema.parse(payload)
     const sftp = await sftpFor(id)
     const file = await readRemoteTextFile(sftp, path)
@@ -258,6 +291,7 @@ export const sftpHandlers: Record<string, IpcHandler> = {
     await writeFile(localPath, file.content, 'utf8')
 
     // 显式标注为 shared 契约：主进程返回值与 UI 类型对不上时编译期就会报错
+    const editId = randomUUID()
     const result: OpenEditorResult = {
       remotePath: file.path,
       localPath,
@@ -265,9 +299,37 @@ export const sftpHandlers: Record<string, IpcHandler> = {
       mtime: file.mtime,
       mode: file.mode,
       /** 每次编辑会话一个 id，供上层关联保存动作 */
-      editId: randomUUID(),
+      editId,
     }
+
+    // **登记并开始监听本地副本** —— 这是此前完全缺失的一环：没有它，
+    // 用户在编辑器里改完保存，远端文件永远不变（静默丢改动）。
+    const { registry } = editorRegistry(ctx)
+    registry.open({
+      editId,
+      sessionId: id,
+      remotePath: file.path,
+      localPath,
+      remoteMtimeAtOpen: file.mtime,
+      // 记下物化时的内容摘要：写回时内容没变就跳过，避免编辑器"只是碰了一下"也传一遍
+      lastHash: hashContent(file.content),
+      startedAt: Date.now(),
+    })
     return result
+  },
+
+  /** 手动写回（用户在编辑器里保存后由界面调用；自动写回由监听触发） */
+  saveEditor: async (payload, ctx) => {
+    const parsed = z.object({ editId: z.string().min(1) }).parse(payload)
+    const { registry } = editorRegistry(ctx)
+    return registry.save(parsed.editId, 'manual')
+  },
+
+  /** 结束编辑会话：停掉本地监听（否则监听会一直留着，写回必然失败） */
+  closeEditor: (payload, ctx) => {
+    const parsed = z.object({ editId: z.string().min(1) }).parse(payload)
+    const { registry } = editorRegistry(ctx)
+    return { editId: parsed.editId, closed: registry.close(parsed.editId) }
   },
 }
 
