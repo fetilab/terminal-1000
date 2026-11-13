@@ -12,12 +12,19 @@
  */
 
 import { z } from 'zod'
-import type { AiProviderConfig, AiSettings, EventName, EventPayloads, PublicProvider } from '@t1000/shared'
+import type { AiProviderConfig, AiSettings, EventName, EventPayloads, PublicProvider, ChatMessage} from '@t1000/shared'
 import { AppError, parseInput } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { listSessions as listLiveSessions, requireSession } from '../session-registry'
 import { ChatService, type ChatDeps, type SessionSummary } from './chat'
-import { globalFetch } from './providers'
+import { createProviderClient, globalFetch } from './providers'
+import {
+  NO_PROVIDER_MESSAGE,
+  SUGGEST_TIMEOUT_MS,
+  buildSuggestPrompt,
+  missingApiKeyMessage,
+  parseCommandSuggestions,
+} from './suggest'
 
 /** 单次读取远端文件的字节上限（AI 读文件不能把主进程内存打爆） */
 const MAX_AI_READ_BYTES = 2 * 1024 * 1024
@@ -55,6 +62,58 @@ export function configureAi(next: AiRuntime): void {
 }
 
 /** 测试自检用 */
+/**
+ * AI 命令建议（补全里的 `??` 通道）。
+ *
+ * 这是 `services/completion` 需要的**最小缝**：只回命令文本 + 可选说明，
+ * 不让 AI 侧了解补全的候选结构（score/matchKind…）。
+ *
+ * 实现要点：
+ * - **复用既有的 provider client**，不另写 HTTP（跨服务能力统一走 providers.ts）
+ * - 未配供应商 / 未填 API Key / 调用失败 → 抛**可操作**的错误（补全侧会原样呈现给用户）
+ */
+export async function suggestCommands(
+  input: { query: string; context?: unknown },
+  limit: number,
+): Promise<Array<{ command: string; description?: string }>> {
+  const provider = findProvider()
+  if (!provider) throw AppError.badRequest(NO_PROVIDER_MESSAGE)
+  if (!provider.apiKey) throw AppError.badRequest(missingApiKeyMessage(provider.name))
+
+  const client = createProviderClient(provider, { fetch: runtime.fetch ?? globalFetch })
+  // 纯函数只产出 {role, content}；这里补齐 ChatMessage 需要的元数据
+  const now = new Date().toISOString()
+  const messages: ChatMessage[] = buildSuggestPrompt(input.query, limit).map((turn, i) => ({
+    id: `suggest-${i}`,
+    role: turn.role,
+    content: turn.content,
+    createdAt: now,
+  }))
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), SUGGEST_TIMEOUT_MS)
+  try {
+    const result = await client.streamChat({ messages, signal: controller.signal })
+    return parseCommandSuggestions(result.text, limit)
+  } catch (err) {
+    // 超时要说清是超时（而不是让用户对着"失败"发愣）
+    if (controller.signal.aborted) {
+      throw AppError.internal(
+        `AI 建议在 ${Math.round(SUGGEST_TIMEOUT_MS / 1000)} 秒内没有返回。` +
+          'AI 建议对延迟很敏感（补全弹窗会一直等），建议在「设置 > AI 助手」里为它改用**响应更快的模型**' +
+          '（推理型模型往往会先"想"很久）；也可以换个说法再试',
+      )
+    }
+    throw err instanceof AppError
+      ? err
+      : AppError.internal(
+          `AI 建议调用失败：${err instanceof Error ? err.message : String(err)}`,
+        )
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export function resetAiRuntime(): void {
   runtime = {}
   activeProviderOverride = undefined

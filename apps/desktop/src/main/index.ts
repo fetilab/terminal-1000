@@ -11,7 +11,9 @@ import { getAppPaths } from './paths'
 import { broadcast, createWindow, getMainWindow, setWindowBoundsFile } from './window'
 import { destroyTray, hasTray, markQuitting, syncTray } from './tray'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
-import { configureAi } from './services/ai'
+import { configureAi, suggestCommands } from './services/ai'
+import { configureCompletionAi, configureCompletionSettings } from './services/completion'
+import { createAiSuggestionProvider } from './services/completion/engine'
 import { getSettings, updateSettings } from './services/settings'
 import { installCwdTracking } from './services/session-cwd'
 import { scheduleStartupCheck } from './services/update'
@@ -93,6 +95,16 @@ async function bootstrap(): Promise<void> {
   // **用户无论怎么填 API Key 与模型，AI 助手都必然报"未配置 AI 供应商"**，
   // 这个功能在真实应用里完全不可用。而它一直没被发现，是因为从没拿真实 key 测过。
   // 其余依赖（fetch / exec / listSessions / readRemoteFile）服务内已有生产实现，这里只补设置来源。
+  // 补全里的 `??` AI 通道：把 AI 侧的实现**显式注入**给 completion
+  // （跨服务调用不互相 import，与 configureAi 同一套规矩）。
+  // 设置来源也一并注入 —— 否则用户在设置面板关掉「AI 建议」对引擎毫无影响（实测过这个断点）。
+  configureCompletionAi(
+    createAiSuggestionProvider({
+      suggestCommands: (input, limit) => suggestCommands({ query: input.query }, limit),
+    }),
+  )
+  configureCompletionSettings(() => getSettings().completion)
+
   configureAi({
     getSettings: () => getSettings().ai,
     // 选中的供应商要**落库**，否则重启后又回到第一个

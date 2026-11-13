@@ -205,6 +205,8 @@ async function main() {
         ...(process.env.T1000_UPDATE_URL ? {} : { T1000_UPDATE_URL: '' }),
         // AI key 只经环境变量传入，**不写进仓库**；没有就跳过真实 AI 验证
         ...(process.env.T1000_AI_KEY ? { T1000_AI_KEY: process.env.T1000_AI_KEY } : {}),
+        // 本地 OpenAI 兼容替身（验证 HTTP/SSE/解析/候选全链路；模型本身是替身）
+        ...(process.env.T1000_AI_STUB ? { T1000_AI_STUB: process.env.T1000_AI_STUB } : {}),
       },
     },
   )
@@ -746,8 +748,11 @@ async function main() {
       record('2b', 'SOCKS5 代理', 'SKIP', '需要一个外部 SOCKS5 服务端，测试主机不提供')
       // ════ 第 9 条：AI 助手真实对话（需要真实供应商 key）════
       const aiKey = process.env.T1000_AI_KEY
-      const aiModel = process.env.T1000_AI_MODEL || 'z-ai/glm-5.3-flash'
-      if (!aiKey) {
+      const aiStub = process.env.T1000_AI_STUB
+      const aiModel = process.env.T1000_AI_MODEL || (aiStub ? 'stub-model' : 'z-ai/glm-5.3-flash')
+      // 有替身就用替身：这样 `??` 通道能被**确定性**验证（不依赖真实模型的延迟）
+      const aiBaseUrl = aiStub ?? 'https://integrate.api.nvidia.com/v1'
+      if (!aiKey && !aiStub) {
         record('9', 'AI 助手配 key 真实对话', 'SKIP',
           '未提供 T1000_AI_KEY（护栏逻辑由单测覆盖；配 provider/发消息/收回复的链路需要真实供应商）')
       } else {
@@ -761,8 +766,8 @@ async function main() {
                   id: 'acc-nim',
                   name: '验收用 NIM',
                   kind: 'openai',
-                  baseUrl: 'https://integrate.api.nvidia.com/v1',
-                  apiKey: aiKey,
+                  baseUrl: aiBaseUrl,
+                  apiKey: aiKey ?? 'stub-key',
                   model: aiModel,
                   maxTokens: 64,
                 },
@@ -799,6 +804,28 @@ async function main() {
           const evt = JSON.parse(evtRaw || 'null')
           const streamed = evt?.deltas ?? ''
           const effective = reply || streamed
+          // ── 顺带验证 `??` AI 建议通道（同一 provider）────────────────
+          try {
+            await cdp.eval(INVOKE('settings', 'set', { path: 'completion.aiSuggestion', value: true }))
+            const t0 = Date.now()
+            const sug = await cdp.eval(
+              // ⚠️ cursor 必须覆盖到 `??`：line 是 11 字符，写 9 等于把标记切掉
+              INVOKE('completion', 'complete', { line: 'docker pu??', cursor: 'docker pu??'.length }),
+            )
+            const elapsed = Date.now() - t0
+            const cands = sug?.candidates ?? []
+            // ⚠️ 不能只看 kind==='ai'：**失败时的占位提示候选也是 'ai'**
+            //（value=原样 token、score=0）。我第一版就被它骗过：S16 显示 PASS，
+            // 而 notes 里明明写着"请求超时"。真实 AI 候选 score=900-序号，占位是 0。
+            const realAi = cands.filter((c) => c.kind === 'ai' && (c.score ?? 0) > 0)
+            const notes = (sug?.notes ?? []).join(' | ')
+            record('S16', '?? AI 建议通道（真实模型出候选）',
+              realAi.length > 0 ? 'PASS' : 'FAIL',
+              `耗时 ${elapsed}ms 候选 ${cands.length}（真实 AI ${realAi.length}）首条=${JSON.stringify(realAi[0]?.value ?? '')} 源=${aiStub ? '本地替身(仅验证链路)' : aiModel} notes=${notes.slice(0, 60)}`)
+          } catch (err) {
+            record('S16', '?? AI 建议通道', 'FAIL', String(err.message ?? err))
+          }
+
           record('9', 'AI 助手配 key 真实对话（真实供应商往返）',
             hasKey && effective.length > 0 ? 'PASS' : 'FAIL',
             `hasApiKey=${hasKey} 模型=${aiModel} 落库回复=${reply.length} 流式累计=${streamed.length} done=${evt?.done} errors=${JSON.stringify(evt?.errors ?? []).slice(0, 200)} 前 40 字=${JSON.stringify(effective.slice(0, 40))}`)
