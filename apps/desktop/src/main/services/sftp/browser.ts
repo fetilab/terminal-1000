@@ -375,14 +375,168 @@ async function removeDirectoryRecursive(sftp: SftpLike, dir: string): Promise<vo
   await sftpFs.rmdir(sftp, dir)
 }
 
-/** 修改权限位；接受 0o755 / '755' / '0755' */
+/**
+ * 递归 chmod 的条目上限。
+ *
+ * 远端目录动辄上万项，无上限地走完整棵树会让界面卡住、也让"预备命令"列出几万行。
+ * 超限时**明确告知被截断**，而不是悄悄少改一部分（那等于给了用户一个假的成功）。
+ */
+const MAX_CHMOD_ENTRIES = 5000
+
+/** 「预备命令」里最多列几条明细（其余用汇总行说明） */
+const MAX_PREVIEW_COMMANDS = 50
+
+export interface ChmodPlan {
+  /** 一行汇总，等价于 shell 里的 chmod（如 `chmod -R 755 /tmp/a`） */
+  summary: string
+  /** 将要改动的条目（含目录/文件自身），按遍历顺序 */
+  entries: string[]
+  /** 列给用户看的明细命令（最多 MAX_PREVIEW_COMMANDS 条） */
+  commands: string[]
+  /** 是否因为超过上限被截断 */
+  truncated: boolean
+  /**
+   * 危险提示（有值时界面应当显著展示）。
+   *
+   * 目前只报一种最容易被踩的情形：**递归时把目录的可执行位也去掉了**。
+   * 目录没有 x 位就**进不去**，整棵子树会立刻变得不可访问 ——
+   * GNU `chmod -R` 也是这个行为，但用户往往到"目录打不开"时才意识到。
+   */
+  warning?: string
+}
+
+/** 目录缺少可执行位时的措辞 */
+function dirExecWarning(mode: number, recursive: boolean): string | undefined {
+  if (!recursive) return undefined
+  if ((mode & 0o111) !== 0) return undefined
+  return (
+    '该权限不含目录的执行位（x）：递归后**目录会变得无法进入**，' +
+    '其中所有文件也会随之不可访问（`chmod -R` 的固有行为）。' +
+    '若要保留可访问性，目录通常需要至少 700（如 755/750）。'
+  )
+}
+
+/**
+ * **只计算不执行**：算出"将要改哪些、执行什么命令"。
+ *
+ * 这是 spec 要求的「预备执行命令区域」的数据来源 —— 用户在按下执行之前，
+ * 应当能看清到底会动哪些路径。对 `chmod -R` 这种影响面大的操作，这比事后补救重要。
+ */
+export async function planChmod(
+  sftp: SftpLike,
+  remotePath: string,
+  mode: number | string,
+  options: { recursive?: boolean } = {},
+): Promise<ChmodPlan> {
+  const p = normalizeRemotePath(remotePath)
+  const octal = parseMode(mode).toString(8).padStart(3, '0')
+  const recursive = options.recursive === true
+
+  const stats = await sftpFs.lstat(sftp, p)
+  const modeIsDir = (stats.mode & 0o170000) === 0o040000
+  const isDir = typeof stats.isDirectory === 'function' ? stats.isDirectory() : modeIsDir
+  const isLink = (stats.mode & 0o170000) === 0o120000
+
+  // 非目录、或没勾递归 → 只动这一个
+  if (!isDir || isLink || !recursive) {
+    const summary = `chmod ${octal} ${p}`
+    const w = dirExecWarning(parseMode(mode), false)
+    return {
+      summary,
+      entries: [p],
+      commands: [summary],
+      truncated: false,
+      ...(w === undefined ? {} : { warning: w }),
+    }
+  }
+
+  // 拒绝在根目录上递归：`chmod -R /` 会把整台机器搞坏，和 removePath 拒绝删根同理
+  if (p === '/') throw AppError.forbidden('拒绝对根目录执行递归 chmod')
+
+  const entries: string[] = [p]
+  let truncated = false
+  const walk = async (dir: string): Promise<void> => {
+    if (truncated) return
+    const list = await sftpFs.readdir(sftp, dir)
+    for (const item of list) {
+      if (item.filename === '.' || item.filename === '..') continue
+      if (entries.length >= MAX_CHMOD_ENTRIES) {
+        truncated = true
+        return
+      }
+      const child = dir === '/' ? `/${item.filename}` : `${dir}/${item.filename}`
+      entries.push(child)
+      const childMode = item.attrs.mode & 0o170000
+      const childIsDir =
+        typeof item.attrs.isDirectory === 'function' ? item.attrs.isDirectory() : childMode === 0o040000
+      // **符号链接不跟进去**（与 chmod -R 默认行为一致）：跟进去会改到链接指向的目标，
+      // 那往往不是用户想动的路径。
+      const childIsLink = childMode === 0o120000
+      if (childIsDir && !childIsLink) await walk(child)
+    }
+  }
+  await walk(p)
+
+  const summary = `chmod -R ${octal} ${p}`
+  const commands = entries.slice(0, MAX_PREVIEW_COMMANDS).map((e) => `chmod ${octal} ${e}`)
+  const w = dirExecWarning(parseMode(mode), true)
+  return {
+    summary,
+    entries,
+    commands,
+    truncated,
+    ...(w === undefined ? {} : { warning: w }),
+  }
+}
+
+export interface ChmodResult {
+  /** 成功改动的条目数 */
+  changed: number
+  /** 失败的条目与原因（部分失败是常态，必须逐项报） */
+  failed: Array<{ path: string; message: string }>
+  /** 实际执行的命令（截断到预览上限） */
+  commands: string[]
+  summary: string
+  truncated: boolean
+  /** 危险提示（透传自预览计划） */
+  warning?: string
+}
+
+/**
+ * 修改权限位（支持递归）。
+ *
+ * 语义对齐 `chmod -R`：**目录自身也改**，符号链接不跟随。
+ * 逐项执行并**收集失败**而不是遇到第一个错就中断 —— 一棵树里个别文件没权限是常事，
+ * 中断会让"改了一半"的状态更难排查。
+ */
 export async function chmodPath(
   sftp: SftpLike,
   remotePath: string,
   mode: number | string,
-): Promise<void> {
-  const p = normalizeRemotePath(remotePath)
-  await sftpFs.chmod(sftp, p, parseMode(mode))
+  options: { recursive?: boolean } = {},
+): Promise<ChmodResult> {
+  const numeric = parseMode(mode)
+  const plan = await planChmod(sftp, remotePath, numeric, options)
+  const failed: Array<{ path: string; message: string }> = []
+  let changed = 0
+
+  for (const entry of plan.entries) {
+    try {
+      await sftpFs.chmod(sftp, entry, numeric)
+      changed += 1
+    } catch (err) {
+      failed.push({ path: entry, message: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  return {
+    changed,
+    failed,
+    commands: plan.commands,
+    summary: plan.summary,
+    truncated: plan.truncated,
+    ...(plan.warning === undefined ? {} : { warning: plan.warning }),
+  }
 }
 
 /**

@@ -162,6 +162,8 @@ export const Actions = {
     'rename',
     'remove',
     'chmod',
+    /** 只算不改：预览将要执行的 chmod 命令（spec 要求的「预备执行命令区域」） */
+    'previewChmod',
     'home',
     'readFile',
     'writeFile',

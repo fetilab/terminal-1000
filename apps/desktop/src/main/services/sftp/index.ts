@@ -41,6 +41,7 @@ import {
   toSftpLike,
   writeRemoteTextFile,
   type SftpLike,
+  planChmod,
 } from './browser'
 import { TransferEngine } from './transfer'
 
@@ -66,7 +67,10 @@ const renameSchema = z.object({
   overwrite: z.boolean().optional(),
 })
 const removeSchema = z.object({ sessionId, path: remotePath, recursive: z.boolean().optional() })
-const chmodSchema = z.object({ sessionId, path: remotePath, mode: modeSchema })
+const chmodSchema = z.object({ sessionId, path: remotePath, mode: modeSchema,
+  /** 目录递归（等价 chmod -R）；不勾只改目录自身 */
+  recursive: z.boolean().optional(),
+})
 const homeSchema = z.object({ sessionId })
 const readFileSchema = z.object({
   sessionId,
@@ -230,10 +234,22 @@ export const sftpHandlers: Record<string, IpcHandler> = {
     return { path, removed: true }
   },
 
+  /**
+   * 改权限（支持递归）。
+   *
+   * 返回**逐项结果**而不是只回一个 ok：一棵树里个别文件没权限是常事，
+   * 只报"成功"会让用户以为全改了。`commands`/`summary` 同时供界面展示实际执行了什么。
+   */
   chmod: async (payload) => {
-    const { sessionId: id, path, mode } = chmodSchema.parse(payload)
-    await chmodPath(await sftpFor(id), path, mode)
-    return { path, mode }
+    const { sessionId: id, path, mode, recursive } = chmodSchema.parse(payload)
+    const result = await chmodPath(await sftpFor(id), path, mode, { recursive: recursive ?? false })
+    return { path, mode, ...result }
+  },
+
+  /** 预备命令预览：**只算不改**（spec 要求执行前能看到会动哪些路径） */
+  previewChmod: async (payload) => {
+    const { sessionId: id, path, mode, recursive } = chmodSchema.parse(payload)
+    return planChmod(await sftpFor(id), path, mode, { recursive: recursive ?? false })
   },
 
   home: async (payload) => {

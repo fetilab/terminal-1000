@@ -21,7 +21,7 @@
 // SKIP 并给出原因，等 `scripts/ssh-test-host.mjs` 就绪后可补上。
 
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer, connect as netConnect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -662,6 +662,68 @@ async function main() {
           `写回字节=${saved?.bytes} 远端已变=${changed} 内容正确=${written} 未变时跳过=${again?.skipped}`)
       } catch (err) {
         record('S15', '远端编辑写回', 'FAIL', String(err.message ?? err))
+      }
+
+      // ════ 递归 chmod + 预备命令预览（spec 明确要求 chmod -R 与命令预览）════
+      try {
+        // 在真实主机上造一棵树
+        const root = join(workspace, 'chmod-tree')
+        const sub = join(root, 'sub')
+        mkdirSync(sub, { recursive: true })
+        writeFileSync(join(root, 'top.txt'), 'a')
+        writeFileSync(join(sub, 'deep.sh'), 'b')
+        chmodSync(join(root, 'top.txt'), 0o644)
+        chmodSync(join(sub, 'deep.sh'), 0o644)
+
+        // 1) 预览：只算不改，必须能看到将要执行的命令与影响面
+        const preview = await cdp.eval(
+          INVOKE('sftp', 'previewChmod', {
+            sessionId, path: '/chmod-tree', mode: '700', recursive: true,
+          }),
+        )
+        // 预览阶段**不能**已经把权限改了（否则"预备"就是假的）
+        const beforeMode = (statSync(join(sub, 'deep.sh')).mode & 0o777).toString(8)
+        const previewOk =
+          preview?.summary === 'chmod -R 700 /chmod-tree' &&
+          (preview?.entries ?? []).some((e) => e.endsWith('deep.sh')) &&
+          beforeMode === '644'
+
+        // 2) 执行递归：**子目录里的文件**也必须变
+        const applied = await cdp.eval(
+          INVOKE('sftp', 'chmod', {
+            sessionId, path: '/chmod-tree', mode: '700', recursive: true,
+          }),
+        )
+        const deepMode = (statSync(join(sub, 'deep.sh')).mode & 0o777).toString(8)
+        const topMode = (statSync(join(root, 'top.txt')).mode & 0o777).toString(8)
+        const dirMode = (statSync(sub).mode & 0o777).toString(8)
+
+        // 3) 非递归：不应影响子项
+        chmodSync(join(sub, 'deep.sh'), 0o644)
+        await cdp.eval(
+          INVOKE('sftp', 'chmod', { sessionId, path: '/chmod-tree', mode: '755', recursive: false }),
+        )
+        const deepAfterNonRecursive = (statSync(join(sub, 'deep.sh')).mode & 0o777).toString(8)
+
+        // 不含执行位时**必须给警告**（目录会变得进不去）——这是真机验证发现的坑
+        const warnPreview = await cdp.eval(
+          INVOKE('sftp', 'previewChmod', {
+            sessionId, path: '/chmod-tree', mode: '600', recursive: true,
+          }),
+        )
+        const warnOk = typeof warnPreview?.warning === 'string' && warnPreview.warning.includes('无法进入')
+
+        const ok =
+          previewOk && warnOk &&
+          deepMode === '700' && topMode === '700' && dirMode === '700' &&
+          deepAfterNonRecursive === '644' && // 非递归时子项不动
+          (applied?.changed ?? 0) >= 3
+
+        record('S17', '递归 chmod + 预备命令预览（宿主机 stat 核对）', ok ? 'PASS' : 'FAIL',
+          `预览 summary=${JSON.stringify(preview?.summary)} 预览未改动=${beforeMode === '644'} ` +
+          `危险警告=${warnOk} 递归后 deep=${deepMode} top=${topMode} dir=${dirMode}（应全 700） 非递归后 deep=${deepAfterNonRecursive}（应 644） changed=${applied?.changed}`)
+      } catch (err) {
+        record('S17', '递归 chmod', 'FAIL', String(err.message ?? err))
       }
 
       // ════ 第 5 条：端口转发**真的转发**（本机 TCP → SSH → 远端 TCP）════
