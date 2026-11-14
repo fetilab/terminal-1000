@@ -18,6 +18,7 @@ import { createServer as createHttpServer } from 'node:http'
 import * as accounts from './accounts.js'
 import * as blobs from './blobs.js'
 import { checkAllowed, recordAttempt } from './ratelimit.js'
+import { startTsc1Server, tsc1Host, tsc1Port } from './tsc1/listener.js'
 import {
   HttpError,
   clientIp,
@@ -306,9 +307,28 @@ function main() {
     }
   })
 
+  // TSC/1 加密通道：与 HTTP **并存**，独立端口。
+  // HTTP 保留给反代/本机兼容，不删。默认关闭，需显式 T1000_TSC1_ENABLE=1。
+  let tsc1 = null
+  if (process.env.T1000_TSC1_ENABLE === '1') {
+    startTsc1Server({ dispatch, log, dataDir: dir }).then(
+      (r) => {
+        tsc1 = r.server
+        log(`  TSC/1 指纹: ${r.identity.fingerprint}`)
+        log(`     客户端首次连接会提示核对这个指纹（TOFU），请通过另一条渠道核对`)
+      },
+      (err) => {
+        log(`  ⚠️  TSC/1 启动失败: ${err instanceof Error ? err.message : String(err)}`)
+      },
+    )
+  } else {
+    log(`  TSC/1 未启用（设 T1000_TSC1_ENABLE=1 开启加密通道，独立端口 ${tsc1Host()}:${tsc1Port()}）`)
+  }
+
   // systemd 停止服务时优雅退出，避免写坏文件
   const shutdown = (signal) => {
     log(`收到 ${signal}，正在关闭…`)
+    tsc1?.close()
     server.close(() => {
       log('已关闭')
       process.exit(0)

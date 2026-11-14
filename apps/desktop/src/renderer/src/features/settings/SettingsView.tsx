@@ -21,7 +21,13 @@ import { Icon, type IconName } from '../../components/Icon'
 import { toast } from '../../components/Toast'
 import { invoke } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
-import { actions, applyTerminalSettings, applyTheme, useStoreShallow } from '../../lib/store'
+import {
+  actions,
+  applyHighlightRules,
+  applyTerminalSettings,
+  applyTheme,
+  useStoreShallow,
+} from '../../lib/store'
 import {
   SECTION_META,
   SETTINGS_FIELDS,
@@ -344,7 +350,14 @@ export default function SettingsView(): React.JSX.Element {
         {section === 'vault' ? (
           <VaultSettings />
         ) : section === 'highlights' ? (
-          <HighlightsEditor rules={settings.highlights} onChange={(rules) => void update('highlights', rules)} />
+          <HighlightsEditor
+            rules={settings.highlights}
+            onChange={(rules) => {
+              // 立刻推给 store：已打开的终端无需重连即用新规则
+              applyHighlightRules(rules)
+              void update('highlights', rules)
+            }}
+          />
         ) : section === 'hotkeys' ? (
           <HotkeysEditor bindings={settings.hotkeys} onChange={(list) => void update('hotkeys', list)} />
         ) : (

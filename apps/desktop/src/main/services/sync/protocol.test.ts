@@ -31,6 +31,7 @@ import {
   fingerprintOf,
   open,
   parseServerHello,
+  presentedFingerprint,
   seal,
   signTranscript,
   takeFrame,
@@ -158,50 +159,52 @@ describe('握手解析的负例', () => {
     expect(() => parseServerHello(bad)).toThrow(/magic/)
   })
 
-  it(`SERVER_HELLO 总长常量正确（${SERVER_HELLO_PREFIX_LEN}+64）`, () => {
-    expect(SERVER_HELLO_LEN).toBe(SERVER_HELLO_PREFIX_LEN + 64)
+  it('★ v2 布局：identity_pub 落在 [68,100)，签名落在 [100,164)', () => {
+    const sh = parseServerHello(fullHello)
+    expect(sh.identityPub).toHaveLength(32)
+    expect(sh.identityPub.toString('hex')).toBe(V.inputs.serverIdentityPubHex)
+    expect(sh.signature).toHaveLength(64)
+    expect(SERVER_HELLO_LEN).toBe(164)
+    expect(SERVER_HELLO_PREFIX_LEN).toBe(100)
   })
 })
 
-describe('身份校验的负例', () => {
-  function handshakeWithPinned(pinnedPub: Buffer) {
-    const clientPriv = x25519PrivateFromRaw(b(V.inputs.clientEphPrivHex!))
+describe('身份校验的负例（v2：用对端出示的 identity_pub 验签 + 调用方比对指纹）', () => {
+  function handshake() {
     const serverHello = parseServerHello(
       Buffer.concat([b(V.inputs.serverHelloPrefixHex!), b(V.expected.signatureHex!)]),
     )
     return verifyAndDerive({
       hello: b(V.inputs.helloHex!),
       serverHello,
-      clientEphPrivate: clientPriv,
-      pinnedPub,
+      clientEphPrivate: x25519PrivateFromRaw(b(V.inputs.clientEphPrivHex!)),
     })
   }
 
-  it('正确钉扎 → 通过并派生出向量里的密钥', () => {
-    const keys = handshakeWithPinned(b(V.inputs.serverIdentityPubHex!))
-    expect(keys.c2sKey.toString('hex')).toBe(V.expected.c2sKeyHex)
+  it('正确签名 → 通过并派生出向量里的密钥', () => {
+    expect(handshake().c2sKey.toString('hex')).toBe(V.expected.c2sKeyHex)
   })
 
-  it('★ 钉扎的是别的公钥（中间人换了身份）→ 必须拒绝', () => {
-    const other = createPublicKey(ed25519FromSeedByte(0x99))
-      .export({ format: 'jwk' }) as { x?: string }
-    expect(() => handshakeWithPinned(Buffer.from(other.x!, 'base64url'))).toThrow(
-      /身份校验失败|中间人/,
+  it('★ 对端出示的身份公钥指纹与钉扎值一致（TOFU 的比对点）', () => {
+    const sh = parseServerHello(
+      Buffer.concat([b(V.inputs.serverHelloPrefixHex!), b(V.expected.signatureHex!)]),
     )
+    expect(presentedFingerprint(sh).replace(/ /g, '')).toBe(V.fingerprint)
   })
 
   it('★ 签名被篡改一个字节 → 必须拒绝', () => {
     const sig = Buffer.from(b(V.expected.signatureHex!))
     sig[10] = (sig[10]! ^ 0xff) & 0xff
-    const serverHello = parseServerHello(b(V.inputs.serverHelloPrefixHex!).toString('hex') ? Buffer.concat([b(V.inputs.serverHelloPrefixHex!), sig]) : Buffer.alloc(0))
+    const serverHello = parseServerHello(
+      Buffer.concat([b(V.inputs.serverHelloPrefixHex!), sig]),
+    )
     expect(() =>
       verifyAndDerive({
         hello: b(V.inputs.helloHex!),
         serverHello,
         clientEphPrivate: x25519PrivateFromRaw(b(V.inputs.clientEphPrivHex!)),
-        pinnedPub: b(V.inputs.serverIdentityPubHex!),
       }),
-    ).toThrow(/身份校验失败/)
+    ).toThrow(/签名校验失败/)
   })
 
   it('★ server_random 被改 → 签名不再匹配（转录被覆盖）', () => {
@@ -213,9 +216,29 @@ describe('身份校验的负例', () => {
         hello: b(V.inputs.helloHex!),
         serverHello,
         clientEphPrivate: x25519PrivateFromRaw(b(V.inputs.clientEphPrivHex!)),
-        pinnedPub: b(V.inputs.serverIdentityPubHex!),
       }),
-    ).toThrow(/身份校验失败/)
+    ).toThrow(/签名校验失败/)
+  })
+
+  it('★★ identity_pub 被换成别人的 → 签名必失效（证明签名覆盖了身份）', () => {
+    // 这条最要紧：如果签名不覆盖 identity_pub，攻击者就能换掉身份公钥而签名依旧有效 ——
+    // 那样"钉扎"就成了纸糊的。
+    const prefix = Buffer.from(b(V.inputs.serverHelloPrefixHex!))
+    const otherPub = Buffer.from(
+      (createPublicKey(ed25519FromSeedByte(0x99)).export({ format: 'jwk' }) as { x: string }).x,
+      'base64url',
+    )
+    otherPub.copy(prefix, 68) // 替换 identity_pub
+    const serverHello = parseServerHello(Buffer.concat([prefix, b(V.expected.signatureHex!)]))
+    expect(() =>
+      verifyAndDerive({
+        hello: b(V.inputs.helloHex!),
+        serverHello,
+        clientEphPrivate: x25519PrivateFromRaw(b(V.inputs.clientEphPrivHex!)),
+      }),
+    ).toThrow(/签名校验失败/)
+    // 同时：指纹变了 → 调用方的钉扎比对会拒绝（两道防线各自独立生效）
+    expect(presentedFingerprint(serverHello).replace(/ /g, '')).not.toBe(V.fingerprint)
   })
 })
 
@@ -313,10 +336,6 @@ describe('握手构造（服务端侧）', () => {
 
   it('buildServerHello 的签名能被客户端验证（自洽往返）', () => {
     const identity = ed25519FromSeedByte(0x33)
-    const pub = Buffer.from(
-      (createPublicKey(identity).export({ format: 'jwk' }) as { x: string }).x,
-      'base64url',
-    )
     const hello = b(V.inputs.helloHex!)
     const sh = buildServerHello(
       hello,
@@ -324,14 +343,15 @@ describe('握手构造（服务端侧）', () => {
       b(V.inputs.serverEphPubHex!),
       identity,
     )
+    expect(sh).toHaveLength(SERVER_HELLO_LEN)
     const parsed = parseServerHello(sh)
+    // 身份公钥应被写进 [68,100)
+    expect(parsed.identityPub.toString('hex')).toBe(V.inputs.serverIdentityPubHex)
     const keys = verifyAndDerive({
       hello,
       serverHello: parsed,
       clientEphPrivate: x25519PrivateFromRaw(b(V.inputs.clientEphPrivHex!)),
-      pinnedPub: pub,
     })
-    // 自洽往返应得回向量里的密钥（输入相同）
     expect(keys.c2sKey.toString('hex')).toBe(V.expected.c2sKeyHex)
   })
 

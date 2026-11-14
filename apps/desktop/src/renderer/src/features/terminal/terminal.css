@@ -499,3 +499,8 @@
 .term-zebra .xterm-rows > div:nth-child(even) {
   background: color-mix(in srgb, var(--t1000-accent) 4%, transparent);
 }
+
+/* 「打开工具条」关闭时隐藏：spec 允许隐藏，且可用右键菜单再打开 */
+.term-toolbar--hidden {
+  display: none;
+}

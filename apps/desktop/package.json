@@ -31,6 +31,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@t1000/shared": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.17",
@@ -40,12 +41,12 @@
     "electron": "^45.2.3",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
+    "monaco-editor": "^0.57.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.9.3",
     "vite": "^5.4.11",
-    "vitest": "^2.1.8",
-    "@t1000/shared": "workspace:*"
+    "vitest": "^2.1.8"
   },
   "author": "terminal-1000 contributors <noreply@example.invalid>",
   "homepage": "https://github.com/terminal-1000/terminal-1000"

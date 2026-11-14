@@ -28,6 +28,7 @@ import {
   type NoteFolder,
   type NoteSummary,
   type PingResult,
+  type HighlightRule,
   type RecordingSettings,
   type RecordingSummary,
   type Settings,
@@ -217,12 +218,27 @@ export interface AppState {
    * 而不是等下次新建终端。
    */
   terminalSettings: TerminalSettings
+  /**
+   * 高亮规则（settings.highlights，数组 section）。
+   *
+   * 放 store 是为了**热更新**：设置里改规则，已打开的终端立刻用新规则着色新输出，
+   * 不需要重连。（已经打印出来的行不会回溯重染 —— xterm 的 decoration 只影响之后渲染的内容。）
+   */
+  highlightRules: HighlightRule[]
   /** 外部服务面板当前分区 */
   servicesSection: 'sync' | 'mcp'
   /** 工具页当前选中的工具 */
   toolsSection: 'password' | 'manual'
   /** 全局搜索面板是否打开（放 store 是为了任何视图都能开它，不用逐层传 prop） */
   globalSearchOpen: boolean
+  /**
+   * 终端工具栏是否显示。
+   *
+   * spec 第 251 行要求「`Ctrl/Cmd+Shift+T` 打开工具条」且可设"自动显示"，
+   * 所以它必须**可隐藏** —— 放 store 是因为右键菜单（TerminalPane）要能切换它，
+   * 而工具栏本身在 TerminalWorkspace 里。
+   */
+  toolbarVisible: boolean
   /**
    * 会话 → 远端 shell 当前目录。
    *
@@ -350,9 +366,11 @@ const initialState: AppState = {
     // 少一个字段就会让类型不完整 —— 补契约字段时必须一起补这里）
     zebraStripes: false,
   },
+  highlightRules: [],
   servicesSection: 'sync',
   toolsSection: 'password',
   globalSearchOpen: false,
+  toolbarVisible: true,
   sessionCwd: {},
   negotiations: {},
   broadcastGroups: [],
@@ -678,6 +696,10 @@ export const actions = {
     setState({ toolsSection: section })
   },
 
+  toggleToolbar() {
+    setState((s) => ({ toolbarVisible: !s.toolbarVisible }))
+  },
+
   toggleGlobalSearch() {
     setState((s) => ({ globalSearchOpen: !s.globalSearchOpen }))
   },
@@ -792,6 +814,10 @@ export function applyTheme(theme: ThemeMode): void {
 }
 
 /** 设置面板改了 terminal.* 时同步进 store，让已打开的终端热更新 */
+export function applyHighlightRules(rules: HighlightRule[]): void {
+  setState({ highlightRules: Array.isArray(rules) ? rules : [] })
+}
+
 export function applyTerminalSettings(next: TerminalSettings): void {
   setState({ terminalSettings: next, bellMode: next.bell })
 }
@@ -823,6 +849,7 @@ export async function loadInitialSettings(): Promise<void> {
       aiMode: settings.ai.mode,
       bellMode: settings.terminal.bell,
       terminalSettings: settings.terminal,
+      highlightRules: Array.isArray(settings.highlights) ? settings.highlights : [],
     })
   } catch {
     applyTheme('dark')

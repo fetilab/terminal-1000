@@ -33,8 +33,13 @@ export const TSC_VERSION = 0x01
 
 /** HELLO 长度：1+1+2+4+32+32 */
 export const HELLO_LEN = 72
-/** SERVER_HELLO 前缀（不含签名）长度：1+1+2+32+32 */
-export const SERVER_HELLO_PREFIX_LEN = 68
+/**
+ * SERVER_HELLO 前缀（不含签名）长度：1+1+2+32+32+32 = 100。
+ *
+ * 含 **identity_pub**（服务端长期身份公钥）—— 见规范 §3.2：
+ * TOFU 的本质就是"首次连接学习并记录对方公钥"，不把公钥发过来，首次连接就只剩盲信。
+ */
+export const SERVER_HELLO_PREFIX_LEN = 100
 /** SERVER_HELLO 总长：前缀 + 64 字节签名 */
 export const SERVER_HELLO_LEN = SERVER_HELLO_PREFIX_LEN + 64
 
@@ -126,6 +131,8 @@ export function buildHello(clientRandom: Buffer, clientEphPub: Buffer): Buffer {
 export interface ServerHello {
   serverRandom: Buffer
   serverEphPub: Buffer
+  /** 服务端长期身份公钥（Ed25519）。**由对端出示**；安全性靠"签名 + 与钉扎值比对"共同保证 */
+  identityPub: Buffer
   signature: Buffer
 }
 
@@ -143,7 +150,8 @@ export function parseServerHello(buf: Buffer): ServerHello {
   return {
     serverRandom: buf.subarray(4, 36),
     serverEphPub: buf.subarray(36, 68),
-    signature: buf.subarray(68, 132),
+    identityPub: buf.subarray(68, 100),
+    signature: buf.subarray(100, 164),
   }
 }
 
@@ -160,6 +168,9 @@ export function buildServerHello(
   prefix.writeUInt16BE(0, 2)
   serverRandom.copy(prefix, 4)
   serverEphPub.copy(prefix, 36)
+  // 身份公钥**必须**进前缀：既让客户端能算指纹，也保证签名覆盖了身份
+  //（否则攻击者能换掉身份公钥而不破坏签名）
+  ed25519PublicRaw(identityPrivateKey).copy(prefix, 68)
   const sig = signTranscript(hello, prefix, identityPrivateKey)
   return Buffer.concat([prefix, sig])
 }
@@ -200,7 +211,6 @@ export function verifyAndDerive(args: {
   hello: Buffer
   serverHello: ServerHello
   clientEphPrivate: KeyObject
-  pinnedPub: Buffer
 }): DerivedKeys {
   const prefix = Buffer.alloc(SERVER_HELLO_PREFIX_LEN)
   prefix[0] = TSC_MAGIC
@@ -208,19 +218,33 @@ export function verifyAndDerive(args: {
   prefix.writeUInt16BE(0, 2)
   args.serverHello.serverRandom.copy(prefix, 4)
   args.serverHello.serverEphPub.copy(prefix, 36)
+  args.serverHello.identityPub.copy(prefix, 68)
 
   const digest = createHash('sha256')
     .update('TSC/1 server-hello')
     .update(Buffer.concat([args.hello, prefix]))
     .digest()
 
-  // ⚠️ 必须是 Ed25519（不是 X25519）—— 两者同为 OKP 但 crv 不同
-  const ok = verify(null, digest, ed25519PublicFromRaw(args.pinnedPub), args.serverHello.signature)
+  // 用**对端出示的身份公钥**验签：证明"对方持有该公钥对应的私钥"。
+  // ⚠️ 它**不证明身份** —— 任何人都能现场生成一对密钥并自签。
+  // 身份性来自调用方把 `presentedFingerprint(serverHello)` 与**已存储的钉扎值**比对。
+  // 两步互补、缺一不可，所以这里刻意不把钉扎塞进来 —— 那会让人误以为"验签通过即可信"。
+  const ok = verify(
+    null,
+    digest,
+    ed25519PublicFromRaw(args.serverHello.identityPub),
+    args.serverHello.signature,
+  )
   if (!ok) {
-    throw new Error('服务端身份校验失败：签名与钉扎指纹不符（可能被中间人）')
+    throw new Error('服务端签名校验失败：对方无法证明持有其出示的身份私钥')
   }
 
   return deriveKeys(args.hello, prefix, args.clientEphPrivate, args.serverHello.serverEphPub)
+}
+
+/** 对端出示的身份公钥指纹（调用方据此与钉扎值比对） */
+export function presentedFingerprint(serverHello: ServerHello): string {
+  return fingerprintOf(serverHello.identityPub)
 }
 
 /** 服务端侧：从 HELLO 派生同一组密钥（不需要验签，自己就是签名者） */

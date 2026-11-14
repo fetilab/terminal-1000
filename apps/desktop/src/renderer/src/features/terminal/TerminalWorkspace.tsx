@@ -94,6 +94,7 @@ export default function TerminalWorkspace(): React.JSX.Element {
   /** 当前标签所属的广播组（没有则不在任何组里） */
   /** 只有这几种才用"终端 + 文件"那套界面；vnc/rdp/tunnel 是各自独立的视图 */
   const quickcmdOpen = useStoreShallow((s) => ({ v: s.quickcmdOpen })).v
+  const toolbarVisible = useStoreShallow((s) => ({ v: s.toolbarVisible })).v
   const isTerminalLike =
     active?.kind === 'ssh' || active?.kind === 'local' || active?.kind === 'telnet' || active === undefined
   const activeGroup = broadcastGroupOf(active?.sessionId)
@@ -195,7 +196,7 @@ export default function TerminalWorkspace(): React.JSX.Element {
         <div className="term-tabs__spacer" />
       </div>
 
-      <div className="term-toolbar">
+      <div className={`term-toolbar${toolbarVisible ? '' : ' term-toolbar--hidden'}`}>
         <span className="term-toolbar__title">{mono.title}</span>
         <Badge tone={STATE_TONE[mono.state] ?? 'default'}>
           {STATE_LABEL[mono.state] ?? mono.state}

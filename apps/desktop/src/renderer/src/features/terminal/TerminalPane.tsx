@@ -23,7 +23,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
-import { Events } from '@t1000/shared'
+import { Events, type PublicProvider } from '@t1000/shared'
 import { Icon } from '../../components/Icon'
 import { Badge } from '../../components/Feedback'
 import { IconButton } from '../../components/Button'
@@ -32,6 +32,10 @@ import type { TabKind } from '../../lib/store'
 import {
   actions,
   broadcastGroupOf,
+  closeTab,
+  connectTo,
+  getConnection,
+  setTabLayout,
   setSessionCwd,
   loadSessionLogs,
   sendBroadcast,
@@ -51,6 +55,7 @@ import {
   type CompletionResult,
 } from './completion'
 import { CompletionPopup } from './CompletionPopup'
+import { cellsFor, segmentHighlightStyle, segmentText } from './highlights'
 import './terminal.css'
 import './completion.css'
 
@@ -275,6 +280,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   // 终端外观/行为设置：从 store 读，改动即时热更新到已打开的 xterm
   const termCfg = useStoreShallow((s) => ({ t: s.terminalSettings })).t
   // 斑马纹是正式设置项（shared TerminalSettings.zebraStripes），随热更新生效
+  const toolbarVisible = useStoreShallow((s) => ({ v: s.toolbarVisible })).v
   const zebra = termCfg.zebraStripes
   /** 只有 DOM 渲染器才有逐行 DOM；canvas/webgl 下这个开关无效，要如实说明 */
   const [zebraSupported, setZebraSupported] = useState(true)
@@ -284,6 +290,10 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   /** 创建与事件回调里要读最新设置，但那些闭包不该因为设置变化而重建 */
   const sessionIdRef = useRef(tab.sessionId)
   sessionIdRef.current = tab.sessionId
+  // 高亮规则：从 store 读，改规则即时生效（已打印的行不回溯）
+  const highlightRules = useStoreShallow((s) => ({ r: s.highlightRules })).r
+  const highlightRulesRef = useRef(highlightRules)
+  highlightRulesRef.current = highlightRules
   const termSettingsRef = useRef(termCfg)
   termSettingsRef.current = termCfg
   const resolvedThemeRef = useRef(resolvedTheme)
@@ -541,6 +551,74 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         })
         cleanups.push(() => oscSub.dispose())
 
+        /**
+         * 高亮规则在终端里的应用点。
+         *
+         * 语义与设置里的预览**完全一致**：都调 `segmentText()`（同一份切分算法）。
+         * 这个功能之前"预览有、终端无"，根因就是只有预览侧的实现。
+         *
+         * 三条由实测能力边界决定的做法：
+         * - xterm 6.0 的 DOM 装饰渲染器**不读** `backgroundColor`/`foregroundColor`
+         *   （typings 有、`browser/decorations/*` 里 0 命中），颜色只能我们自己写到
+         *   装饰元素上；而装饰元素是空覆盖层，**改不了文字颜色**，
+         *   把文字画进去又会错位（实测半字符重影），所以只做**底色**；
+         * - `x`/`width` 单位是**单元格**，规则按**字符**匹配，用 `cellsFor()` 换算；
+         * - 只处理**已完成的行**（光标行还在输出），即"只对新渲染字符生效"，
+         *   不重刷整个回滚缓冲。
+         */
+        const decorations: Array<import('@xterm/xterm').IDecoration> = []
+        let lastScannedY = -1
+
+        const applyHighlights = (): void => {
+          const rules = highlightRulesRef.current
+          if (!rules || rules.length === 0) return
+          const buf = term.buffer.active
+          const curY = buf.baseY + buf.cursorY
+          if (lastScannedY < 0) lastScannedY = Math.max(0, curY - 1) // 首次不回溯已有内容
+          if (curY <= lastScannedY) {
+            lastScannedY = curY
+            return
+          }
+          for (let y = lastScannedY; y < curY; y += 1) {
+            const line = buf.getLine(y)
+            if (!line) continue
+            const text = line.translateToString(true)
+            if (!text) continue
+            for (const seg of segmentText(text, rules)) {
+              if (!seg.rule) continue
+              const style = segmentHighlightStyle(seg.rule)
+              if (style.background === undefined) continue
+              const x = cellsFor(text, seg.start)
+              const width = Math.max(1, cellsFor(text, seg.end) - x)
+              const marker = term.registerMarker(y - curY)
+              if (!marker) continue
+              const deco = term.registerDecoration({ marker, anchor: 'left', x, width, height: 1, layer: 'top' })
+              if (!deco) {
+                marker.dispose()
+                continue
+              }
+              deco.onRender((el: HTMLElement) => {
+                el.textContent = ''
+                el.style.pointerEvents = 'none'
+                el.style.backgroundColor = style.background ?? 'transparent'
+              })
+              decorations.push(deco)
+              deco.onDispose(() => {
+                const i = decorations.indexOf(deco)
+                if (i >= 0) decorations.splice(i, 1)
+              })
+            }
+          }
+          lastScannedY = curY
+        }
+
+        const writeSub = term.onWriteParsed(applyHighlights)
+        cleanups.push(() => {
+          writeSub.dispose()
+          for (const d of decorations) d.dispose()
+          decorations.length = 0
+        })
+
         // 立即做一次 fit，把真实尺寸报上去
         requestAnimationFrame(() => {
           if (disposed) return
@@ -740,21 +818,97 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     [],
   )
 
-  /** 终端右键菜单。录制启停放在这里，和参考产品的位置一致，用户有肌肉记忆。 */
+  /**
+   * 终端右键菜单。
+   *
+   * spec 第 243 行列了 **12 项**，这里逐项落地（外加我们自己的查找/录制/日志）：
+   * 打开工具条、复制、粘贴、清屏、到底部、水平切分、垂直切分、重新连接终端、
+   * 翻译、问问小易、复制并粘贴、复制并搜索。
+   *
+   * 两条纪律：
+   * - **无选区就禁用**（并说明原因），不让用户点了没反应；
+   * - **未配置 AI 时给可操作提示**（照 `services/ai/suggest.ts` 的措辞），不要静默。
+   */
   const menuItems = (): ContextMenuItem[] => {
     const term = termRef.current
-    const hasSelection = Boolean(term?.getSelection())
+    const selection = term?.getSelection() ?? ''
+    // 用 trim 后的长度判断，不是 length > 0：拖到空白区会得到一串空格，
+    // 那时"复制/翻译"其实无事可做 —— 按 length>0 放行就会**静默无反应**。
+    const hasSelection = selection.trim().length > 0
+    const NO_SEL = '先在终端里选中文本（拖选或双击词）'
+
+    const copySelection = (): void => {
+      if (selection) void navigator.clipboard.writeText(selection)
+    }
+
+    /** 重新连接：关掉旧标签再连一次，复用既有的标签/事件管线（不自己造会话） */
+    const reconnect = async (): Promise<void> => {
+      const conn = getConnection(tab.connectionId)
+      if (!conn) {
+        toast.error('找不到这条连接（可能已被删除），无法重连')
+        return
+      }
+      closeTab(tab.tabId)
+      await connectTo(conn)
+    }
+
+    /**
+     * 把选区发给 AI。两个刻意的做法：
+     * 1. **先查供应商**再发送 —— 没配就地给可操作提示，而不是发出去等报错；
+     * 2. **长选区截断并说明**，不把整屏几千字塞进请求。
+     */
+    const AI_MAX_CHARS = 4000
+    const askAi = async (instruction: string): Promise<void> => {
+      if (!selection.trim()) return
+      let usable = false
+      try {
+        const list = await invoke<'ai', 'listProviders', Record<string, never>, PublicProvider[]>(
+          'ai',
+          'listProviders',
+          {},
+        )
+        usable = (list ?? []).some((p) => p.hasApiKey)
+      } catch {
+        usable = false
+      }
+      if (!usable) {
+        toast.error(
+          'AI 建议需要先配置 AI 供应商：请打开「设置 > AI 助手」，选择供应商并填写 API Key 后重试',
+        )
+        return
+      }
+      const truncated = selection.length > AI_MAX_CHARS
+      const body = truncated ? selection.slice(0, AI_MAX_CHARS) : selection
+      const text =
+        `${instruction}\n\n\`\`\`\n${body}\n\`\`\`` +
+        (truncated ? `\n\n（原文 ${selection.length} 字符，已截断到 ${AI_MAX_CHARS} 字符）` : '')
+      try {
+        await invoke<'ai', 'send', { text: string }, unknown>('ai', 'send', { text })
+        actions.setView('ai')
+        toast.ok(truncated ? '已发给 AI 助手（选区较长，已截断）' : '已发给 AI 助手')
+      } catch (err) {
+        toast.error(
+          `AI 请求失败：${errorText(err)} —— 可在「设置 > AI 助手」检查供应商与 API Key`,
+        )
+      }
+    }
+
     return [
+      {
+        id: 'toolbar',
+        label: toolbarVisible ? '隐藏工具条' : '打开工具条',
+        icon: 'sliders',
+        hint: 'Ctrl+Shift+T',
+        onSelect: () => actions.toggleToolbar(),
+      },
       {
         id: 'copy',
         label: '复制',
         icon: 'copy',
         hint: 'Ctrl+Shift+C',
         disabled: !hasSelection,
-        onSelect: () => {
-          const sel = term?.getSelection()
-          if (sel) void navigator.clipboard.writeText(sel)
-        },
+        title: hasSelection ? undefined : NO_SEL,
+        onSelect: copySelection,
       },
       {
         id: 'paste',
@@ -763,11 +917,86 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         hint: 'Ctrl+Shift+V',
         onSelect: () => pasteFromClipboard(termRef.current),
       },
-      { id: 'find', label: '查找', icon: 'search', hint: 'Ctrl+Shift+F', onSelect: () => setFindOpen(true) },
-      { id: 'clear', label: '清屏', icon: 'close', onSelect: () => termRef.current?.clear() },
+      {
+        id: 'copy-paste',
+        label: '复制并粘贴',
+        icon: 'copy',
+        hint: '把输出直接当输入',
+        disabled: !hasSelection,
+        title: hasSelection ? undefined : NO_SEL,
+        onSelect: () => {
+          copySelection()
+          // 同时写剪贴板 + 直接喂给会话：前者让用户还能粘到别处，后者是"把输出当输入"的本意
+          if (selection) termRef.current?.paste(selection)
+        },
+      },
+      {
+        id: 'copy-search',
+        label: '复制并搜索',
+        icon: 'search',
+        disabled: !hasSelection,
+        title: hasSelection ? undefined : NO_SEL,
+        onSelect: () => {
+          copySelection()
+          // **不做正则转义**：查找走 @xterm/addon-search 的默认模式，它是**字面量**匹配
+          // （未传 regex:true）。转义反而会把 `a.b` 变成搜含反斜杠的字面串。
+          setFindText(selection)
+          setFindOpen(true)
+          if (searchRef.current && selection) {
+            searchRef.current.findNext(selection, { incremental: false })
+          }
+        },
+      },
+      { id: 'clear', label: '清屏', icon: 'close', hint: 'Ctrl+Shift+L', onSelect: () => termRef.current?.clear() },
+      {
+        id: 'bottom',
+        label: '到底部',
+        icon: 'chevron-down',
+        hint: '回到最新输出',
+        onSelect: () => termRef.current?.scrollToBottom(),
+      },
+      {
+        id: 'split-h',
+        separatorBefore: true,
+        label: '水平切分',
+        icon: 'split-h',
+        onSelect: () => setTabLayout(tab.tabId, 'hsplit'),
+      },
+      {
+        id: 'split-v',
+        label: '垂直切分',
+        icon: 'split-v',
+        onSelect: () => setTabLayout(tab.tabId, 'vsplit'),
+      },
+      {
+        id: 'reconnect',
+        label: '重新连接终端',
+        icon: 'refresh',
+        disabled: tab.kind === 'local',
+        title: tab.kind === 'local' ? '本地终端没有远端会话可重连；请新建一个终端' : undefined,
+        onSelect: () => void reconnect(),
+      },
+      {
+        id: 'translate',
+        separatorBefore: true,
+        label: '翻译（发给 AI）',
+        icon: 'globe',
+        disabled: !hasSelection,
+        title: hasSelection ? undefined : NO_SEL,
+        onSelect: () => void askAi('把下面这段终端输出翻译成中文，只给译文，技术名词保留原文。'),
+      },
+      {
+        id: 'ask-ai',
+        label: '问问小易',
+        icon: 'zap',
+        disabled: !hasSelection,
+        title: hasSelection ? undefined : NO_SEL,
+        onSelect: () =>
+          void askAi('解释下面这段终端输出：它在说什么、有没有问题、需要我做什么。'),
+      },
+      { id: 'find', separatorBefore: true, label: '查找', icon: 'search', hint: 'Ctrl+Shift+F', onSelect: () => setFindOpen(true) },
       {
         id: 'record',
-        separatorBefore: true,
         // 本地终端也已支持：pty 服务现在会把输出 publishSessionData 到 session-registry
         // （此前只有 SSH 在 publish，本地终端录制会静默产出 0 字节空文件）
         label: recording ? '停止记录日志' : '开始记录日志',

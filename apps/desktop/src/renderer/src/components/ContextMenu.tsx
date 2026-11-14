@@ -21,6 +21,8 @@ export interface ContextMenuItem {
   hint?: string
   danger?: boolean
   disabled?: boolean
+  /** 原生 tooltip：禁用时说明"为什么不能用"，比只在旁边写一句话更容易被发现 */
+  title?: string
   /** 分隔线：在该项之前画一条线 */
   separatorBefore?: boolean
   onSelect: () => void
@@ -85,6 +87,7 @@ export function ContextMenu({ open, x, y, items, onClose }: ContextMenuProps): R
             role="menuitem"
             className={`ctxmenu__item${item.danger ? ' ctxmenu__item--danger' : ''}`}
             disabled={item.disabled}
+          title={item.title}
             onClick={() => {
               item.onSelect()
               onClose()

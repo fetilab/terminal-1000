@@ -39,6 +39,13 @@ export interface SecureChannelOptions {
   /** 已钉扎的指纹（hex，无空格）。未提供 = 首次连接（TOFU） */
   pinnedFingerprint?: string | undefined
   /**
+   * 已钉扎的身份公钥（Ed25519，32 字节原始）。
+   *
+   * 指纹与公钥都要给：指纹用于**比对**（可读、可核对），公钥用于**验签**。
+   * 分开传是刻意的 —— 免得有人以为"指纹对了就不用验签"。
+   */
+  pinnedPublicKey?: Buffer | undefined
+  /**
    * 指纹决策回调。
    *
    * - `isNew=true`：首次连接（TOFU），返回 false 则不建立连接
@@ -130,38 +137,31 @@ export class SecureChannel {
       const serverHelloBytes = await readExactly(socket, SERVER_HELLO_LEN, handshakeTimeout)
       const serverHello = parseServerHello(serverHelloBytes)
 
-      // 指纹要在验签**之前**算出来：验签需要钉扎的公钥，而"钉扎的是什么"由指纹标识
-      const presented = fingerprintOf(serverHello.serverEphPub).replace(/ /g, '')
-      // 注意：真正的身份指纹来自**签名公钥**，但我们没在 SERVER_HELLO 里传它
-      // （公钥由客户端钉扎持有，服务端不必再发） —— 所以这里用钉扎值校验，见下。
-
-      const pinned = options.pinnedFingerprint?.replace(/ /g, '')
+      // v2：对端**必须**出示身份公钥（否则 TOFU 无从谈起 —— 见规范 §3.2）
+      const presentedFp = fingerprintOf(serverHello.identityPub).replace(/ /g, '')
+      const pinnedFp = options.pinnedFingerprint?.replace(/ /g, '')
       const decide = options.onPin ?? defaultPinDecision
+      const isNew = pinnedFp === undefined
 
-      if (pinned === undefined) {
-        // 首次连接：还没有可用的公钥，**无法验签** —— 这正是 TOFU 的本质。
-        // 必须先拿到用户/上层给出的公钥（或明确接受并记录），否则无法继续。
-        const accepted = decide({ fingerprint: presented, isNew: true })
-        if (!accepted) {
-          throw new SecureChannelError('用户拒绝首次连接（未钉扎）', 'pin')
+      // 钉扎比对：这一步是"防换人"。它和"验签"是**两件不同的事**，都不能省。
+      if (!isNew && presentedFp !== pinnedFp) {
+        const allowed = decide({ fingerprint: presentedFp, isNew: false, pinned: pinnedFp })
+        if (!allowed) {
+          throw new SecureChannelError(
+            `服务端身份指纹与已记录的不一致（可能被中间人）：\n  已记录 ${pinnedFp}\n  本次收到 ${presentedFp}`,
+            'pin',
+          )
         }
-        throw new SecureChannelError(
-          '首次连接的信任引导需要上层提供待钉扎的公钥：请在「设置 → 同步」里核对并填入服务端指纹',
-          'pin',
-        )
+      } else if (isNew) {
+        // 首次连接（TOFU）：由上层决定是否接受并记录该指纹
+        const accepted = decide({ fingerprint: presentedFp, isNew: true })
+        if (!accepted) {
+          throw new SecureChannelError(
+            `服务端首次连接（未钉扎）。指纹：${fingerprintOf(serverHello.identityPub)} —— 请核对后接受`,
+            'pin',
+          )
+        }
       }
-
-      // 已钉扎：由上层把指纹解析成公钥（本模块不做指纹→公钥的存储）
-      const pub = options.pinnedPublicKey
-      if (!pub) {
-        throw new SecureChannelError('已钉扎指纹但未提供公钥（调用方应从本地存储取出）', 'pin')
-      }
-      const keys = verifyAndDerive({
-        hello,
-        serverHello,
-        clientEphPrivate: ephemeral.privateKey,
-        pinnedPub: pub,
-      })
 
       // 临时私钥到此为止：之后不再需要（前向保密）
       return new SecureChannel(socket, keys, presented)

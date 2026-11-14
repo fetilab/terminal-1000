@@ -31,6 +31,10 @@ export const Events = {
   SFTP_TRANSFER_ERROR: 'SFTP_TRANSFER_ERROR',
   SFTP_DIR_SCANNED: 'SFTP_DIR_SCANNED',
   SFTP_WATCH_EVENT: 'SFTP_WATCH_EVENT',
+  /** Shell Integration：命令开始（OSC 133 B） */
+  SHELL_COMMAND_START: 'SHELL_COMMAND_START',
+  /** Shell Integration：命令结束（OSC 133 D，带退出码） */
+  SHELL_COMMAND_END: 'SHELL_COMMAND_END',
   /** 远端编辑的改动已写回远端 */
   SFTP_EDIT_SAVED: 'SFTP_EDIT_SAVED',
   /** 远端编辑写回/监听失败（必须让用户知道，否则他以为存到远端了） */
@@ -151,6 +155,26 @@ export interface EventPayloads {
   }
   [Events.SFTP_TRANSFER_ERROR]: { transferId: string; sessionId: string; file?: string; message: string }
   [Events.SFTP_DIR_SCANNED]: { sessionId: string; path: string; files: number; bytes: number }
+  [Events.SHELL_COMMAND_START]: {
+    sessionId: string
+    blockId: number
+    commandLine?: string
+    startedAt: number
+  }
+  /**
+   * 命令结束。`exitCode` 为 `null` 表示**命令结束但没有退出码**
+   * （shell 没发 `D;<n>`）—— 不要把它当成 0，那会把失败当成功。
+   */
+  [Events.SHELL_COMMAND_END]: {
+    sessionId: string
+    blockId: number
+    exitCode: number | null
+    commandLine?: string
+    startedAt: number
+    endedAt: number
+    durationMs: number
+  }
+
   [Events.SFTP_EDIT_SAVED]: {
     editId: string
     sessionId: string

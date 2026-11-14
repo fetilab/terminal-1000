@@ -74,6 +74,28 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
 }
 
 /**
+ * **数组型 / 动作型 section** 的消费者清单。
+ *
+ * 为什么要有这一份：上面那套记账是**按字段路径**记的，而 `highlights` / `hotkeys`
+ * 是**数组 section**（整个数组一起改，没有独立字段路径），`vault` 是**动作型**
+ * （只有按钮没有字段）。于是它们**天然落在路径记账之外，自动校验覆盖不到** ——
+ * 这正是"高亮规则预览有、终端零应用点"能一路漏到审计环节的原因。
+ *
+ * 所以补上这条规则：**每个 section 要么有字段（受路径记账约束），要么在这里记账**。
+ * 测试会强制这一点，下一个加数组型 section 的人不会再漏。
+ */
+export const SECTION_CONSUMERS: Record<string, string> = {
+  highlights:
+    'features/terminal/highlights.ts `segmentText()`（与设置预览共用同一份切分）→ ' +
+    'TerminalPane 在 onWriteParsed 上用 registerDecoration 对**新输出**着色；' +
+    'HighlightsEditor 预览调同一个函数，保证两边语义一致',
+  hotkeys:
+    'lib/store 订阅 hotkey 事件 + features/settings/HotkeysEditor 编辑绑定；' +
+    '实际按键分发在主进程 hotkey 服务（渲染层只负责展示与编辑）',
+  vault: '动作型 section（创建/修改主密码、锁定）—— 见 features/settings/VaultSettings.tsx 与 lib/vault.ts',
+}
+
+/**
  * 已知**暂无消费者**的设置路径 → 未生效原因 + 归属。
  *
  * 这里每一条都是"用户拨了不会有反应"的项，所以宁可从面板移除也不该留着骗人。

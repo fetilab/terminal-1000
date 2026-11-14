@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 terminal-1000 contributors
+
+/**
+ * TSC/1 监听：与现有 HTTP 监听**并存**（HTTP 保留给反代/本机兼容）。
+ *
+ * ## 为什么用独立端口，而不是同端口按 magic 分流
+ *
+ * 本部署的现实约束（见 `docs/DEPLOYMENT-192.168.1.187.md`）：
+ * - HTTP 的 **8787 被 nft `t1000-port-guard` 限制为仅回环**，只允许本机反代连入；
+ *   正因为如此，`T1000_TRUST_PROXY=1`（采信 X-Forwarded-For）才是安全的。
+ * - TSC/1 的存在意义恰恰是**被公网直连**（用户 80 被 ISP 封、无证书、不动 DNS）。
+ *
+ * 若把 TSC/1 放到 8787 做同端口分流，就必须放开 8787 的公网可达性 ——
+ * 那等于**同时废掉两件事**：① HTTP 的明文口令保护（口令会明文过网）；
+ * ② XFF 可信前提（公网可直连即可伪造 XFF 绕过限流）。**为了省一个端口而拆掉两道防线，不划算。**
+ *
+ * 独立端口还带来两个实际好处：
+ * - 两条链路的**信任模型不同**：TSC/1 端口上 `clientIp` 必须用真实 socket 地址，
+ *   绝不采信 XFF（这里没有反代）。分开后这个差异是结构性的，不靠约定。
+ * - 运维上可分别限流/封禁（`t1000-port-guard` 只需继续只管 8787）。
+ *
+ * 代价：需要额外开放一个端口。这是本部署可接受的（已有端口开放先例）。
+ */
+
+import { createServer as createTcpServer } from 'node:net'
+import { normalizeIp } from '../util.js'
+import { loadOrCreateIdentity } from './identity.js'
+import { handleTsc1Connection } from './server.js'
+
+/** 默认 TSC/1 端口 */
+export const DEFAULT_TSC1_PORT = 8788
+
+export function tsc1Port() {
+  const raw = process.env.T1000_TSC1_PORT
+  if (raw === undefined || raw === '') return DEFAULT_TSC1_PORT
+  const port = Number(raw)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`T1000_TSC1_PORT 不合法: ${raw}`)
+  }
+  return port
+}
+
+export function tsc1Host() {
+  return process.env.T1000_TSC1_HOST ?? '127.0.0.1'
+}
+
+/**
+ * 创建 TSC/1 服务器。
+ *
+ * @param opts.dispatch  路由分发函数（index.js 的 dispatch）
+ * @param opts.identity  身份密钥；省略则从数据目录载入/生成
+ * @param opts.log       日志函数
+ * @param opts.dataDir   数据目录（测试用临时目录）
+ */
+export function createTsc1Server(opts) {
+  const { dispatch, log } = opts
+  const identity = opts.identity ?? loadOrCreateIdentity(opts.dataDir)
+
+  if (identity.warning) log(`TSC1 warning ${identity.warning}`)
+  log(`TSC1 identity fingerprint ${identity.fingerprint}${identity.created ? ' (newly generated)' : ''}`)
+
+  const server = createTcpServer((socket) => {
+    // ⚠️ 这里是**真实**对端地址：TSC/1 端口是直连的，前面没有反代，
+    //    因此绝不能像 HTTP 那样采信 X-Forwarded-For。
+    const peerIp = normalizeIp(socket.remoteAddress ?? '')
+    socket.setNoDelay(true)
+    handleTsc1Connection(socket, { identity, log, dispatch, peerIp })
+  })
+
+  return { server, identity }
+}
+
+/** 启动监听 */
+export function startTsc1Server(opts) {
+  const { server, identity } = createTsc1Server(opts)
+  const host = opts.host ?? tsc1Host()
+  const port = opts.port ?? tsc1Port()
+
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(port, host, () => {
+      server.removeListener('error', reject)
+      const address = server.address()
+      opts.log(`TSC1 监听 tsc1://${host}:${typeof address === 'object' && address ? address.port : port}`)
+      resolve({ server, identity })
+    })
+  })
+}

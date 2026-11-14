@@ -22,7 +22,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { PENDING_CONSUMERS, SETTINGS_CONSUMERS } from './settingsConsumers'
+import { PENDING_CONSUMERS, SECTION_CONSUMERS, SETTINGS_CONSUMERS } from './settingsConsumers'
+import { SECTION_META, SETTINGS_FIELDS } from './settingsFields'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 /** apps/desktop/src —— settings → features → src → renderer → src → apps/desktop/src 共 5 级 */
@@ -77,6 +78,26 @@ describe('设置项必须有消费者', () => {
       `以下设置项没有任何消费者登记。要么补上消费点并写进 SETTINGS_CONSUMERS，` +
         `要么写进 PENDING_CONSUMERS 说明原因（更推荐直接从面板移除）：\n  ${uncovered.join('\n  ')}`,
     ).toEqual([])
+  })
+
+  it('每个 section 都要有记账：要么有字段，要么在 SECTION_CONSUMERS 里', () => {
+    // 这条正是"数组 section 漏网"的补丁：highlights/hotkeys 没有字段路径，
+    // 光靠路径记账永远覆盖不到，所以按 section 再兜一层。
+    const META_KEYS = Object.keys(SECTION_META)
+    const covered = new Set<string>()
+    for (const key of META_KEYS) {
+      const fields = SETTINGS_FIELDS[key as keyof typeof SETTINGS_FIELDS]
+      if (Array.isArray(fields) && fields.length > 0) covered.add(key)
+      else if (key in SECTION_CONSUMERS) covered.add(key)
+    }
+    const missing = META_KEYS.filter((k) => !covered.has(k))
+    expect(
+      missing,
+      `以下 section 既没有字段、也没在 SECTION_CONSUMERS 记账（数组/动作型 section 必须在这里登记）：\n  ${missing.join('\n  ')}`,
+    ).toEqual([])
+
+    const stale = Object.keys(SECTION_CONSUMERS).filter((k) => !META_KEYS.includes(k))
+    expect(stale, `SECTION_CONSUMERS 里有不存在的 section：\n  ${stale.join('\n  ')}`).toEqual([])
   })
 
   it('白名单里的项必须仍然真的存在（防止补完接线忘记挪走 / 删了设置留死白名单）', () => {
