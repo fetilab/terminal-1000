@@ -399,6 +399,53 @@ async function main() {
       record('S14', '更新检查', 'FAIL', String(err.message ?? err))
     }
 
+    // ── MCP：用**应用外部**的真实 HTTP 客户端连我们的 MCP 服务端（JSON-RPC 全链路）──
+    try {
+      // 1) 起服务端并发一个客户端令牌（令牌明文只返回这一次）
+      const started = await cdp.eval(INVOKE('mcp', 'start', {}))
+      const status = await cdp.eval(INVOKE('mcp', 'status', {}))
+      const port = started?.port ?? started?.boundPort ?? status?.port
+      const created = await cdp.eval(INVOKE('mcp', 'createClient', { name: '验收用外部客户端' }))
+      const token = created?.client?.token ?? created?.token
+      const host = status?.listenHost === '0.0.0.0' ? '127.0.0.1' : (status?.listenHost ?? '127.0.0.1')
+
+      const rpc = async (method, params) => {
+        const res = await fetch(`http://${host}:${port}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params ? { params } : {}) }),
+        })
+        return { status: res.status, body: await res.json().catch(() => null) }
+      }
+
+      const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {} })
+      const tools = await rpc('tools/list')
+      const toolNames = (tools.body?.result?.tools ?? []).map((x) => x.name)
+
+      // 2) 无令牌必须被拒（否则服务端等于裸奔）
+      const noAuth = await fetch(`http://${host}:${port}/mcp`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      })
+
+      // 3) 真调一个工具（挑只读的），验证不只是"能列出来"
+      const readTool = toolNames.find((n) => /list|status|info|sessions/i.test(n)) ?? toolNames[0]
+      const called = readTool ? await rpc('tools/call', { name: readTool, arguments: {} }) : null
+
+      const ok =
+        init.status === 200 && init.body?.result?.protocolVersion &&
+        toolNames.length > 0 &&
+        noAuth.status === 401 &&
+        called?.body?.result !== undefined
+
+      record('S19', 'MCP：外部真实 HTTP 客户端 → 我们的服务端（JSON-RPC 全链路）', ok ? 'PASS' : 'FAIL',
+        `端口 ${port} 握手=${init.body?.result?.protocolVersion ?? '—'} 工具 ${toolNames.length} 个 ` +
+        `无令牌=${noAuth.status}（应 401） 实调 ${readTool ?? '—'}=${called?.body?.result ? '有结果' : '无'}`)
+    } catch (err) {
+      record('S19', 'MCP 外部客户端连通', 'FAIL', String(err.message ?? err))
+    }
+
     for (const [id, title, domain, action] of [
       ['S2', '同步域可用（status）', 'sync', 'status'],
       ['S3', 'MCP 域可用（status）', 'mcp', 'status'],
