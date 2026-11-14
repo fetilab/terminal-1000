@@ -2,6 +2,12 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 /**
+ * Shell Integration 跟踪：**当前工作目录（OSC 7）+ 命令块（OSC 133）**。
+ *
+ * 目录名仍叫 `session-cwd`（历史原因）：改名会波及 `services/ssh`、`services/pty`
+ * 的 import 点，而那些文件不在本任务的写范围内；本模块现在**同时**解析两类 OSC，
+ * 且只有**一份**跨块扫描器（`feedSessionData`），命令块的语义在 `command-blocks.ts`。
+ *
  * 跟踪交互式会话的**当前工作目录**。
  *
  * ## 为什么放在主进程
@@ -23,6 +29,25 @@
  */
 
 import { subscribeAllSessionData, subscribeSessionClosed } from '../session-registry'
+import {
+  applyOsc133,
+  clearAllCommandBlocks,
+  forgetCommandBlocks,
+  markSessionData,
+  feedPlainText,
+  parseOsc133,
+  type ShellEventEmitter,
+} from './command-blocks'
+
+export * from './command-blocks'
+export * from './handlers'
+
+/** 命令块事件的出口（由 main/index.ts 注入 ctx.emit；未注入时只维护状态） */
+let shellEmitter: ShellEventEmitter | null = null
+
+export function setShellIntegrationEmitter(next: ShellEventEmitter | null): void {
+  shellEmitter = next
+}
 
 /** 每个会话一个解析状态（OSC 序列可能被 TCP 读切成两段，必须跨块缓冲） */
 interface ParserState {
@@ -100,6 +125,9 @@ export function parseOsc7(payload: string): string | null {
  */
 export function feedSessionData(sessionId: string, chunk: string): void {
   const s = stateFor(sessionId)
+  // 收到任何字节就算"这个会话有过输出"（哪怕只是半截 OSC）：
+  // 否则"shell 没发 OSC 133"会被误报成"会话还没有输出"，提示就不准了
+  if (chunk.length > 0) markSessionData(sessionId)
   // 缓冲里可能是「半截 OSC 序列」也可能是「半截引导符」，两种情况都必须先拼回来。
   // （我第一版写成 `s.inOsc ? buffer + chunk : chunk`，于是 inOsc=false 时留下的
   //   半截引导符永远用不上，逐字符到达时整条序列丢失。）
@@ -115,6 +143,11 @@ export function feedSessionData(sessionId: string, chunk: string): void {
     const tail = trailingIntroPrefix(text)
     s.inOsc = false
     s.buffer = tail
+    // 整块都是普通输出（或半截引导符）：也要喂给命令块状态机，
+    // 否则 B→C 之间的命令回显就收集不到，commandLine 永远是空的
+    const plain = tail.length > 0 ? text.slice(0, text.length - tail.length) : text
+    if (plain.length > 0) feedPlainText(sessionId, plain)
+    else markSessionData(sessionId)
     return
   }
 
@@ -140,7 +173,10 @@ export function feedSessionData(sessionId: string, chunk: string): void {
     }
 
     if (end < 0) {
-      // 序列还没结束：把残余（含引导符）留到下一块
+      // 序列还没结束：把残余（含引导符）留到下一块。
+      // ⚠️ 但要**先**把引导符之前的普通输出喂掉：那可能正是 B→C 之间的命令回显，
+      // 丢掉它 → commandLine 永远是空的（而且只在"序列恰好被切开"时复现，极难查）。
+      if (start > cursor) feedPlainText(sessionId, text.slice(cursor, start))
       const tail = text.slice(start)
       s.inOsc = true
       s.buffer = tail.length > MAX_BUFFER ? '' : tail
@@ -148,8 +184,15 @@ export function feedSessionData(sessionId: string, chunk: string): void {
     }
 
     const payload = text.slice(start + OSC_INTRO.length, end)
+    // 引导符之前的都是普通输出（含命令回显）→ 先喂给块状态机
+    if (start > cursor) feedPlainText(sessionId, text.slice(cursor, start))
+
     const cwd = parseOsc7(payload)
     if (cwd !== null) s.cwd = cwd
+
+    // 同一份扫描器顺带解析 OSC 133（不另起一套边界处理）
+    const osc133 = parseOsc133(payload)
+    if (osc133 !== null) applyOsc133(sessionId, osc133, shellEmitter ?? undefined)
 
     cursor = end + endLen
   }
@@ -157,9 +200,26 @@ export function feedSessionData(sessionId: string, chunk: string): void {
   // 处理完所有完整序列后，若末尾又出现一个未闭合的引导符，同样要留下
   const lastIntro = text.lastIndexOf(OSC_INTRO)
   if (lastIntro >= cursor) {
+    // 引导符之前剩下的普通输出先喂给块状态机
+    if (lastIntro > cursor) feedPlainText(sessionId, text.slice(cursor, lastIntro))
     const tail = text.slice(lastIntro)
     s.inOsc = true
     s.buffer = tail.length > MAX_BUFFER ? '' : tail
+  } else {
+    // ⚠️ 这里也必须留下**可能是引导符前缀的尾部**：一块里可能有
+    // "完整序列 + 提示符 + 孤立的 ESC"，下一个 TCP 块带着 `]7;…` / `]133;…` 到来。
+    // 早先这条路径直接把尾部当普通文本喂掉，于是紧随其后的序列永远解析不出来
+    // （现象同样是"shell 好像没发 OSC"，且 OSC 7 与 OSC 133 一起受影响）。
+    const rest = text.slice(cursor)
+    const tail = trailingIntroPrefix(rest)
+    const plain = tail.length > 0 ? rest.slice(0, rest.length - tail.length) : rest
+    if (plain.length > 0) feedPlainText(sessionId, plain)
+    if (tail.length > 0) {
+      s.inOsc = false
+      s.buffer = tail
+    } else {
+      markSessionData(sessionId)
+    }
   }
 }
 
@@ -175,10 +235,13 @@ export function setCwd(sessionId: string, cwd: string | null): void {
 
 export function forgetSession(sessionId: string): void {
   states.delete(sessionId)
+  // 会话断开必须把命令块一起清掉，否则长时间开着会一直累积（每个会话一份）
+  forgetCommandBlocks(sessionId)
 }
 
 export function clearAllCwd(): void {
   states.clear()
+  clearAllCommandBlocks()
 }
 
 let installed = false

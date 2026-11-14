@@ -15,7 +15,11 @@ import { configureAi, suggestCommands } from './services/ai'
 import { configureCompletionAi, configureCompletionSettings } from './services/completion'
 import { createAiSuggestionProvider } from './services/completion/engine'
 import { getSettings, updateSettings } from './services/settings'
-import { installCwdTracking } from './services/session-cwd'
+import {
+  createShellIntegrationEmitter,
+  installCwdTracking,
+  setShellIntegrationEmitter,
+} from './services/session-cwd'
 import { scheduleStartupCheck } from './services/update'
 import {
   applyEarlySettings,
@@ -116,6 +120,8 @@ async function bootstrap(): Promise<void> {
   // 全局跟踪各会话的当前目录（解析 OSC 7）。**必须在会话产生输出之前装好**，
   // 否则早期输出里的 OSC 7 会因为"无人订阅"而丢失，消费方要等下一次提示符才有值。
   installCwdTracking()
+  // 命令块事件出口（不注入也有状态，只是渲染层收不到 SHELL_COMMAND_START/END）
+  setShellIntegrationEmitter(createShellIntegrationEmitter(ctx.emit))
 
   // 启动后检查更新（按设置；未配置更新源时会如实返回"未配置"，不假装检查过）
   scheduleStartupCheck()

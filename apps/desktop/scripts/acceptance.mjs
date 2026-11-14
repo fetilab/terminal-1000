@@ -573,6 +573,34 @@ async function main() {
         record('1', 'SSH 连接出终端', 'FAIL', String(err.message ?? err))
       }
 
+      // ════ 命令块（OSC 133）：真实字节 → 退出码 ════
+      try {
+        // 先确认"没拿到"时给的是**可操作原因**而不是空对象
+        const before = await cdp.eval(INVOKE('shellIntegration', 'listCommandBlocks', { sessionId }))
+
+        // 让远端 printf 出 OSC 133 序列：A(提示符) B(命令开始) C(输出开始) D;7(退出码 7)
+        const seq = "printf '\\033]133;A\\007\\033]133;B\\007echo hi\\033]133;C\\007out\\033]133;D;7\\007'\n"
+        await cdp.eval(INVOKE('ssh', 'write', { sessionId, data: seq }))
+
+        let after = null
+        for (let i = 0; i < 30; i++) {
+          await sleep(250)
+          after = await cdp.eval(
+            INVOKE('shellIntegration', 'listCommandBlocks', { sessionId, limit: 10 }),
+          )
+          if ((after?.blocks ?? []).length > 0) break
+        }
+        const blocks = after?.blocks ?? []
+        const withExit = blocks.filter((b) => b.exitCode === 7)
+        record('S20', '命令块（OSC 133）：从真实字节读到退出码',
+          withExit.length > 0 ? 'PASS' : 'FAIL',
+          `块 ${blocks.length} 个；退出码=7 的 ${withExit.length} 个；` +
+            `shellIntegration=${after?.shellIntegration}；` +
+            `未拿到时的原因=${before?.reason ? '有' : '无'}`)
+      } catch (err) {
+        record('S20', '命令块（OSC 133）', 'FAIL', String(err.message ?? err))
+      }
+
       // ════ 主进程 cwd 跟踪（ssh.getCwd，来自 OSC 7）════
       try {
         // 先确认"还没拿到"时返回 null + 可操作原因（而不是抛错或空对象）

@@ -36,6 +36,7 @@ export const IPC_DOMAINS = [
   'quickcmd',
   'system',
   'update',
+  'shellIntegration',
 ] as const
 
 export type IpcDomain = (typeof IPC_DOMAINS)[number]
@@ -251,6 +252,13 @@ export const Actions = {
     'getSettings',
     'setSettings',
   ] as const,
+
+  /**
+   * Shell Integration（OSC 133 命令块）。
+   * 一个域覆盖所有会话类型（ssh / pty / telnet）—— 解析走 subscribeAllSessionData，
+   * 不需要在 ssh 与 pty 里各放一份（那样迟早会不一致）。
+   */
+  shellIntegration: ['listCommandBlocks'] as const,
 
   settings: ['getAll', 'get', 'set', 'reset'] as const,
 

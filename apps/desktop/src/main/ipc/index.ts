@@ -49,6 +49,12 @@ export function registerAllHandlers(): void {
   )
   registerLazyDomain('quickcmd', async () => (await import('../services/quickcmd')).quickcmdHandlers)
   registerLazyDomain('system', async () => (await import('../services/system')).systemHandlers)
+  // 命令块（OSC 133）：解析走 subscribeAllSessionData，一份覆盖 ssh/pty/telnet，
+  // 所以做成单独一个域而不是 ssh.* + pty.* 两份（拆两份迟早不一致）
+  registerLazyDomain(
+    'shellIntegration',
+    async () => (await import('../services/session-cwd')).shellIntegrationHandlers,
+  )
   registerLazyDomain('update', async () => (await import('../services/update')).updateHandlers)
 
   // 分两段报：否则"动作数变少"会让人误以为有域没挂上
