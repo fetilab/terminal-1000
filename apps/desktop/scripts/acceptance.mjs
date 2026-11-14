@@ -763,6 +763,71 @@ async function main() {
         record('5', '端口转发', 'FAIL', String(err.message ?? err))
       }
 
+      // ════ 动态转发（SOCKS5）：真实握手 + 数据经 SSH 出站 ════
+      try {
+        // 本机 echo 服务当"目标"（测试主机与我们在同一台机器，能连到它）
+        const echo = createServer((sock) => sock.pipe(sock))
+        await new Promise((r) => echo.listen(0, '127.0.0.1', r))
+        const echoPort = echo.address().port
+
+        const opened = await cdp.eval(INVOKE('forward', 'open', {
+          tunnel: {
+            kind: 'tunnel', id: `dyn-${Date.now().toString(16)}`, name: '验收-SOCKS5',
+            serverId: sessionId, type: 'dynamic',
+            localHost: '127.0.0.1', localPort: 0,
+            autoReconnect: false, createdAt: '', updatedAt: '',
+          },
+        }))
+        const proxyPort = opened?.boundPort ?? opened?.port
+
+        // 按 SOCKS5 协议手写握手（RFC 1928）：问候 → 无认证 → CONNECT 目标
+        const socksResult = await new Promise((resolve, reject) => {
+          const s = netConnect(proxyPort, '127.0.0.1')
+          let stage = 0
+          const timer = setTimeout(() => { s.destroy(); reject(new Error('SOCKS5 握手超时')) }, 6000)
+          s.on('connect', () => s.write(Buffer.from([0x05, 0x01, 0x00])))
+          s.on('data', (buf) => {
+            if (stage === 0) {
+              // 期望 05 00（选择"无认证"）
+              if (buf[0] !== 0x05 || buf[1] !== 0x00) {
+                clearTimeout(timer); s.destroy(); reject(new Error(`问候应答异常: ${buf.toString('hex')}`))
+                return
+              }
+              // CONNECT 到 127.0.0.1:echoPort
+              const req = Buffer.from([0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, echoPort >> 8, echoPort & 0xff])
+              s.write(req)
+              stage = 1
+              return
+            }
+            if (stage === 1) {
+              // 期望 05 00 ...（成功）
+              if (buf[0] !== 0x05 || buf[1] !== 0x00) {
+                clearTimeout(timer); s.destroy(); reject(new Error(`CONNECT 被拒: ${buf.toString('hex')}`))
+                return
+              }
+              s.write('SOCKS5_OK')
+              stage = 2
+              return
+            }
+            clearTimeout(timer)
+            const got = buf.toString()
+            s.destroy()
+            resolve(got)
+          })
+          s.on('error', (e) => { clearTimeout(timer); reject(e) })
+        })
+        echo.close()
+        record('S18', '动态转发 SOCKS5：真实握手 + 数据经 SSH 出站',
+          socksResult.includes('SOCKS5_OK') ? 'PASS' : 'FAIL',
+          `本地代理:${proxyPort} → SOCKS5 CONNECT 127.0.0.1:${echoPort} → 读回 ${JSON.stringify(socksResult)}`)
+      } catch (err) {
+        record('S18', '动态转发 SOCKS5', 'FAIL', String(err.message ?? err))
+      }
+
+      // 远程转发（ssh -R）：**测试主机不实现 tcpip-forward**，无法在本机验证
+      record('S18b', '远程转发（ssh -R）', 'SKIP',
+        '进程内测试主机只实现 direct-tcpip，未实现 tcpip-forward；需一台支持 ssh -R 的真实服务端')
+
       // ════ 第 13 条：并发广播（一次输入，多会话都收到）════
       try {
         const c2 = { ...sshConnection, id: `acc2-${Date.now().toString(16)}`, name: '验收-第二台' }

@@ -68,13 +68,25 @@ const tunnelSchema = z.object({
   type: z.enum(['local', 'remote', 'dynamic']),
   localHost: z.string(),
   localPort: z.number().int().min(0).max(65535),
-  remoteHost: z.string(),
-  remotePort: z.number().int().min(0).max(65535),
+  // 对 dynamic 无意义，故可选；由下面的 superRefine 按类型要求
+  remoteHost: z.string().optional(),
+  remotePort: z.number().int().min(0).max(65535).optional(),
   autoReconnect: z.boolean(),
   note: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
+  .superRefine((v, ctx) => {
+    // 只有 dynamic 不需要远端目标；local/remote 缺了就是真的不能用，
+    // 在这里**明确指出缺什么**，而不是让它在建隧道时以别的形式失败
+    if (v.type === 'dynamic') return
+    if (v.remoteHost === undefined || v.remoteHost.trim() === '') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['remoteHost'], message: '该转发类型需要远端主机' })
+    }
+    if (v.remotePort === undefined || v.remotePort === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['remotePort'], message: '该转发类型需要远端端口' })
+    }
+  })
 
 const openSchema = z.object({ tunnel: tunnelSchema })
 const tunnelIdSchema = z.object({ tunnelId: z.string().min(1) })
@@ -83,7 +95,15 @@ export const forwardHandlers: Record<string, IpcHandler> = {
   /** 打开隧道：返回运行时 tunnelId 与实际监听端口 */
   open: async (payload, ctx) => {
     const { tunnel: config } = openSchema.parse(payload)
-    const tunnel = makeTunnel(config as unknown as TunnelConnection, ctx)
+    // 归一：dynamic 不要求远端目标，落成 '' / 0 保持存储形状稳定
+    const tunnel = makeTunnel(
+      {
+        ...config,
+        remoteHost: config.remoteHost ?? '',
+        remotePort: config.remotePort ?? 0,
+      } as unknown as TunnelConnection,
+      ctx,
+    )
     tunnels.set(tunnel.tunnelId, tunnel)
     configs.set(tunnel.tunnelId, config as unknown as TunnelConnection)
 

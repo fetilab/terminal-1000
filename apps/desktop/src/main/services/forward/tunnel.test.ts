@@ -230,3 +230,167 @@ describe('本地转发真的能通', () => {
     expect(listSessions().map((s) => s.sessionId)).toContain('s1')
   })
 })
+
+describe('动态转发（SOCKS5）—— 回归：问候后的偏移', () => {
+  beforeEach(() => clearSessions())
+  afterEach(() => clearSessions())
+
+  function dynamicTunnel(serverId: string): TunnelConnection {
+    return {
+      kind: 'tunnel',
+      id: 'dyn-1',
+      name: 'dyn',
+      serverId,
+      type: 'dynamic',
+      localHost: '127.0.0.1',
+      localPort: 0,
+      autoReconnect: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+  }
+
+  /**
+   * 走一遍 SOCKS5 握手。
+   *
+   * ⚠️ 必须**按偏移解析**而不能"一次 read 处理一个应答"：服务端可能把
+   * 「问候应答(2B)」与「成功应答(10B)」合成一个 TCP 段 —— 我第一版就是这么写的，
+   * 于是丢掉后 10 字节、永远等不到数据，看起来像服务端坏了。
+   * `pipeline=true` 时把问候与请求放进**同一个 write**（真实客户端的常见优化，
+   * 也正是把服务端偏移写成 2 而非 2+nmethods 时会踩到的那条路径）。
+   */
+  function socksConnect(
+    port: number,
+    target: { host: string; port: number },
+    pipeline: boolean,
+    /** 自定义问候（默认"单方法、无认证"）；用于验证 NMETHODS != 1 时的偏移 */
+    customGreeting?: Buffer,
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const s = connect(port, '127.0.0.1')
+      const greeting = customGreeting ?? Buffer.from([0x05, 0x01, 0x00])
+      const req = Buffer.from([
+        0x05, 0x01, 0x00, 0x01,
+        ...target.host.split('.').map(Number),
+        target.port >> 8, target.port & 0xff,
+      ])
+      let buf = Buffer.alloc(0)
+      let sentReq = false
+      let connected = false
+      s.setTimeout(4000)
+      s.on('connect', () => {
+        if (pipeline) {
+          sentReq = true
+          s.write(Buffer.concat([greeting, req]))
+        } else {
+          s.write(greeting)
+        }
+      })
+      s.on('data', (chunk) => {
+        buf = Buffer.concat([buf, chunk])
+        // 1) 问候应答 2 字节
+        if (buf.length >= 2 && !connected) {
+          if (buf[0] !== 0x05 || buf[1] !== 0x00) {
+            s.destroy()
+            reject(new Error(`问候应答异常 ${buf.subarray(0, 2).toString('hex')}`))
+            return
+          }
+          buf = buf.subarray(2)
+          connected = true
+          if (!sentReq) {
+            sentReq = true
+            s.write(req)
+          }
+        }
+        // 2) CONNECT 应答 10 字节
+        if (connected && sentReq && buf.length >= 10) {
+          if (buf[0] !== 0x05 || buf[1] !== 0x00) {
+            s.destroy()
+            reject(new Error(`CONNECT 被拒 ${buf.subarray(0, 2).toString('hex')}`))
+            return
+          }
+          buf = buf.subarray(10)
+          if (buf.length === 0 && !s.__pinged) {
+            ;(s as Socket & { __pinged?: boolean }).__pinged = true
+            s.write('PING')
+            return
+          }
+        }
+        // 3) 回程数据
+        const text = buf.toString()
+        if (text.includes('PING')) {
+          s.destroy()
+          resolve(text)
+        }
+      })
+      s.on('timeout', () => { s.destroy(); reject(new Error('超时')) })
+      s.on('error', reject)
+    })
+  }
+
+  function setupDynamic(): Promise<{ handle: SshSessionHandle; tunnel: Tunnel; port: number }> {
+    // "远端"侧把收到的内容原样回送，验证数据真的经 forwardOut 出去
+    const forwardOut = vi.fn(
+      (
+        _lh: string,
+        _lp: number,
+        _rh: string,
+        _rp: number,
+        cb: (err: Error | null, stream?: Duplex) => void,
+      ) => {
+        const toRemote = new PassThrough()
+        const fromRemote = new PassThrough()
+        toRemote.on('data', (c: Buffer) => fromRemote.write(c))
+        cb(null, Duplex.from({ writable: toRemote, readable: fromRemote }))
+      },
+    )
+    const handle = {
+      sessionId: 's1',
+      connectionId: 'conn-1',
+      client: { forwardOut } as never,
+      host: '10.0.0.9',
+      port: 22,
+      username: 'u',
+      state: 'ready' as const,
+      connectedAt: Date.now(),
+      exec: (async () => ({ stdout: '', stderr: '', code: 0 })) as never,
+    } satisfies SshSessionHandle
+    registerSession(handle)
+    const tunnel = new Tunnel(dynamicTunnel('conn-1'), noopEvents)
+    return tunnel.open().then(() => ({ handle, tunnel, port: tunnel.getBoundPort() }))
+  }
+
+  it('★ 问候**单独**发送后握手（常规路径）', async () => {
+    const { tunnel, port } = await setupDynamic()
+    const echoed = await socksConnect(port, { host: '127.0.0.1', port: 8080 }, false)
+    expect(echoed).toBe('PING')
+    tunnel.close()
+  })
+
+  it('★ 回归：问候与请求**放在同一个包**里也必须能握手', async () => {
+    // 这是修复前的失败场景：服务端把 `chunk.subarray(2)` 当成请求，
+    // 而偏移 2 是**方法字节** —— 于是拿 1 个字节去解析 CONNECT，回 05 07（命令不支持）。
+    // 表现是"动态转发对任何客户端都不工作"，而错误信息看起来像客户端的问题。
+    const { tunnel, port } = await setupDynamic()
+    const echoed = await socksConnect(port, { host: '127.0.0.1', port: 8080 }, true)
+    expect(echoed).toBe('PING')
+    tunnel.close()
+  })
+
+  it('NMETHODS 声明多个方法时偏移按 2+nmethods 算', async () => {
+    const { tunnel, port } = await setupDynamic()
+    // 问候带两个方法：05 02 00 02 → 偏移应为 4（若错写成 2，会把方法字节当请求）
+    const greeting = Buffer.from([0x05, 0x02, 0x00, 0x02])
+    const echoed = await socksConnect(port, { host: '127.0.0.1', port: 8080 }, true, greeting)
+    expect(echoed).toBe('PING')
+    tunnel.close()
+  })
+
+  it('动态隧道不要求远端目标（契约：SOCKS5 的目标来自请求）', async () => {
+    const { tunnel, port } = await setupDynamic()
+    expect(port).toBeGreaterThan(0)
+    // 能起来就说明 remoteHost/remotePort 的缺失没有阻塞它
+    expect(tunnel.getState()).toBe('ready')
+    tunnel.close()
+  })
+})

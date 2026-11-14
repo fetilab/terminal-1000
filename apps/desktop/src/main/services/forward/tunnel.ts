@@ -145,8 +145,21 @@ export class Tunnel {
   }
 
   /** 本地转发：本地监听，每个连接经 SSH forwardOut 到远端目标 */
+  /** local/remote 必须有远端目标；缺了要给明确错误（而不是拿 '' 去连） */
+  private requireRemoteTarget(): { host: string; port: number } {
+    const host = this.config.remoteHost
+    const port = this.config.remotePort
+    if (host === undefined || host === '' || port === undefined || port === 0) {
+      throw new Error(
+        `${this.config.type} 转发需要远端主机与端口（当前 remoteHost=${JSON.stringify(host)} remotePort=${String(port)}）`,
+      )
+    }
+    return { host, port }
+  }
+
   private async startLocal(): Promise<void> {
     const c = this.config
+    const target = this.requireRemoteTarget()
     const session = resolveCarrierSession(c.serverId)
 
     const server = createServer((local) => {
@@ -154,8 +167,8 @@ export class Tunnel {
       session.client.forwardOut(
         c.localHost || '127.0.0.1',
         this.boundPort || 0,
-        c.remoteHost,
-        c.remotePort,
+        target.host,
+        target.port,
         (err, stream) => {
           if (err) {
             this.events.onError(this.tunnelId, `转发失败: ${err.message}`)
@@ -188,10 +201,11 @@ export class Tunnel {
   /** 远程转发：请求远端监听，收到连接时转回本机目标 */
   private async startRemote(): Promise<void> {
     const c = this.config
+    const target = this.requireRemoteTarget()
     const session = resolveCarrierSession(c.serverId)
 
     await new Promise<void>((resolve, reject) => {
-      session.client.forwardIn(c.remoteHost, c.remotePort, (err) => {
+      session.client.forwardIn(target.host, target.port, (err) => {
         if (err) return reject(AppError.internal(`远端监听失败: ${err.message}`))
         resolve()
       })
@@ -234,7 +248,7 @@ export class Tunnel {
     this.remoteCleanup = () => {
       session.client.removeListener('tcp connection', onTcpConnection)
       try {
-        session.client.unforwardIn(c.remoteHost, c.remotePort, () => {
+        session.client.unforwardIn(target.host, target.port, () => {
           /* 尽力而为 */
         })
       } catch {
@@ -378,11 +392,22 @@ function handleSocks5(
         socket.destroy()
         return
       }
+      const nmethods = chunk[1] ?? 0
+      if (chunk.length < 2 + nmethods) {
+        // 问候还没收全（NMETHODS 声明了但方法字节没到齐）
+        socket.write(Buffer.from([0x05, 0x00]))
+        return
+      }
       // 只接受"无认证"
       socket.write(Buffer.from([0x05, 0x00]))
       stage = 'request'
-      // 可能同一包里带着请求，继续走下面的分支
-      const rest = chunk.subarray(2)
+
+      // ⚠️ 问候之后**紧跟**的才是请求（客户端可能把两者放在同一个包里 —— 这是常见优化）。
+      // 偏移必须是 `2 + nmethods`，**不是 2**：
+      // 我原先写成 `chunk.subarray(2)`，于是把**方法字节**当成了请求的开头，
+      // 拿 1 个字节去解析 CONNECT → 长度不足 → 回 `05 07 命令不支持`。
+      // 后果是**动态转发对任何客户端都不工作**（bug 极隐蔽：服务端"礼貌地"回了拒绝码）。
+      const rest = chunk.subarray(2 + nmethods)
       if (rest.length > 0) void handleRequest(rest)
       return
     }

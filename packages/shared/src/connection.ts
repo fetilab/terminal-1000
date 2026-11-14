@@ -232,9 +232,17 @@ export interface TunnelConnection {
   /** 本机监听 */
   localHost: string
   localPort: number
-  /** 远端目标（local 转发时为目标；remote 转发时为远端监听） */
-  remoteHost: string
-  remotePort: number
+  /**
+   * 远端目标：
+   * - `local`  —— 转发到的目标地址
+   * - `remote` —— 在远端监听的地址（`ssh -R`）
+   * - `dynamic`（SOCKS5）—— **无意义**：目标由每次 SOCKS 请求里的地址决定
+   *
+   * 所以对 dynamic 允许缺省。要求调用方瞎填一个"远端目标"是契约在说谎，
+   * 而且会把"没填"和"填了但没用"混在一起，校验也就失去了意义。
+   */
+  remoteHost?: string
+  remotePort?: number
   /** 意外断开后自动重连（仅本条隧道生效） */
   autoReconnect: boolean
   note?: string
