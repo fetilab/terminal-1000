@@ -85,3 +85,44 @@ export interface OpenEditorResult {
   /** 每次编辑会话一个 id，供上层关联保存动作 */
   editId: string
 }
+
+// ---------------------------------------------------------------------------
+// 权限修改（递归 chmod 与「预备执行命令」）
+// ---------------------------------------------------------------------------
+
+/**
+ * 预备执行的权限修改计划 —— **只算不改**。
+ *
+ * spec 要求执行前有「预备执行命令区域」：让用户看清到底会动哪些路径。
+ * 对 `chmod -R` 这种影响面大的操作，这比事后补救重要。
+ */
+export interface ChmodPlan {
+  /** 一行汇总，等价于 shell 里的 chmod（如 `chmod -R 755 /tmp/a`） */
+  summary: string
+  /** 将要改动的条目（含目录/文件自身），按遍历顺序 */
+  entries: string[]
+  /** 列给用户看的明细命令（有上限） */
+  commands: string[]
+  /** 是否因为超过上限被截断（**必须如实告知**，否则就是给了个假的成功） */
+  truncated: boolean
+  /**
+   * 危险提示（有值时界面应显著展示）。
+   *
+   * 目前只报一种最容易被踩的情形：**递归时把目录的可执行位也去掉了** ——
+   * 目录没有 x 位就进不去，整棵子树会立刻不可访问（`chmod -R` 的固有行为）。
+   */
+  warning?: string
+}
+
+/** 权限修改的执行结果（逐项，因为部分失败是常态） */
+export interface ChmodResult {
+  /** 成功改动的条目数 */
+  changed: number
+  /** 失败的条目与原因 */
+  failed: Array<{ path: string; message: string }>
+  /** 实际执行的命令（截断到预览上限） */
+  commands: string[]
+  summary: string
+  truncated: boolean
+  warning?: string
+}

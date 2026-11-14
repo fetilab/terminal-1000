@@ -18,6 +18,8 @@ import type {
   RemoteTextFile,
   RemoteTree,
   RemoteWriteResult,
+  ChmodPlan,
+  ChmodResult,
 } from '@t1000/shared'
 import { AppError } from '../../errors'
 import {
@@ -386,24 +388,6 @@ const MAX_CHMOD_ENTRIES = 5000
 /** 「预备命令」里最多列几条明细（其余用汇总行说明） */
 const MAX_PREVIEW_COMMANDS = 50
 
-export interface ChmodPlan {
-  /** 一行汇总，等价于 shell 里的 chmod（如 `chmod -R 755 /tmp/a`） */
-  summary: string
-  /** 将要改动的条目（含目录/文件自身），按遍历顺序 */
-  entries: string[]
-  /** 列给用户看的明细命令（最多 MAX_PREVIEW_COMMANDS 条） */
-  commands: string[]
-  /** 是否因为超过上限被截断 */
-  truncated: boolean
-  /**
-   * 危险提示（有值时界面应当显著展示）。
-   *
-   * 目前只报一种最容易被踩的情形：**递归时把目录的可执行位也去掉了**。
-   * 目录没有 x 位就**进不去**，整棵子树会立刻变得不可访问 ——
-   * GNU `chmod -R` 也是这个行为，但用户往往到"目录打不开"时才意识到。
-   */
-  warning?: string
-}
 
 /** 目录缺少可执行位时的措辞 */
 function dirExecWarning(mode: number, recursive: boolean): string | undefined {
@@ -489,18 +473,6 @@ export async function planChmod(
   }
 }
 
-export interface ChmodResult {
-  /** 成功改动的条目数 */
-  changed: number
-  /** 失败的条目与原因（部分失败是常态，必须逐项报） */
-  failed: Array<{ path: string; message: string }>
-  /** 实际执行的命令（截断到预览上限） */
-  commands: string[]
-  summary: string
-  truncated: boolean
-  /** 危险提示（透传自预览计划） */
-  warning?: string
-}
 
 /**
  * 修改权限位（支持递归）。
@@ -701,3 +673,4 @@ export function rebaseRelativePath(root: string, relativePath: string): string {
   }
   return result
 }
+export type { ChmodPlan, ChmodResult } from '@t1000/shared'

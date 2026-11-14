@@ -277,6 +277,7 @@ describe('动态转发（SOCKS5）—— 回归：问候后的偏移', () => {
       let buf = Buffer.alloc(0)
       let sentReq = false
       let connected = false
+      let pinged = false
       s.setTimeout(4000)
       s.on('connect', () => {
         if (pipeline) {
@@ -310,8 +311,8 @@ describe('动态转发（SOCKS5）—— 回归：问候后的偏移', () => {
             return
           }
           buf = buf.subarray(10)
-          if (buf.length === 0 && !s.__pinged) {
-            ;(s as Socket & { __pinged?: boolean }).__pinged = true
+          if (buf.length === 0 && !pinged) {
+            pinged = true
             s.write('PING')
             return
           }
