@@ -198,21 +198,23 @@ function noteAuthAttempt(req, body, success) {
   return locked
 }
 
-/** 请求分发 */
-async function handle(req, res) {
-  const url = new URL(req.url ?? '/', 'http://[::1]')
-  const path = url.pathname
-
-  applySecurityHeaders(res)
+/**
+ * 请求分发（**协议无关**）。
+ *
+ * 只依赖 `reqr` 这个描述符，不依赖 node:http 的对象。这样 HTTP 与 TSC/1
+ * 加密通道可以**共用同一套路由/鉴权/限流** —— 抄第二份就会长出两套行为，
+ * 迟早不一致（这正是任务卡明确禁止的）。
+ *
+ * 路由处理函数仍按原签名 `(req, res, body, ctx, params)` 调用，
+ * 其中 `req`/`res` 由各传输自己提供（TSC/1 传最小 stub）。
+ */
+export async function dispatch(reqr) {
+  const { method, path, body, req, res } = reqr
 
   for (const route of routes) {
-    if (req.method !== route.method) continue
+    if (method !== route.method) continue
     const m = route.pattern.exec(path)
     if (!m) continue
-
-    // 非读操作才需要 body
-    const needsBody = route.method === 'POST' || route.method === 'PUT'
-    const body = needsBody ? await readBody(req, MAX_BODY_BYTES) : undefined
 
     const ctx = { username: undefined }
     if (route.auth) {
@@ -234,11 +236,23 @@ async function handle(req, res) {
     }
     if (isAuth) noteAuthAttempt(req, body, true)
 
-    sendJson(res, 200, result)
-    return
+    return result
   }
 
-  throw new HttpError(404, 'NOT_FOUND', `未知接口: ${req.method} ${path}`)
+  throw new HttpError(404, 'NOT_FOUND', `未知接口: ${method} ${path}`)
+}
+
+/** HTTP 传输层：把 node 的 req/res 适配成 dispatch 的描述符 */
+async function handle(req, res) {
+  const url = new URL(req.url ?? '/', 'http://[::1]')
+  const path = url.pathname
+
+  applySecurityHeaders(res)
+
+  // 非读操作才需要 body
+  const needsBody = req.method === 'POST' || req.method === 'PUT'
+  const body = needsBody ? await readBody(req, MAX_BODY_BYTES) : undefined
+  sendJson(res, 200, await dispatch({ method: req.method, path, body, req, res }))
 }
 
 /** 创建服务实例（测试可直接用，不占用固定端口） */

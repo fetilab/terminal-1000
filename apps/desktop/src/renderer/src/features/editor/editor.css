@@ -1,0 +1,50 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 terminal-1000 contributors */
+
+.code-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+  overflow: hidden;
+  background: var(--t1000-bg-sunken);
+}
+
+.code-editor__host {
+  width: 100%;
+  min-height: 0;
+}
+
+/* 状态条：把快捷键和当前语言摆在手边，省得用户去猜 */
+.code-editor__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-top: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-raised);
+  color: var(--t1000-fg-dim);
+  font-size: 11.5px;
+}
+
+/* 降级用的纯文本编辑框：与 Monaco 区域保持同样的观感 */
+.code-editor__fallback {
+  width: 100%;
+  resize: vertical;
+  padding: 10px 12px;
+  border: none;
+  border-top: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-sunken);
+  color: var(--t1000-fg);
+  font-family: var(--t1000-font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  outline: none;
+  tab-size: 2;
+}
+
+.code-editor--fallback {
+  gap: 0;
+}
