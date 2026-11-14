@@ -12,7 +12,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { invoke } from '../../lib/ipc'
+import { Events } from '@t1000/shared'
+import { invoke, subscribe } from '../../lib/ipc'
 import { errorText, formatBytes, formatDate } from '../../lib/format'
 import { actions, useStoreShallow } from '../../lib/store'
 import {
@@ -36,10 +37,37 @@ import {
   modeToOctal,
   octalToMode,
   parentRemote,
+  type ChmodPlanResult,
+  type ChmodRunResult,
   type OpenEditorResult,
   type RemoteEntry,
 } from './sftpTypes'
 import { markCancelled, useTransfers, wireTransferEvents, clearFinished, type TransferItem } from './transferStore'
+import { BatchPanel } from './BatchPanel'
+import { ChmodDialog } from './ChmodDialog'
+import {
+  batchCounts,
+  batchFailureLines,
+  chmodStepOutcome,
+  createBatchReport,
+  finishReport,
+  formatBatchSummary,
+  hasFailures,
+  markItem,
+  markItemByTransfer,
+  type BatchKind,
+  type BatchReport,
+} from './batchOps'
+import {
+  clearSelection,
+  clickSelection,
+  countDirectories,
+  EMPTY_SELECTION,
+  isSelected,
+  selectAll,
+  selectedEntries,
+  type SelectionState,
+} from './selection'
 import './sftp.css'
 
 const LOCAL_DIR_KEY = 't1000:sftp-local-dir'
@@ -255,7 +283,12 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<string | null>(null)
+  // 多选状态（含连选锚点）。单选值由它派生，保证既有单文件操作语义不变。
+  const [selection, setSelection] = useState<SelectionState>(EMPTY_SELECTION)
+  const [batchReport, setBatchReport] = useState<BatchReport | null>(null)
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false)
+  const [batchChmodOpen, setBatchChmodOpen] = useState(false)
+  const [batchDownloadOpen, setBatchDownloadOpen] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
 
   const [mkdir, setMkdir] = useState(false)
@@ -274,6 +307,23 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
 
   useEffect(() => {
     wireTransferEvents()
+  }, [])
+
+  // 下载是**异步**的：submit 返回后 invoke 就结束了。批量面板要靠传输事件
+  // 才知道每一项最终成功还是失败（失败原因也在这里），否则只会一直显示"已提交"。
+  useEffect(() => {
+    const offOk = subscribe(Events.SFTP_TRANSFER_FINISHED, (p) => {
+      setBatchReport((prev) => (prev ? markItemByTransfer(prev, p.transferId, { status: 'ok' }) : prev))
+    })
+    const offErr = subscribe(Events.SFTP_TRANSFER_ERROR, (p) => {
+      setBatchReport((prev) =>
+        prev ? markItemByTransfer(prev, p.transferId, { status: 'failed', error: p.message }) : prev,
+      )
+    })
+    return () => {
+      offOk()
+      offErr()
+    }
   }, [])
 
   const load = useCallback(
@@ -338,6 +388,13 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     })
     return copy
   }, [entries])
+
+  /** 只有"恰好选中一项"才启用单文件操作；多选时不显示，避免误触单击动作 */
+  const selectedPath = selection.ids.length === 1 ? (selection.ids[0] ?? null) : null
+  const selected = selectedPath
+  const pickedEntries = useMemo(() => selectedEntries(sorted, selection), [sorted, selection])
+  const pickedDirs = countDirectories(pickedEntries)
+  const multiSelecting = selection.ids.length >= 2
 
   const refreshBookmarks = useCallback((): void => {
     setBookmarks(listBookmarks(connectionId))
@@ -484,6 +541,150 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     } catch (err) {
       toast.error(`打开失败：${errorText(err)}`)
     }
+  }
+
+  /**
+   * 批量任务统一执行壳：逐项记状态 → 结束**如实汇总**（成功几个、失败几个、原因）。
+   * 三种批量操作共用它，避免各写一套导致口径不一致。
+   * `run` 返回 transferId → 异步任务（下载）；返回带 changed/error 的对象 → chmod 的富结果。
+   */
+  const runBatch = useCallback(
+    async (
+      kind: BatchKind,
+      targets: RemoteEntry[],
+      note: string | undefined,
+      run: (
+        entry: RemoteEntry,
+      ) => Promise<string | { changed?: number; details?: string[]; error?: string } | void>,
+    ): Promise<BatchReport> => {
+      let report = createBatchReport(kind, targets, note)
+      setBatchReport(report)
+      for (const entry of targets) {
+        report = markItem(report, entry.path, { status: 'running' })
+        setBatchReport(report)
+        try {
+          const outcome = await run(entry)
+          if (typeof outcome === 'string') {
+            // 异步任务（下载）：拿到 transferId，最终状态由传输事件改写
+            report = markItem(report, entry.path, { status: 'submitted', transferId: outcome })
+          } else if (outcome && typeof outcome === 'object') {
+            // 富结果（chmod）：目标内部可能"改了 N 项、失败 M 项"，必须分别报出来
+            const extra = {
+              ...(outcome.changed === undefined ? {} : { changed: outcome.changed }),
+              ...(outcome.details === undefined ? {} : { details: outcome.details }),
+            }
+            report = outcome.error
+              ? markItem(report, entry.path, { status: 'failed', error: outcome.error, ...extra })
+              : markItem(report, entry.path, { status: 'ok', ...extra })
+          } else {
+            report = markItem(report, entry.path, { status: 'ok' })
+          }
+        } catch (err) {
+          report = markItem(report, entry.path, { status: 'failed', error: errorText(err) })
+        }
+        setBatchReport(report)
+      }
+      report = finishReport(report)
+      setBatchReport(report)
+
+      const summary = formatBatchSummary(report)
+      if (hasFailures(report)) {
+        // 部分失败绝不能只说"完成"：把失败项与原因一并抛给用户
+        toast.warn(`${summary}｜${batchFailureLines(report).join('；')}`)
+      } else {
+        toast.ok(summary)
+      }
+      return report
+    },
+    [],
+  )
+
+  const runBatchDownload = (dir: string): void => {
+    if (!sessionId) return
+    const targets = pickedEntries.slice()
+    const target = dir.trim().replace(/\/+$/, '')
+    if (target === '' || targets.length === 0) return
+    rememberLocalDir(target)
+    setLocalDir(target)
+    setBatchDownloadOpen(false)
+    setSelection(clearSelection())
+    void runBatch('download', targets, '目录会递归下载；每一项的最终结果见下方传输队列与本面板', async (entry) => {
+      const res = await invoke<'sftp', 'download', Record<string, unknown>, { id?: string }>(
+        'sftp',
+        'download',
+        {
+          sessionId,
+          direction: 'download',
+          sourcePath: entry.path,
+          targetPath: `${target}/${entry.name}`,
+          recursive: entry.type === 'directory',
+          conflictPolicy,
+        },
+      )
+      return res?.id
+    })
+  }
+
+  const runBatchDelete = (): void => {
+    if (!sessionId) return
+    const targets = pickedEntries.slice()
+    const dirs = countDirectories(targets)
+    setBatchDeleteOpen(false)
+    setSelection(clearSelection())
+    void runBatch(
+      'delete',
+      targets,
+      dirs > 0 ? `其中 ${dirs} 个目录会连同全部内容一起删除（递归，不可恢复）` : undefined,
+      async (entry) => {
+        await invoke<'sftp', 'remove', Record<string, unknown>, unknown>('sftp', 'remove', {
+          sessionId,
+          path: entry.path,
+          recursive: entry.type === 'directory',
+        })
+      },
+    ).then(() => reload())
+  }
+
+  /** 预备预览（只算不改）：走主进程 previewChmod */
+  const previewChmodFor = useCallback(
+    async (path: string, mode: number, recursive: boolean): Promise<ChmodPlanResult> => {
+      if (!sessionId) throw new Error('会话不存在或已断开')
+      return invoke<'sftp', 'previewChmod', Record<string, unknown>, ChmodPlanResult>(
+        'sftp',
+        'previewChmod',
+        { sessionId, path, mode, recursive },
+      )
+    },
+    [sessionId],
+  )
+
+  /**
+   * 改权限（单目标与批量共用同一条路径）：支持递归，并把主进程返回的
+   * `changed` / `failed[]` 如实落到结果面板（一个目标内部也可能部分成功）。
+   */
+  const runChmod = (mode: number, recursive: boolean, targets: RemoteEntry[]): void => {
+    if (!sessionId || targets.length === 0) return
+    const dirs = countDirectories(targets)
+    setChmodTarget(null)
+    setBatchChmodOpen(false)
+    if (targets.length > 1) setSelection(clearSelection())
+    const note = recursive
+      ? `递归应用到目录内全部内容（符号链接不跟随，链接自身会改）；共 ${targets.length} 个目标${
+          dirs > 0 ? `，其中 ${dirs} 个目录` : ''
+        }`
+      : dirs > 0
+        ? `未勾递归：${dirs} 个目录只改目录自身（不进入其中）`
+        : undefined
+
+    void runBatch('chmod', targets, note, async (entry) => {
+      const res = await invoke<'sftp', 'chmod', Record<string, unknown>, ChmodRunResult>('sftp', 'chmod', {
+        sessionId,
+        path: entry.path,
+        mode,
+        recursive,
+      })
+      return chmodStepOutcome(res)
+    }).then(() => reload())
   }
 
   if (!sessionId) {
@@ -637,7 +838,35 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         <span>修改时间</span>
       </div>
 
-      <div className="sftp-list">
+      <div
+        className="sftp-list"
+        data-testid="sftp-list"
+        tabIndex={0}
+        role="listbox"
+        aria-multiselectable
+        // 快捷键只在列表被聚焦/鼠标落在列表里时生效 —— 绝不抢终端的 Ctrl+A
+        onKeyDown={(e) => {
+          const mod = e.ctrlKey || e.metaKey
+          if (mod && (e.key === 'a' || e.key === 'A')) {
+            e.preventDefault()
+            e.stopPropagation()
+            setSelection(selectAll(sorted.map((x) => x.path)))
+            return
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            setSelection(clearSelection())
+          }
+        }}
+        onMouseDown={(e) => {
+          const el = e.currentTarget
+          if (document.activeElement !== el) el.focus()
+          // 空白处按下清除选择；用 closest 判断，兼容虚拟列表的内层滚动容器
+          if (!(e.target as HTMLElement).closest('[data-testid="sftp-row"]')) {
+            setSelection(clearSelection())
+          }
+        }}
+      >
         {loading && entries.length === 0 ? (
           <Loading text="读取目录…" />
         ) : sorted.length === 0 && !error ? (
@@ -653,10 +882,24 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
               const isDir = entry.type === 'directory'
               return (
                 <div
-                  className={`sftp-row${selected === entry.path ? ' sftp-row--selected' : ''}`}
-                  onClick={() => setSelected(entry.path)}
+                  className={`sftp-row${isSelected(selection, entry.path) ? ' sftp-row--selected' : ''}`}
+                  data-testid="sftp-row"
+                  data-path={entry.path}
+                  data-entry-type={entry.type}
+                  aria-selected={isSelected(selection, entry.path)}
+                  // 单击只改选择，**不做默认动作** —— 否则 Ctrl 点十个就会打开/下载十个
+                  onClick={(e) => {
+                    setSelection((prev) =>
+                      clickSelection(prev, sorted.map((x) => x.path), entry.path, {
+                        ctrl: e.ctrlKey,
+                        meta: e.metaKey,
+                        shift: e.shiftKey,
+                      }),
+                    )
+                  }}
                   onDoubleClick={() => {
-                    if (isDir) void load(entry.path)
+                    // 双击打开仅限单选；连选过程中双击不触发
+                    if (isDir && selection.ids.length <= 1) void load(entry.path)
                   }}
                 >
                   <div className={`sftp-row__name${isDir ? ' sftp-row__name--dir' : kind === 'link' ? ' sftp-row__name--link' : ''}`}>
@@ -676,7 +919,49 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         )}
       </div>
 
-      {selected ? (
+      {multiSelecting ? (
+        <div className="sftp-queue__head sftp-batchbar" data-testid="batch-toolbar">
+          <span className="tx__file" data-testid="batch-selection-count">
+            已选 {selection.ids.length} 项{pickedDirs > 0 ? `（含 ${pickedDirs} 个目录）` : ''}
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="download"
+            data-testid="batch-download"
+            onClick={() => {
+              setLocalFiles([])
+              setBatchDownloadOpen(true)
+            }}
+          >
+            批量下载
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="sliders"
+            data-testid="batch-chmod"
+            onClick={() => setBatchChmodOpen(true)}
+          >
+            批量改权限
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            icon="trash"
+            data-testid="batch-delete"
+            onClick={() => setBatchDeleteOpen(true)}
+          >
+            批量删除
+          </Button>
+          <IconButton
+            icon="close"
+            label="清除选择"
+            data-testid="batch-clear"
+            onClick={() => setSelection(clearSelection())}
+          />
+        </div>
+      ) : selected ? (
         <div className="sftp-queue__head">
           <span className="tx__file" title={selected}>
             {selected}
@@ -699,9 +984,11 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           }}>
             删除
           </Button>
-          <IconButton icon="close" label="取消选择" onClick={() => setSelected(null)} />
+          <IconButton icon="close" label="取消选择" onClick={() => setSelection(clearSelection())} />
         </div>
       ) : null}
+
+      {batchReport ? <BatchPanel report={batchReport} onClose={() => setBatchReport(null)} /> : null}
 
       <TransferQueue sessionId={sessionId} />
 
@@ -743,7 +1030,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
               overwrite: false,
             })
             setRenameTarget(null)
-            setSelected(null)
+            setSelection(clearSelection())
             reload()
           } catch (err) {
             toast.error(`重命名失败：${errorText(err)}`)
@@ -751,31 +1038,13 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         }}
       />
 
-      <Prompt
+      <ChmodDialog
         open={chmodTarget !== null}
-        title="修改权限"
-        label="八进制权限（如 644 / 755）"
-        initial={chmodTarget ? modeToOctal(chmodTarget.mode) : ''}
+        targets={chmodTarget ? [chmodTarget] : []}
+        initialMode={chmodTarget ? modeToOctal(chmodTarget.mode) : undefined}
+        preview={previewChmodFor}
         onClose={() => setChmodTarget(null)}
-        onSubmit={async (value) => {
-          if (!chmodTarget) return
-          const mode = octalToMode(value)
-          if (mode === undefined) {
-            toast.warn('权限必须是 3~4 位八进制数字，例如 644')
-            return
-          }
-          try {
-            await invoke<'sftp', 'chmod', Record<string, unknown>, unknown>('sftp', 'chmod', {
-              sessionId,
-              path: chmodTarget.path,
-              mode,
-            })
-            setChmodTarget(null)
-            reload()
-          } catch (err) {
-            toast.error(`改权限失败：${errorText(err)}`)
-          }
-        }}
+        onRun={(mode, recursive) => runChmod(mode, recursive, chmodTarget ? [chmodTarget] : [])}
       />
 
       <Modal
@@ -801,7 +1070,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
                   })
                   toast.ok(`已删除 ${deleteTarget.name}`)
                   setDeleteTarget(null)
-                  setSelected(null)
+                  setSelection(clearSelection())
                   reload()
                 } catch (err) {
                   toast.error(`删除失败：${errorText(err)}`)
@@ -946,6 +1215,112 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         </div>
       </Modal>
     
+      {/* ── 批量：删除（二次确认，说清删哪些、多少、目录递归） ── */}
+      <Modal
+        open={batchDeleteOpen}
+        size="sm"
+        title={`批量删除 ${pickedEntries.length} 项`}
+        onClose={() => setBatchDeleteOpen(false)}
+        footer={
+          <>
+            <div className="t-modal__footer-spacer" />
+            <Button variant="ghost" onClick={() => setBatchDeleteOpen(false)}>
+              取消
+            </Button>
+            <Button variant="danger" data-testid="batch-delete-confirm" onClick={runBatchDelete}>
+              删除 {pickedEntries.length} 项
+            </Button>
+          </>
+        }
+      >
+        <p className="t-field__hint" style={{ marginTop: 0 }}>
+          将删除以下 <b data-testid="batch-delete-count">{pickedEntries.length}</b> 项
+          {pickedDirs > 0 ? `，其中 ${pickedDirs} 个目录会连同**全部内容**一起删除（递归）` : ''}：
+        </p>
+        <ul className="sftp-batch__preview">
+          {pickedEntries.slice(0, 15).map((e) => (
+            <li key={e.path}>
+              <code className="mono">{e.path}</code>
+              {e.type === 'directory' ? <span className="sftp-batch__dir">目录·递归</span> : null}
+            </li>
+          ))}
+        </ul>
+        {pickedEntries.length > 15 ? (
+          <p className="t-field__hint">…还有 {pickedEntries.length - 15} 项（完整清单见执行结果面板）</p>
+        ) : null}
+        <p className="t-field__hint">这是**不可恢复**的远端操作，不走废纸篓。</p>
+      </Modal>
+
+      {/* ── 批量：改权限（含递归与预备命令预览） ── */}
+      <ChmodDialog
+        open={batchChmodOpen}
+        targets={pickedEntries}
+        preview={previewChmodFor}
+        onClose={() => setBatchChmodOpen(false)}
+        onRun={(mode, recursive) => runChmod(mode, recursive, pickedEntries)}
+      />
+
+      {/* ── 批量：下载 ── */}
+      <Modal
+        open={batchDownloadOpen}
+        title={`批量下载 ${pickedEntries.length} 项`}
+        onClose={() => setBatchDownloadOpen(false)}
+        footer={
+          <>
+            <div className="t-modal__footer-spacer" />
+            <Button variant="ghost" onClick={() => setBatchDownloadOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              icon="download"
+              data-testid="batch-download-confirm"
+              disabled={!localDir.trim() || pickedEntries.length === 0}
+              onClick={() => runBatchDownload(localDir)}
+            >
+              开始下载
+            </Button>
+          </>
+        }
+      >
+        <div className="t-grid">
+          <Field
+            label="保存到本地目录"
+            required
+            hint="每一项都会放到这个目录下（目录递归）。也会记住上次选择。"
+            aside={
+              <Button
+                size="sm"
+                variant="outline"
+                icon="folder"
+                onClick={() => {
+                  void pickLocal('directory', false).then((paths) => {
+                    if (paths[0]) setLocalDir(paths[0])
+                  })
+                }}
+              >
+                选择目录
+              </Button>
+            }
+          >
+            <TextInput value={localDir} mono placeholder="/home/you/Downloads" onChange={(e) => setLocalDir(e.target.value)} />
+          </Field>
+          <Field label={`远端源（${pickedEntries.length} 项）`}>
+            <ul className="sftp-batch__preview">
+              {pickedEntries.slice(0, 15).map((e) => (
+                <li key={e.path}>
+                  <code className="mono">{e.path}</code>
+                  {e.type === 'directory' ? <span className="sftp-batch__dir">目录·递归</span> : null}
+                </li>
+              ))}
+            </ul>
+          </Field>
+          <span className="t-field__hint">
+            同名冲突策略：<Badge tone="outline">{conflictPolicy}</Badge>（在设置 → 文件传输里改）
+          </span>
+        </div>
+      </Modal>
+
       {bmDialog ? (
         <Modal
           open

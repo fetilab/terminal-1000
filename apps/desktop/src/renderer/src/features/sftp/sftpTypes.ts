@@ -59,6 +59,33 @@ export function breadcrumbSegments(path: string): Array<{ label: string; path: s
   return out
 }
 
+// ── chmod 的返回形状 ─────────────────────────────────────────────
+// ⚠ 这两个形状定义在主进程 `services/sftp/browser.ts`（ChmodPlan / ChmodResult），
+// 渲染层不得不镜像一份才能拿到类型；这属于契约漂移风险（已向 lead 提出建议上移 shared）。
+
+/** `sftp.previewChmod` 的返回：**只算不改**的预备计划 */
+export interface ChmodPlanResult {
+  summary: string
+  entries: string[]
+  /** 明细命令（主进程最多给 50 条） */
+  commands: string[]
+  /** 条目超过主进程上限（5000）被截断 —— **执行也只处理已列出的部分** */
+  truncated: boolean
+  warning?: string
+}
+
+/** `sftp.chmod` 的返回：执行结果 + 逐项失败 */
+export interface ChmodRunResult {
+  path: string
+  mode: number | string
+  changed: number
+  failed: Array<{ path: string; message: string }>
+  commands: string[]
+  summary: string
+  truncated: boolean
+  warning?: string
+}
+
 export function entryIconType(entry: RemoteEntry): 'folder' | 'file' | 'link' {
   if (entry.type === 'directory') return 'folder'
   if (entry.type === 'symlink') return 'link'

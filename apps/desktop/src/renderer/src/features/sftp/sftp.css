@@ -294,3 +294,71 @@
   white-space: nowrap;
   cursor: help;
 }
+
+/* ── 批量操作 ─────────────────────────────────────────────────────────── */
+.sftp-batchbar { border-top: 1px solid var(--t1000-accent); }
+.sftp-batchbar .tx__file { color: var(--t1000-accent); }
+.sftp-batch {
+  border-top: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-raised);
+  max-height: 220px;
+  display: flex;
+  flex-direction: column;
+}
+.sftp-batch--has-failure { border-top-color: var(--t1000-danger); }
+.sftp-batch__head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--t1000-border) 40%, transparent);
+}
+.sftp-batch__title { font-size: 12px; color: var(--t1000-fg); }
+.sftp-batch__warn { font-size: 11px; color: var(--t1000-danger); }
+.sftp-batch__note { margin: 0; padding: 4px 10px 0; font-size: 11px; color: var(--t1000-fg-dim); }
+.sftp-batch__list { margin: 0; padding: 4px 0 6px; list-style: none; overflow: auto; }
+.sftp-batch__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 10px; font-size: 11.5px; }
+.sftp-batch__row:hover { background: var(--t1000-bg-hover); }
+.sftp-batch__icon--ok { color: var(--t1000-ok, var(--t1000-accent)); }
+.sftp-batch__icon--failed { color: var(--t1000-danger); }
+.sftp-batch__icon--busy { color: var(--t1000-info); }
+.sftp-batch__icon--idle { color: var(--t1000-fg-faint); }
+.sftp-batch__name {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--t1000-font-mono); color: var(--t1000-fg);
+}
+.sftp-batch__dir {
+  margin-left: 6px; padding: 0 4px; border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-hover); color: var(--t1000-fg-muted); font-size: 10px;
+}
+.sftp-batch__status { flex: none; color: var(--t1000-fg-dim); font-size: 11px; }
+/* 失败原因要能看清：这行字是用户判断"哪些没成"的依据 */
+.sftp-batch__reason {
+  flex: 1 1 auto; min-width: 0; color: var(--t1000-danger); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* chmod 的逐项失败明细（failed[]） */
+.sftp-batch__details { flex-basis: 100%; margin: 2px 0 0 20px; padding: 0; list-style: none; }
+.sftp-batch__details li {
+  font-size: 11px; color: var(--t1000-danger);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sftp-batch__preview {
+  margin: 6px 0; padding: 6px 8px; list-style: none; max-height: 160px; overflow: auto;
+  border: 1px solid var(--t1000-border); border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg); font-size: 11.5px;
+}
+.sftp-batch__preview li { display: flex; align-items: center; gap: 6px; padding: 1px 0; color: var(--t1000-fg-muted); }
+
+/* ── 改权限对话框：预备执行命令区域 ─────────────────────────────────────── */
+.sftp-chmod__plan {
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 10px;
+  border: 1px solid var(--t1000-border); border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg); font-size: 11.5px;
+}
+.sftp-chmod__plan-row { display: flex; align-items: baseline; gap: 8px; }
+.sftp-chmod__plan-row code { color: var(--t1000-fg); word-break: break-all; }
+/* 计数与命令之间必须有间距（上一版挤成 "/deep3 项"） */
+.sftp-chmod__count { flex: none; margin-left: auto; color: var(--t1000-fg-dim); font-size: 11px; white-space: nowrap; }
+.sftp-chmod__truncated { color: var(--t1000-danger); font-size: 11px; }
+.sftp-chmod__details { margin-top: 2px; color: var(--t1000-fg-muted); }
+.sftp-chmod__details > summary { cursor: pointer; color: var(--t1000-fg-dim); font-size: 11.5px; }
+.sftp-chmod__details ul { margin: 4px 0 0; padding: 0 0 0 16px; max-height: 180px; overflow: auto; }
+.sftp-chmod__details li { list-style: none; font-size: 11px; color: var(--t1000-fg-muted); }
