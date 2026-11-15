@@ -13,7 +13,7 @@
  * 零知识意味着：忘记同步口令 = 云端数据无法解密（服务端也没有）。
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Events } from '@t1000/shared'
 import { Button, Section } from '../../components/Button'
 import { Badge, Banner, EmptyState, Loading } from '../../components/Feedback'
@@ -56,6 +56,9 @@ export default function SyncPanel(): React.JSX.Element {
   const [identityFingerprint, setIdentityFingerprint] = useState<string | null>(null)
   /** 登录失败的归类结果（身份变化要渲染成常驻告警，而不是只弹 toast） */
   const [identityError, setIdentityError] = useState<SyncErrorInfo | null>(null)
+  /** 归类时需要读到**最新**的钉扎指纹，所以用 ref 而不是闭包里的 status */
+  const statusRef = useRef<SyncStatus | null>(null)
+  statusRef.current = status
 
   const [endpoint, setEndpoint] = useState('')
   const [username, setUsername] = useState('')
@@ -129,7 +132,9 @@ export default function SyncPanel(): React.JSX.Element {
    * 身份变化，只在登录处处理会漏掉它们。
    */
   const handleSyncFailure = useCallback((err: unknown, what: string): void => {
-    const info = classifySyncError(err)
+    // 传已钉扎指纹：主进程会把"身份不符"也报成 UNTRUSTED_SERVER，
+    // 靠这两个指纹才能把它纠正成"身份变化"（措辞与后果完全不同）
+    const info = classifySyncError(err, statusRef.current?.pinnedFingerprint ?? null)
     if (info.kind === 'untrusted-server') {
       setIdentityFingerprint(info.fingerprint ?? '')
       setIdentityError(info)
