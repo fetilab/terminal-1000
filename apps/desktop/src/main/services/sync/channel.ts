@@ -164,7 +164,16 @@ export class SecureChannel {
       }
 
       // 临时私钥到此为止：之后不再需要（前向保密）
-      return new SecureChannel(socket, keys, presented)
+      // 验签（用**对端出示的**身份公钥）：证明"对方持有该公钥对应的私钥"。
+      // 它与上面的钉扎比对是**互补**的两步：签名防冒名，钉扎防换人。
+      const keys = verifyAndDerive({
+        hello,
+        serverHello,
+        clientEphPrivate: ephemeral.privateKey,
+      })
+
+      // 临时私钥到此为止：之后不再需要（前向保密）
+      return new SecureChannel(socket, keys, presentedFp)
     } catch (err) {
       socket.destroy()
       if (err instanceof SecureChannelError) throw err

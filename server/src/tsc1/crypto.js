@@ -120,9 +120,21 @@ export function ed25519PrivateFromRaw(seed) {
   })
 }
 
-/** 取 Ed25519 公钥的原始 32 字节 */
+/**
+ * 取 Ed25519 公钥的原始 32 字节。
+ *
+ * ⚠️ 参数必须是**公钥** KeyObject。误传私钥时 Node 会抛
+ * `ERR_INVALID_ARG_VALUE: The property 'options.type' is invalid. Received 'spki'`
+ * —— 这个报错信息很不直观（它其实在说"私钥不能按 spki 导出"）。
+ * 手上只有种子/私钥时，请用 `ed25519PublicRawFromSeed`。
+ */
 export function ed25519RawPublic(keyObject) {
   return Buffer.from(rawFromSpki(keyObject.export({ format: 'der', type: 'spki' }), SPKI_ED25519_PREFIX, 'Ed25519'))
+}
+
+/** 由 32 字节种子推出公钥的原始 32 字节（避免"拿私钥当公钥传"的坑） */
+export function ed25519PublicRawFromSeed(seed) {
+  return ed25519RawPublic(createPublicKey(ed25519PrivateFromRaw(seed)))
 }
 
 /** 取 X25519 公钥的原始 32 字节 */

@@ -16,6 +16,7 @@ import { Events } from '@t1000/shared'
 import { invoke, subscribe } from '../../lib/ipc'
 import { errorText, formatBytes, formatDate } from '../../lib/format'
 import { actions, useStoreShallow } from '../../lib/store'
+import { RemoteEditor } from '../editor/RemoteEditor'
 import {
   addBookmark,
   listBookmarks,
@@ -277,6 +278,8 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     }
   })
   const [bookmarks, setBookmarks] = useState<SftpBookmark[]>([])
+  /** 内置编辑器：当前正在编辑的远端文件路径 */
+  const [editingPath, setEditingPath] = useState<string | null>(null)
   const [bmDialog, setBmDialog] = useState<
     { mode: 'add' | 'rename'; id?: string; path: string; name: string } | null
   >(null)
@@ -395,6 +398,31 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   const pickedEntries = useMemo(() => selectedEntries(sorted, selection), [sorted, selection])
   const pickedDirs = countDirectories(pickedEntries)
   const multiSelecting = selection.ids.length >= 2
+
+  /**
+   * 系统编辑器那条路的写回结果。
+   * **失败必须显眼**（否则用户以为存上了）；`remoteChangedSinceOpen` 为真时
+   * 要提示"可能覆盖了别人的修改"。
+   */
+  useEffect(() => {
+    const offSaved = subscribe(Events.SFTP_EDIT_SAVED, (p) => {
+      if (p.sessionId !== sessionId) return
+      if (p.remoteChangedSinceOpen) {
+        toast.warn(`已写回 ${p.remotePath}，但该文件在你编辑期间被改过 —— 可能覆盖了别人的修改。`)
+      } else {
+        toast.ok(`已写回远端：${p.remotePath}（${p.bytes} 字节）`)
+      }
+      reload()
+    })
+    const offErr = subscribe(Events.SFTP_EDIT_ERROR, (p) => {
+      if (p.sessionId !== undefined && p.sessionId !== sessionId) return
+      toast.error(`写回远端失败：${p.remotePath} — ${p.message}`)
+    })
+    return () => {
+      offSaved()
+      offErr()
+    }
+  }, [sessionId])
 
   const refreshBookmarks = useCallback((): void => {
     setBookmarks(listBookmarks(connectionId))
@@ -794,6 +822,15 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         />
         <IconButton
           icon="edit"
+          label="用内置编辑器打开（语法高亮 + 查找替换）"
+          disabled={!selected}
+          onClick={() => {
+            const entry = entries.find((e) => e.path === selected)
+            if (entry && !entry.name.endsWith('/')) setEditingPath(entry.path)
+          }}
+        />
+        <IconButton
+          icon="download"
           label="用系统编辑器打开（物化到本地临时文件）"
           disabled={!selected}
           onClick={() => {
@@ -1320,6 +1357,15 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           </span>
         </div>
       </Modal>
+
+      {editingPath && sessionId ? (
+        <RemoteEditor
+          sessionId={sessionId}
+          path={editingPath}
+          onClose={() => setEditingPath(null)}
+          onSaved={() => reload()}
+        />
+      ) : null}
 
       {bmDialog ? (
         <Modal

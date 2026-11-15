@@ -24,7 +24,9 @@ import {
   DEFAULT_SPEC_CACHE_SIZE,
   bundledSpecSource,
 } from './corpus'
-import { CompletionEngine, createDirectoryGenerator } from './engine'
+import { CompletionEngine, createDirectoryGenerator,
+  type AiSuggestionProvider,
+} from './engine'
 
 let engine: CompletionEngine | null = null
 let activeCtx: IpcContext | null = null
@@ -32,6 +34,38 @@ let activeCtx: IpcContext | null = null
 /** 供测试或设置变更时丢弃单例（下次调用重新建） */
 export function resetCompletion(): void {
   engine = null
+}
+
+/** 注入的 AI 建议 provider（跨服务，由 main/index.ts 显式注入） */
+let aiProvider: AiSuggestionProvider | null = null
+/** 注入的设置来源 */
+let settingsReader: (() => CompletionSettings) | null = null
+
+/**
+ * 注入 AI 建议通道。
+ *
+ * ⚠️ **必须同时丢弃引擎单例**：引擎在构造时接收 `aiProvider`，
+ * 若只改模块变量而引擎已经建好，注入就"晚了一步"、根本不生效
+ * （这正是当初 `??` 通道不可达的成因之一）。丢单例后下次调用会带上新 provider 重建。
+ */
+export function configureCompletionAi(provider: AiSuggestionProvider | null): void {
+  aiProvider = provider
+  engine = null
+}
+
+/**
+ * 注入设置来源。
+ *
+ * 引擎**每次 complete 都会读它**，所以设置面板改完立即生效，不必重启。
+ */
+export function configureCompletionSettings(reader: (() => CompletionSettings) | null): void {
+  settingsReader = reader
+  engine = null
+}
+
+/** 自检：AI 通道是否已接上（界面与排障用） */
+export function isCompletionAiConfigured(): boolean {
+  return aiProvider !== null
 }
 
 function getEngine(ctx: IpcContext): CompletionEngine {
@@ -45,6 +79,9 @@ function getEngine(ctx: IpcContext): CompletionEngine {
 
   engine = new CompletionEngine({
     corpus,
+    // AI 建议通道（未注入时为 null → 引擎会给出"请去设置填 API Key"的可操作提示）
+    ...(aiProvider === null ? {} : { aiProvider }),
+    ...(settingsReader === null ? {} : { settingsProvider: settingsReader }),
     // 「脚本生成式补全（Beta）」：cd 的目录候选，默认关闭（见 CompletionSettings）
     generators: [
       createDirectoryGenerator({
@@ -84,6 +121,8 @@ const historyEntrySchema = z.union([
 
 const completeSchema = z.object({
   line: z.string(),
+  /** 渲染层置位的"本次是 `??` AI 请求"信号（主进程自己也会从行文本识别） */
+  aiPrefix: z.boolean().optional(),
   cursor: z.number().int().min(0).optional(),
   history: z.array(historyEntrySchema).max(5000).optional(),
   limit: z.number().int().min(1).max(200).optional(),

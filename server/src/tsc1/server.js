@@ -29,6 +29,7 @@ import {
   signTranscript,
   x25519PublicFromRaw,
   x25519RawPublic,
+  TSC1_MAGIC,
 } from './crypto.js'
 import { RecordReceiver, RecordSender } from './record.js'
 
@@ -83,7 +84,17 @@ export function handleTsc1Connection(socket, opts) {
       buffer = buffer.length === 0 ? Buffer.from(chunk) : Buffer.concat([buffer, chunk])
 
       if (phase === 'await-hello') {
-        // 长度不足就继续等（TCP 是流，不能假设一次 data 就是一条完整消息）
+        // **先看第 1 个字节**：magic 不对就立刻断开。
+        //
+        // 规范 §3.1 说 magic 是"用于快速识别这不是 HTTP"，但若等凑满 72 字节才校验，
+        // 这个"快速"就是空话：攻击者只要发 1 个字节就能让服务端挂着一个连接等下去
+        // （slowloris 式的廉价资源占用）。因此在收到首字节时就判。
+        if (buffer.length === 0) return
+        if (buffer[0] !== TSC1_MAGIC) {
+          fail('BAD_MAGIC', `首字节 0x${buffer[0].toString(16).padStart(2, '0')} 不是 TSC1 magic（疑似 HTTP 或其它协议）`)
+          return
+        }
+        // 长度不足继续等（TCP 是流，不能假设一次 data 就是一条完整消息）
         if (buffer.length < HELLO_LEN) return
         const hello = buffer.subarray(0, HELLO_LEN)
         buffer = buffer.subarray(HELLO_LEN)

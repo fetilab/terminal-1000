@@ -88,7 +88,15 @@ export interface CompletionRequest {
   /** 候选上限覆盖（缺省用 CompletionSettings.maxSuggestions） */
   limit?: number
   /** 终端当前工作目录（目录补全用） */
-  cwd?: string
+  cwd?: string,
+  /**
+   * 渲染层显式置位的「本次是 `??` AI 建议请求」信号。
+   *
+   * 主进程**自己也会从行文本识别** `??`，所以这个字段只是让 UI 的判断也带过来；
+   * 两者任一为真都走 AI 分支。
+   */
+  aiPrefix?: boolean
+
 }
 
 export interface CompletionResult {

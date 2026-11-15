@@ -59,8 +59,67 @@ export interface CompletionGenerator {
 }
 
 /** AI 建议通道（TODO：接入 services/ai；当前默认实现返回空） */
+/** 行尾 `docker run??` 或前缀 `?? 描述`；`echo ??`（独立成词）**不算** */
+const AI_PREFIX_RE = /^\s*\?\?(\s|$)/
+const AI_TRAILING_RE = /[^\s?]\?\?$/
+
+/** 这一行是否在请求 AI 建议 */
+export function detectAiSuggestion(line: string): boolean {
+  return AI_PREFIX_RE.test(line) || AI_TRAILING_RE.test(line)
+}
+
+/** 去掉 `??` 标记，得到"给 AI 看"的干净文本；非 AI 行原样返回 */
+export function stripAiMarker(line: string): string {
+  if (AI_PREFIX_RE.test(line)) return line.replace(/^\s*\?\?\s*/, '')
+  if (AI_TRAILING_RE.test(line)) return line.replace(/\s*\?\?$/, '')
+  return line
+}
+
+/** 传给 AI provider 的输入：`query` 是去掉标记后的干净文本 */
+export interface AiSuggestionInput {
+  query: string
+  /** 与 query 相同（保留字段便于将来带上更多上下文） */
+  line: string
+  context: CommandContext
+}
+
 export interface AiSuggestionProvider {
-  suggest(context: CommandContext, limit: number): Promise<CompletionCandidate[]>
+  suggest(input: AiSuggestionInput, limit: number): Promise<CompletionCandidate[]>
+}
+
+/**
+ * AI 侧需要的**最小**契约：只回命令文本 + 可选说明。
+ *
+ * 跨服务调用走显式注入（`configureCompletionAi`），completion 不 import services/ai。
+ */
+export interface AiCommandSuggester {
+  suggestCommands(
+    input: { query: string; context?: CommandContext },
+    limit: number,
+  ): Promise<Array<{ command: string; description?: string }>>
+}
+
+/** 把"只给命令文本"的 AI 实现包装成补全用的 provider */
+export function createAiSuggestionProvider(suggester: AiCommandSuggester): AiSuggestionProvider {
+  return {
+    suggest: async (input, limit) => {
+      const items = await suggester.suggestCommands(
+        { query: input.query, context: input.context },
+        limit,
+      )
+      return items
+        .filter((item) => typeof item.command === 'string' && item.command.trim().length > 0)
+        .slice(0, Math.max(0, limit))
+        .map((item, index) => ({
+          value: item.command.trim(),
+          ...(item.description === undefined ? {} : { description: item.description }),
+          kind: 'ai' as const,
+          // 保持 AI 给出的顺序（分越高越靠前）
+          score: 900 - index,
+          matchKind: 'exact' as const,
+        }))
+    },
+  }
 }
 
 export const DEFAULT_COMPLETION_SETTINGS: CompletionSettings = {
@@ -243,7 +302,7 @@ export function parseCommandLine(line: string, cursor?: number): CommandContext 
     argIndex,
     expecting,
     usedOptions,
-    aiPrefix: /^\s*\?\?(\s|$)/.test(before),
+    aiPrefix: detectAiSuggestion(before),
   }
 }
 
@@ -322,6 +381,14 @@ export interface CompletionEngineOptions {
   settings?: Partial<CompletionSettings>
   generators?: readonly CompletionGenerator[]
   aiProvider?: AiSuggestionProvider
+  /**
+   * 设置来源（**每次 complete 都会重新读**）。
+   *
+   * 为什么要这个：此前没有任何地方把设置推给引擎，于是用户在设置面板关掉
+   * 「AI 建议（??）」**对引擎毫无影响** —— 开关是真的死的。
+   * 做成"每次读"而不是"启动时快照"，是为了设置面板改完**立即生效**，不必重启。
+   */
+  settingsProvider?: () => Partial<CompletionSettings>
   /** 给命令名候选加一点「常用度」权重（命令名 → 权重），可选 */
   popularity?: ReadonlyMap<string, number>
 }
@@ -411,6 +478,14 @@ export class CompletionEngine {
   async complete(request: CompletionRequest): Promise<CompletionResult> {
     const started = performance.now()
     const context = parseCommandLine(request.line, request.cursor)
+    // 每次调用都刷新一次设置来源 —— 见 settingsProvider 的注释（开关必须即时生效）
+    if (this.options.settingsProvider) {
+      try {
+        this.settings = { ...this.settings, ...this.options.settingsProvider() }
+      } catch {
+        // 设置读不到就用上一次的，不该因为设置服务异常让补全整个挂掉
+      }
+    }
     const limit = request.limit ?? this.settings.maxSuggestions
     const cwd = request.cwd ?? '/'
     const notes: string[] = []
@@ -422,18 +497,57 @@ export class CompletionEngine {
     // 历史里的高频命令在命令名补全里也应该更靠前
     if (request.history) this.refreshPopularity(request.history)
 
-    // 1) AI 建议通道：`??` 前缀
-    if (context.aiPrefix) {
+    // 1) AI 建议通道：`??`（行尾或前缀两种写法）
+    //
+    // 触发来源有两个且**任一即可**：①渲染层在请求里置位 `aiPrefix`
+    // ②主进程自己从行文本识别（渲染层没接线时也照样能用）
+    const wantsAi = request.aiPrefix === true || context.aiPrefix === true
+    /** 因开关关闭而退化成普通补全；若无候选，收尾要给出可见提示 */
+    let aiTurnedOff = false
+    if (wantsAi && request.aiPrefix !== false) {
       if (!this.settings.aiSuggestion) {
-        return this.buildResult([], context, started, null, false, ['AI 建议已关闭'])
+        // 开关关掉**不是**什么都不发生：说明原因，然后继续走普通补全（不卡住用户）。
+        // 若普通补全也没给出候选，收尾时会补一条"可见的"提示（见 aiTurnedOff 变量）。
+        notes.push('「AI 建议（??）」已在「设置 > 补全」里关闭，本次按普通补全处理')
+        aiTurnedOff = true
+      } else {
+        const provider = this.options.aiProvider
+        const query = stripAiMarker(context.before)
+        if (!provider) {
+          // 未注入 provider：给**可操作**的说明，而不是"通道尚未接入"这种没用的说法
+          const note =
+            'AI 建议需要先配置 AI 供应商：请打开「设置 > AI 助手」，选择供应商并填写 API Key 后重试'
+          notes.push(note)
+          const info = this.noteCandidate(context, 'AI 建议不可用', note)
+          return this.buildResult(info === null ? [] : [info], context, started, null, true, notes)
+        }
+        try {
+          const aiCandidates = await provider.suggest({ query, line: query, context }, limit)
+          // 过滤掉纯空白候选：它们在界面上是"看得见但没法用"的噪声，
+          // 而且会让"AI 其实没给出东西"被误判成"有结果"。
+          const usable = aiCandidates.filter((c) => (c.value ?? '').trim().length > 0)
+          if (usable.length === 0) {
+            const note = 'AI 没有返回可用的命令建议：可换个说法再试'
+            notes.push(note)
+            const info = this.noteCandidate(context, 'AI 没有给出建议', note)
+            return this.buildResult(
+              info === null ? [] : [info],
+              context,
+              started,
+              null,
+              true,
+              notes,
+            )
+          }
+          return this.buildResult(usable, context, started, null, true, notes)
+        } catch (err) {
+          // provider 抛错时**原样呈现 AI 侧的文案**（它通常更准，例如"请先填 API Key"）
+          const note = err instanceof Error ? err.message : String(err)
+          notes.push(note)
+          const info = this.noteCandidate(context, 'AI 建议请求失败', note)
+          return this.buildResult(info === null ? [] : [info], context, started, null, true, notes)
+        }
       }
-      const provider = this.options.aiProvider
-      if (!provider) {
-        // TODO(ai): 接入 services/ai 后由它产出候选；当前只透传「已请求」标记
-        return this.buildResult([], context, started, null, true, ['AI 建议通道尚未接入'])
-      }
-      const aiCandidates = await provider.suggest(context, limit)
-      return this.buildResult(aiCandidates, context, started, null, true, notes)
     }
 
     const collected: CompletionCandidate[] = []
@@ -466,7 +580,18 @@ export class CompletionEngine {
     }
 
     const candidates = sortCandidates(dedupeCandidates(collected)).slice(0, Math.max(0, limit))
-    return this.buildResult(candidates, context, started, specName, false, notes)
+    // 开关关闭导致退化成普通补全，而普通补全也没给出候选时：
+    // 仅往 notes 写说明用户是看不到的（界面只在有候选时弹层），所以补一条"无操作"候选。
+    let finalCandidates = candidates
+    if (aiTurnedOff && finalCandidates.length === 0) {
+      const info = this.noteCandidate(
+        context,
+        'AI 建议未生效',
+        '「AI 建议（??）」已在「设置 > 补全」里关闭，本次按普通补全处理；没有找到匹配的命令',
+      )
+      if (info !== null) finalCandidates = [...finalCandidates, info]
+    }
+    return this.buildResult(finalCandidates, context, started, specName, false, notes)
   }
 
   // ── 命令名 ──────────────────────────────────────────────────────────────
@@ -605,6 +730,32 @@ export class CompletionEngine {
       if (out.length >= limit * 4) break
     }
     return out
+  }
+
+  /**
+   * 造一条"纯提示"候选。
+   *
+   * 为什么需要：现有界面**只在有候选时**弹层。若失败时只往 `notes` 写一句说明，
+   * 用户什么都看不到（等于静默）。所以补一条候选把说明带出来。
+   *
+   * `value` 取**原样 token** —— 接受它等于不改动命令行，是个安全的"无操作"候选。
+   */
+  private noteCandidate(
+    context: CommandContext,
+    title: string,
+    note: string,
+  ): CompletionCandidate | null {
+    const start = context.tokenStart >= 0 ? context.tokenStart : context.replaceEnd
+    const end = Math.max(start, context.replaceEnd)
+    const original = context.before.slice(start, end)
+    return {
+      value: original,
+      label: title,
+      description: note,
+      kind: 'ai',
+      score: 0,
+      matchKind: 'exact',
+    }
   }
 
   private buildResult(

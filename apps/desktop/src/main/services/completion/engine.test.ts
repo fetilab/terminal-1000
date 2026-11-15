@@ -342,17 +342,27 @@ describe('候选去重', () => {
 // ── AI 通道 ───────────────────────────────────────────────────────────────
 
 describe('AI 建议通道（?? 前缀）', () => {
-  it('?? 触发 AI 通道，并标注尚未接入', async () => {
+  // ⚠️ 这个块原来断言的是「通道尚未接入」与「AI 建议已关闭」——
+  // 而那两句正是 `??` 通道修好之前**没用的说法**。完整行为已由
+  // `ai-suggestion.test.ts` 覆盖（触发两种写法 / 三条降级路径 / 设置来源 / provider 注入）。
+  // 这里只留最基础的两条，且断言改成**可操作**的措辞。
+  it('?? 触发 AI 通道；未注入 provider 时给可操作提示（不是"尚未接入"）', async () => {
     const result = await real().complete({ line: '?? 怎么列出大文件' })
     expect(result.aiRequested).toBe(true)
-    expect(result.candidates).toEqual([])
-    expect(result.notes?.join()).toContain('AI 建议通道尚未接入')
+    const notes = result.notes?.join(' ') ?? ''
+    expect(notes).toContain('设置 > AI 助手')
+    expect(notes).toContain('API Key')
+    expect(notes).not.toContain('尚未接入')
+    // 提示必须随候选一起给出来（界面只在有候选时弹层）
+    expect(result.candidates).toHaveLength(1)
   })
 
-  it('aiSuggestion 关闭时不走 AI', async () => {
+  it('aiSuggestion 关闭时不走 AI，但明确说明并继续普通补全', async () => {
     const result = await real({ aiSuggestion: false }).complete({ line: '?? hi' })
     expect(result.aiRequested).toBe(false)
-    expect(result.notes?.join()).toContain('AI 建议已关闭')
+    const notes = result.notes?.join(' ') ?? ''
+    expect(notes).toContain('关闭')
+    expect(notes).toContain('设置 > 补全')
   })
 
   it('普通命令不触发 AI', async () => {
