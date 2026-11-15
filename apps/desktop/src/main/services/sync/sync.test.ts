@@ -86,6 +86,8 @@ function useClient(store: StoreService): void {
   // 设置也存放在 store 的 KV 里：换库必须一并清掉 settings 的内存缓存，
   // 否则会读到上一个库的设置（含被旧主密钥封装的令牌/口令，必然解不开）。
   resetSettingsCache()
+  // 换库后设置回到默认值，而默认传输是 tsc1；本文件的后端是明文 HTTP，故显式声明。
+  updateSettings({ sync: { transport: 'http' } })
 }
 
 /**
@@ -136,7 +138,10 @@ describe('sync 端到端（真实后端）', () => {
 
   beforeEach(() => {
     useClient(makeUnlockedStore())
-    updateSettings({ sync: { endpoint: endpointUrl, enabled: true, token: '' } })
+    // ⚠️ 必须**显式**声明明文传输：默认已改为 tsc1（加密通道）。
+    // 本文件跑的是回环上的明文 HTTP 测试服务端，所以这里显式用 http ——
+    // 这正是规范 §3.3.1 要的"不自动回退、由配置明确决定"。
+    updateSettings({ sync: { endpoint: endpointUrl, enabled: true, token: '', transport: 'http' } })
   })
 
   afterEach(() => {

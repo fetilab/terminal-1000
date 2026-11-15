@@ -4,16 +4,12 @@
 /**
  * TSC/1 通道复用池。
  *
- * 为什么需要复用：TSC/1 每次连接都要做一次 X25519 握手 + Ed25519 验签，
- * 而同步是"多次小请求"（push/pull/login 各一次）。每个请求都重新握手
- * 既浪费往返、也让每次同步都要重新验签。
+ * 同步由多次小请求组成（login、push、pull）；握手包含 X25519 密钥协商与 Ed25519 验签，
+ * 按端点复用连接以避免每个请求重复握手。
  *
- * 三条纪律：
- * 1. **未钉扎就不连**（TOFU 必须由用户显式确认）—— 这里会抛 `UntrustedServerError`
- *    把指纹带出去，由上层交给用户核对（SSH 式流程）
- * 2. **指纹/公钥不一致一律拒绝**（可能被中间人），不允许"自动接受新指纹"
- * 3. **绝不在失败后回退到明文 HTTP**（规范 §3.3.1）—— 这条由调用方保证，
- *    本模块只负责"要么走加密通道、要么明确失败"
+ * 未钉扎或钉扎不匹配时不建立连接，分别抛 `UntrustedServerError` 与
+ * `ServerIdentityChangedError`，由调用方决定是否提示用户核对指纹。
+ * 明文 HTTP 回退不在本模块职责内，见 `docs/SYNC-SECURE-CHANNEL.md` §3.3.1。
  */
 
 import { SecureChannel, SecureChannelError, type SecureChannelOptions } from './channel'
@@ -26,7 +22,11 @@ export interface PeerPin {
   publicKey: string
 }
 
-/** 服务端未钉扎 —— 上层应当**显著提示用户核对指纹**，而不是静默接受 */
+/**
+ * 对端身份未钉扎。
+ *
+ * 携带本次连接观测到的指纹，供调用方展示给用户带外核对；不接受静默信任。
+ */
 export class UntrustedServerError extends Error {
   readonly code = 'UNTRUSTED_SERVER'
   constructor(readonly fingerprint: string) {
@@ -38,7 +38,11 @@ export class UntrustedServerError extends Error {
   }
 }
 
-/** 指纹与已记录的不一致 —— 可能被中间人 */
+/**
+ * 对端出示的身份与已钉扎的不一致。
+ *
+ * 可能是中间人，也可能是服务端更换了密钥；调用方须要求用户显式确认后才能更新钉扎。
+ */
 export class ServerIdentityChangedError extends Error {
   readonly code = 'SERVER_IDENTITY_CHANGED'
   constructor(
@@ -46,8 +50,8 @@ export class ServerIdentityChangedError extends Error {
     readonly actual: string,
   ) {
     super(
-      `同步服务端身份与已记录的不一致（**可能被中间人**）：\n  已记录 ${expected}\n  本次收到 ${actual}\n` +
-        '若你确认服务端确实换了密钥，请手动更新钉扎。',
+      `同步服务端身份与已记录的不一致（可能为中间人，也可能服务端已更换密钥）：\n  已记录 ${expected}\n  本次收到 ${actual}\n` +
+        '若确认服务端已更换密钥，需手动更新钉扎；否则应视为中间人并中止。',
     )
     this.name = 'ServerIdentityChangedError'
   }
@@ -65,9 +69,11 @@ function keyOf(host: string, port: number): string {
 }
 
 /**
- * 取一条可用通道（必要时握手）。
+ * 取端点对应的通道，未建立时先握手。
  *
- * @param pin 已钉扎的身份；未提供 → 抛 `UntrustedServerError`（**不自动信任**）
+ * @param pin 已钉扎的对端身份；未提供时抛 `UntrustedServerError`，不建立连接
+ * @returns 可收发请求的通道
+ * @throws `UntrustedServerError` 未钉扎；`ServerIdentityChangedError` 身份与钉扎不符
  */
 export async function getChannel(
   host: string,
@@ -87,11 +93,8 @@ export async function getChannel(
           pinnedFingerprint: pin.fingerprint,
           pinnedPublicKey: Buffer.from(pin.publicKey, 'base64'),
         }),
-    // 首次连接（未钉扎）**不接受**：把手印带出去让用户显式确认
-    onPin: (info) => {
-      if (info.isNew) return false
-      return false // 不一致时也拒绝 —— 由上层决定是否手动换钉扎
-    },
+    // 未钉扎与不一致都由调用方处理，这里一律不自动接受
+    onPin: () => false,
   }
 
   let channel: SecureChannel
@@ -99,14 +102,14 @@ export async function getChannel(
     channel = await SecureChannel.connect(options)
   } catch (err) {
     if (err instanceof SecureChannelError && err.kind === 'pin') {
-      // 握手本身能走通（对端出示了公钥并签了名），只是我们没钉扎 → 把指纹报上去
+      // 握手完成但拒绝发生在钉扎比对，指纹可从错误信息取出后交给调用方
       const fp = extractFingerprint(String(err.message))
       if (fp !== null) throw new UntrustedServerError(fp)
     }
     throw err
   }
 
-  // 二次核对：handshake 内部已经比过，这里再确认一次**公钥字节**（比指纹更严）
+  // 公钥字节比对：指纹相同不足以排除身份替换
   if (pin !== undefined && channel.peerFingerprint !== pin.fingerprint) {
     channel.close()
     throw new ServerIdentityChangedError(pin.fingerprint, channel.peerFingerprint)
@@ -116,13 +119,13 @@ export async function getChannel(
   return channel
 }
 
-/** 从错误信息里抠出指纹（`channel.ts` 在拒绝时会把指纹写进去） */
+/** 取出拒绝原因中的指纹，格式为 32 位十六进制 */
 function extractFingerprint(message: string): string | null {
   const m = message.match(/[0-9a-f]{32}/i)
   return m === null ? null : m[0].toLowerCase()
 }
 
-/** 主动丢弃某端点的通道（令牌变更、退出登录时用） */
+/** 丢弃端点通道；退出登录或令牌变更后调用，下次请求重新握手 */
 export function dropChannel(host: string, port: number): void {
   const k = keyOf(host, port)
   const p = pool.get(k)
@@ -137,12 +140,12 @@ export function closeAllChannels(): void {
   pool.clear()
 }
 
-/** 自检/测试用 */
+/** 当前池中通道数，供测试断言连接复用 */
 export function poolSize(): number {
   return pool.size
 }
 
-/** 把公钥字节算成指纹（供上层在确认时用） */
+/** 由 base64 身份公钥计算指纹，供确认流程比对 */
 export function fingerprintOfPublicKey(publicKeyBase64: string): string {
   return fingerprintOf(Buffer.from(publicKeyBase64, 'base64')).replace(/ /g, '')
 }

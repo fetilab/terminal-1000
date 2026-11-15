@@ -226,7 +226,7 @@ async function call(
   options: { method?: string; body?: unknown; token?: string } = {},
 ): Promise<HttpResult> {
   const settings = getSyncSettings()
-  const transport = settings.transport ?? 'http'
+  const transport = settings.transport ?? 'tsc1'
 
   if (transport === 'tsc1') {
     return callOverTsc1(path, options, settings)
@@ -521,6 +521,16 @@ export const syncHandlers: Record<string, IpcHandler> = {
       lastVersion: state.lastVersion ?? null,
       lastError: state.lastError ?? null,
       conflictPolicy: settings.conflictPolicy,
+      /**
+       * 当前传输方式与钉扎状态。
+       *
+       * 界面**必须**能显示这个 —— 用户在"以为加密了、其实走明文"的情况下做同步，
+       * 是本项目明确要避免的静默失败（规范 §3.3.1）。
+       */
+      transport: settings.transport ?? 'tsc1',
+      pinned: settings.pin !== undefined,
+      /** 已钉扎的指纹（可展示给用户核对；它本身不是秘密） */
+      pinnedFingerprint: settings.pin?.fingerprint ?? null,
     }
   },
 
