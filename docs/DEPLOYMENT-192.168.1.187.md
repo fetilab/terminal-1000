@@ -151,3 +151,50 @@ systemctl restart t1000-port-guard
 另外同步只上传了 `index.js` 而漏了 `util.js`（部分同步），导致服务以
 `SyntaxError: does not provide an export named 'clientIp'` 启动失败。
 **教训：部署后必须逐个文件校验关键符号，不要假设同步成功。**
+
+---
+
+## TSC/1 加密通道（2026-11-15 部署）
+
+### 为什么需要它
+后端要**直连公网**（80 被 ISP 封、无证书、不改 DNS），而明文 HTTP 会让
+登录口令与会话令牌在链路裸奔。数据本身已是零知识密文，所以要保护的是**认证链路**。
+协议见 [`docs/SYNC-SECURE-CHANNEL.md`](SYNC-SECURE-CHANNEL.md)。
+
+### 部署现状
+| 项 | 值 |
+|---|---|
+| 端口 | **8788**（独立于 8787） |
+| 监听 | `::`（纯 IPv6 主机必须绑 `::`，`0.0.0.0` 完全不可达） |
+| 身份指纹 | `4844 72aa 4517 f615 edae a7a4 d86c acff` |
+| 身份私钥 | `/mnt/hdd-btrfs/terminal-1000/data/identity.key`（0600） |
+| 公网地址 | `tsc1://mc.mosfetech.de5.net:8788` |
+
+**为什么必须独立端口**：8787 是给反代用的、且「仅回环」正是 HTTP 侧
+`T1000_TRUST_PROXY=1`（采信 X-Forwarded-For）得以安全的前提；
+而加密通道必须能公网直连。放同一端口就得放开 8787，等于同时废掉
+HTTP 的明文口令保护与 XFF 可信前提。**该端口前面没有反代，因此绝不采信 XFF。**
+
+### 启用方式（drop-in，不改原单元，便于回滚）
+```ini
+# /etc/systemd/system/terminal-1000-sync.service.d/tsc1.conf
+[Service]
+Environment=T1000_TSC1_ENABLE=1
+Environment=T1000_TSC1_PORT=8788
+Environment=T1000_TSC1_HOST=::
+```
+回滚：删掉该文件 → `systemctl daemon-reload && systemctl restart terminal-1000-sync`
+（代码回滚：`app-src-before-tsc1.tgz` 备份在数据盘根目录）
+
+### 验收（可真机复跑）
+```bash
+cd apps/desktop
+T1000_TSC1_E2E=mc.mosfetech.de5.net:8788 pnpm vitest run src/main/services/sync/channel.remote.test.ts
+```
+覆盖：探测身份拿指纹（与服务端日志一致）→ 注册 → 推送 → **拉回逐字节一致**
+→ **无令牌仍 401**（加密不替代认证）→ 指纹不符被拒。**3/3 通过**。
+
+### 客户端接线
+- 设置：`sync.transport: 'tsc1'`（**显式**，规范 §3.3.1 禁止自动回退）+ `sync.pin`
+- 信任流程：`sync.inspectServer`（只握手拿指纹）→ 用户带外核对 → `sync.trustServer`
+- **非回环 + 明文 HTTP 会被直接拒绝**（`PLAINTEXT_NOT_ALLOWED`）
