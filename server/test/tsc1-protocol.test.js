@@ -634,3 +634,238 @@ describe('端到端：真实 socket 上的 TSC/1 连接', () => {
     assert.ok(logs.some((l) => l.includes('TSC1 fail')), '应记录失败审计')
   })
 })
+
+// --------------------------------------------- 规范 §6.1/§6.2（评审后新增）
+
+describe('§6.1 headers 白名单：只放行 authorization', () => {
+  let server
+  let port
+  let identity
+  const seen = []
+
+  before(async () => {
+    identity = loadOrCreateIdentity(makeTmpDir())
+    const dispatch = async ({ method, path, req }) => {
+      // 记录服务端实际看到的头，用于断言注入是否被丢弃
+      seen.push({ path, headers: { ...req.headers } })
+      return { ok: true, path, headersSeen: Object.keys(req.headers) }
+    }
+    const created = createTsc1Server({ dispatch, identity, log: () => {} })
+    server = created.server
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    port = server.address().port
+  })
+
+  after(async () => {
+    await new Promise((r) => server?.close(r))
+  })
+
+  async function handshake() {
+    const socket = connect({ port, host: '127.0.0.1' })
+    await new Promise((res, rej) => {
+      socket.once('connect', res)
+      socket.once('error', rej)
+    })
+    const cliEph = generateKeyPairSync('x25519')
+    const clientEphPub = x25519RawPublic(cliEph.publicKey)
+    const hello = buildHello({ clientRandom: random32(), clientEphPub })
+    socket.write(hello)
+
+    let buf = Buffer.alloc(0)
+    const sh = await new Promise((resolve, reject) => {
+      const onData = (ch) => {
+        buf = Buffer.concat([buf, ch])
+        if (buf.length >= SERVER_HELLO_LEN) {
+          socket.off('data', onData)
+          resolve(buf.subarray(0, SERVER_HELLO_LEN))
+        }
+      }
+      socket.on('data', onData)
+      socket.once('error', reject)
+      setTimeout(() => reject(new Error('sh timeout')), 3000).unref()
+    })
+    const parsed = parseServerHello(sh)
+    const transcript = buildTranscript(hello, sh.subarray(0, SERVER_HELLO_PREFIX_LEN))
+    const shared = computeShared(cliEph.privateKey, x25519PublicFromRaw(parsed.serverEphPub))
+    const keys = deriveSessionKeys(shared, transcript)
+    return {
+      socket,
+      sender: new RecordSender({ key: keys.c2sKey, prefix: NONCE_PREFIX_C2S }),
+      receiver: new RecordReceiver({ key: keys.s2cKey, prefix: NONCE_PREFIX_S2C }),
+      carry: buf.subarray(SERVER_HELLO_LEN),
+    }
+  }
+
+  function request(s, msg) {
+    return new Promise((resolve, reject) => {
+      const onData = (ch) => {
+        try {
+          const out = s.receiver.feed(ch)
+          if (out.length > 0) {
+            s.socket.off('data', onData)
+            resolve(JSON.parse(out[0].toString('utf8')))
+          }
+        } catch (err) {
+          s.socket.off('data', onData)
+          reject(err)
+        }
+      }
+      s.socket.on('data', onData)
+      s.socket.once('error', reject)
+      s.socket.write(s.sender.send(Buffer.from(JSON.stringify(msg), 'utf8')))
+      setTimeout(() => reject(new Error('resp timeout')), 3000).unref()
+    })
+  }
+
+  it('authorization 被透传', async () => {
+    seen.length = 0
+    const s = await handshake()
+    const res = await request(s, {
+      id: 1,
+      method: 'GET',
+      path: '/api/v1/blobs',
+      headers: { authorization: 'Bearer tok-abc' },
+    })
+    assert.equal(res.status, 200)
+    assert.equal(seen.at(-1).headers.authorization, 'Bearer tok-abc')
+    s.socket.destroy()
+  })
+
+  it('**注入 x-forwarded-for 必须被丢弃**（否则可绕过限流键）', async () => {
+    seen.length = 0
+    const s = await handshake()
+    const res = await request(s, {
+      id: 2,
+      method: 'GET',
+      path: '/api/v1/blobs',
+      headers: {
+        authorization: 'Bearer t',
+        'x-forwarded-for': '1.2.3.4',
+        'x-real-ip': '5.6.7.8',
+        'content-length': '999',
+      },
+    })
+    assert.equal(res.status, 200)
+    const saw = seen.at(-1).headers
+    assert.equal(saw['x-forwarded-for'], undefined, 'x-forwarded-for 必须被丢弃')
+    assert.equal(saw['x-real-ip'], undefined, 'x-real-ip 必须被丢弃')
+    assert.equal(saw['content-length'], undefined, 'content-length 必须被丢弃')
+    // 服务端只看到白名单内的头
+    assert.deepEqual(Object.keys(saw), ['authorization'])
+    s.socket.destroy()
+  })
+
+  it('未列出的头是**忽略而非报错**（前向兼容，不打断连接）', async () => {
+    const s = await handshake()
+    const res = await request(s, {
+      id: 3,
+      method: 'GET',
+      path: '/api/v1/x',
+      headers: { 'some-future-header': 'v', authorization: 'Bearer z' },
+    })
+    assert.equal(res.status, 200, '未知头不应导致报错')
+    s.socket.destroy()
+  })
+})
+
+describe('§6.2 429 必须回传 retry-after', () => {
+  let server
+  let port
+  let identity
+
+  before(async () => {
+    identity = loadOrCreateIdentity(makeTmpDir())
+    const { HttpError } = await import('../src/util.js')
+    const dispatch = async ({ path }) => {
+      if (path === '/api/v1/limited') {
+        const err = new HttpError(429, 'RATE_LIMITED', '请求过于频繁')
+        err.retryAfterSec = 42 // 与 HTTP 端同源：挂在 error 上
+        throw err
+      }
+      if (path === '/api/v1/limited-no-value') {
+        throw new HttpError(429, 'RATE_LIMITED', '未附时长')
+      }
+      return { ok: true }
+    }
+    const created = createTsc1Server({ dispatch, identity, log: () => {} })
+    server = created.server
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    port = server.address().port
+  })
+
+  after(async () => {
+    await new Promise((r) => server?.close(r))
+  })
+
+  async function roundTrip(path) {
+    const socket = connect({ port, host: '127.0.0.1' })
+    await new Promise((res, rej) => {
+      socket.once('connect', res)
+      socket.once('error', rej)
+    })
+    const cliEph = generateKeyPairSync('x25519')
+    const hello = buildHello({ clientRandom: random32(), clientEphPub: x25519RawPublic(cliEph.publicKey) })
+    socket.write(hello)
+
+    let buf = Buffer.alloc(0)
+    const sh = await new Promise((resolve, reject) => {
+      const onData = (ch) => {
+        buf = Buffer.concat([buf, ch])
+        if (buf.length >= SERVER_HELLO_LEN) {
+          socket.off('data', onData)
+          resolve(buf.subarray(0, SERVER_HELLO_LEN))
+        }
+      }
+      socket.on('data', onData)
+      socket.once('error', reject)
+      setTimeout(() => reject(new Error('sh timeout')), 3000).unref()
+    })
+    const parsed = parseServerHello(sh)
+    const transcript = buildTranscript(hello, sh.subarray(0, SERVER_HELLO_PREFIX_LEN))
+    const shared = computeShared(cliEph.privateKey, x25519PublicFromRaw(parsed.serverEphPub))
+    const keys = deriveSessionKeys(shared, transcript)
+    const sender = new RecordSender({ key: keys.c2sKey, prefix: NONCE_PREFIX_C2S })
+    const receiver = new RecordReceiver({ key: keys.s2cKey, prefix: NONCE_PREFIX_S2C })
+    receiver.feed(buf.subarray(SERVER_HELLO_LEN))
+
+    const res = await new Promise((resolve, reject) => {
+      const onData = (ch) => {
+        try {
+          const out = receiver.feed(ch)
+          if (out.length > 0) {
+            socket.off('data', onData)
+            resolve(JSON.parse(out[0].toString('utf8')))
+          }
+        } catch (err) {
+          socket.off('data', onData)
+          reject(err)
+        }
+      }
+      socket.on('data', onData)
+      socket.once('error', reject)
+      socket.write(sender.send(Buffer.from(JSON.stringify({ id: 1, method: 'GET', path }))))
+      setTimeout(() => reject(new Error('resp timeout')), 3000).unref()
+    })
+    socket.destroy()
+    return res
+  }
+
+  it('429 响应带 retry-after，值为服务端给出的秒数', async () => {
+    const res = await roundTrip('/api/v1/limited')
+    assert.equal(res.status, 429)
+    assert.ok(res.headers, '必须带 headers')
+    assert.equal(res.headers['retry-after'], '42')
+  })
+
+  it('429 未给时长时回落到 60s（与客户端缺省一致）', async () => {
+    const res = await roundTrip('/api/v1/limited-no-value')
+    assert.equal(res.status, 429)
+    assert.equal(res.headers['retry-after'], '60')
+  })
+
+  it('非 429 响应不需要 retry-after', async () => {
+    const res = await roundTrip('/api/v1/fine')
+    assert.equal(res.status, 200)
+    assert.equal(res.headers, undefined)
+  })
+})

@@ -36,6 +36,9 @@ import { RecordReceiver, RecordSender } from './record.js'
 /** 应用层 JSON 消息的最大字节数（受帧上限约束，减去 nonce 与 tag） */
 const MAX_MESSAGE_BYTES = MAX_FRAME_LEN - 12 - 16
 
+/** 429 未带 retryAfterSec 时的兜底退避（与规范 §6.2 的客户端缺省值一致：60s） */
+const DEFAULT_RETRY_AFTER_SEC = 60
+
 /**
  * 处理一条已建立的 TCP 连接。
  *
@@ -188,6 +191,15 @@ export function handleTsc1Connection(socket, opts) {
       const code = err instanceof HttpError ? err.code : 'INTERNAL'
       const message = err instanceof Error ? err.message : String(err)
       reply = { id: msg.id, status, body: { error: { code, message } } }
+      // 规范 §6.2：429 必须把 retry-after 传回去。
+      // 不带它客户端就不知道要等多久，会立刻重试 —— 等于自己放大攻击。
+      // HTTP 端是把这个值挂在 HttpError 上（见 index.js 的错误路径），这里复用同一来源。
+      const retryAfterSec = err && typeof err.retryAfterSec === 'number' ? err.retryAfterSec : undefined
+      if (status === 429) {
+        reply.headers = { 'retry-after': String(retryAfterSec ?? DEFAULT_RETRY_AFTER_SEC) }
+      } else if (retryAfterSec !== undefined) {
+        reply.headers = { 'retry-after': String(retryAfterSec) }
+      }
     }
 
     sendMessage(reply)
