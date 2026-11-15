@@ -71,6 +71,14 @@ export class SecureChannelError extends Error {
     readonly kind: 'connect' | 'handshake' | 'pin' | 'protocol' | 'timeout' | 'closed',
     /** kind 为 'pin' 时对端出示的指纹（32 位十六进制，无空格） */
     readonly fingerprint?: string,
+    /**
+     * kind 为 'pin' 且调用方**提供了钉扎**、但对端与之不符时为 true。
+     *
+     * 与"未钉扎"必须区分：前者可能是中间人，提示用户"核对后信任"等于邀请他信任错误的密钥。
+     */
+    readonly identityChanged?: boolean,
+    /** identityChanged 为 true 时调用方记录的指纹 */
+    readonly expectedFingerprint?: string,
   ) {
     super(message)
     this.name = 'SecureChannelError'
@@ -180,6 +188,8 @@ export class SecureChannel {
               (keyMismatch ? '\n  （公钥字节也不一致）' : ''),
             'pin',
             presentedFp,
+            true,
+            pinnedFp,
           )
         }
       } else if (isNew) {

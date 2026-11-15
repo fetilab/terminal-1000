@@ -102,8 +102,11 @@ export async function getChannel(
     channel = await SecureChannel.connect(options)
   } catch (err) {
     if (err instanceof SecureChannelError && err.kind === 'pin') {
-      // 指纹由 SecureChannelError 结构化携带；从错误文案中解析不可靠
-      // （fingerprintOf 每 4 位含空格，正则易失配）
+      // 两种情况必须分开：有钉扎却不匹配（可能中间人）与根本没有钉扎（首次连接）。
+      // 合并为"未钉扎"会让界面提示用户"核对后信任"，等于劝他信任错误的密钥。
+      if (err.identityChanged === true && err.expectedFingerprint !== undefined) {
+        throw new ServerIdentityChangedError(err.expectedFingerprint, err.fingerprint ?? '')
+      }
       if (err.fingerprint !== undefined) throw new UntrustedServerError(err.fingerprint)
     }
     throw err

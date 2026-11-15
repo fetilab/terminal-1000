@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SecureChannel, SecureChannelError } from './channel'
 import { fingerprintOf } from './protocol'
+import { ServerIdentityChangedError, closeAllChannels, getChannel } from './channel-pool'
 
 // 服务端是仓库里的零依赖 JS（不被 TS 编译，但 vitest 能直接加载）
 import { startTsc1Server } from '../../../../../../server/src/tsc1/listener.js'
@@ -78,6 +79,7 @@ beforeEach(() => {
   running = null
 })
 afterEach(() => {
+  closeAllChannels()
   for (const r of [running, ...extraRunning]) {
     if (r === null) continue
     r.server.close()
@@ -231,6 +233,29 @@ describe('TSC/1 客户端 ↔ 真实服务端（互通）', () => {
     expect((err as SecureChannelError).kind).toBe('pin')
     // 指纹以结构化字段携带，供上层区分"身份变更"与其它失败
     expect((err as SecureChannelError).fingerprint).toBe(second.fingerprint.replace(/ /g, ''))
+  })
+
+  it('★ 经 channel-pool：有钉扎却不匹配 → 抛身份变化，而不是"未钉扎"', async () => {
+    // 回归：两种情况曾合并为 UntrustedServerError，界面于是提示"首次连接，请核对后信任"，
+    // 对真实的身份变化（可能中间人）来说这是反向引导。
+    running = await startServer()
+    const second = await startServer()
+    extraRunning.push(second)
+
+    const pin = {
+      fingerprint: running.fingerprint.replace(/ /g, ''),
+      publicKey: running.publicKey.toString('base64'),
+    }
+
+    // 用 A 的钉扎连 A：正常
+    const okChannel = await getChannel('127.0.0.1', running.port, pin)
+    okChannel.close()
+
+    // 用 A 的钉扎连 B：必须是身份变化，而不是未钉扎
+    const err = await getChannel('127.0.0.1', second.port, pin).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ServerIdentityChangedError)
+    expect((err as ServerIdentityChangedError).expected).toBe(pin.fingerprint)
+    expect((err as ServerIdentityChangedError).actual).toBe(second.fingerprint.replace(/ /g, ''))
   })
 
   it('服务端不可达 → 明确报错（而不是静默）', async () => {

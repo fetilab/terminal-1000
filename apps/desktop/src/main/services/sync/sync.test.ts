@@ -267,6 +267,25 @@ describe('sync 端到端（真实后端）', () => {
   //
   // 此前 push 是**全库转储**，`sync.scopes.*` 五项全被忽略 ——
   // 用户取消勾选"同步凭证"，凭证照样上传，属于违背用户显式设置的数据外发。
+  describe('同步状态机', () => {
+    it('拉取失败时状态落回 error，不停在 syncing', async () => {
+      // 回归：call() 抛错没有兜底时，state 会停在 syncing，界面看起来像还在同步
+      await call('login', {
+        endpoint: endpointUrl,
+        username: uniqueUser('state'),
+        password: USER_PASSWORD,
+        passphrase: SYNC_PASSPHRASE,
+        register: true,
+      })
+      // 指向一个必然连不上的地址，使拉取在 call() 内抛错
+      updateSettings({ sync: { endpoint: 'http://127.0.0.1:1' } })
+      await expect(call('pull', {})).rejects.toThrow()
+      const after = await call<{ state: string; lastError: string | null }>('status', {})
+      expect(after.state).not.toBe('syncing')
+      expect(after.lastError).not.toBeNull()
+    })
+  })
+
   describe('服务端钉扎生命周期', () => {
     it('trustServer 后 status.pinned 为真；forgetServer 后为假', async () => {
       // 回归：清除钉扎曾写 undefined，而设置深合并会跳过 undefined，

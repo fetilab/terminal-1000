@@ -355,7 +355,7 @@ async function pushSnapshot(ctx: IpcContext, options: { force?: boolean } = {}):
   state.state = 'syncing'
   emitState(ctx)
 
-  const result = await call(`/api/v1/blobs/${SNAPSHOT_BLOB}`, {
+  const result = await callWithStateFallback(ctx, `/api/v1/blobs/${SNAPSHOT_BLOB}`, {
     method: 'PUT',
     token,
     body: {
@@ -384,6 +384,27 @@ async function pushSnapshot(ctx: IpcContext, options: { force?: boolean } = {}):
   return { version: body.version, bytes: data.byteLength, counts }
 }
 
+/**
+ * 执行一次可能抛错的同步网络调用。
+ *
+ * `call()` 抛错时若不处理，状态会停在 `syncing`，界面看起来像还在同步。
+ * 这里统一把状态落回 `error` 并记录原因后重新抛出。
+ */
+async function callWithStateFallback(
+  ctx: IpcContext,
+  path: string,
+  options: { method?: string; body?: unknown; token?: string },
+): Promise<HttpResult> {
+  try {
+    return await call(path, options)
+  } catch (err) {
+    state.state = 'error'
+    state.lastError = err instanceof Error ? err.message : String(err)
+    emitState(ctx)
+    throw err
+  }
+}
+
 /** 下载并应用远端快照 */
 async function pullSnapshot(
   ctx: IpcContext,
@@ -395,7 +416,7 @@ async function pullSnapshot(
   state.state = 'syncing'
   emitState(ctx)
 
-  const result = await call(`/api/v1/blobs/${SNAPSHOT_BLOB}`, { token })
+  const result = await callWithStateFallback(ctx, `/api/v1/blobs/${SNAPSHOT_BLOB}`, { token })
   if (result.status === 404) {
     state.state = 'idle'
     emitState(ctx)
