@@ -59,21 +59,11 @@ export interface CompletionGenerator {
 }
 
 /** AI 建议通道（TODO：接入 services/ai；当前默认实现返回空） */
-/** 行尾 `docker run??` 或前缀 `?? 描述`；`echo ??`（独立成词）**不算** */
-const AI_PREFIX_RE = /^\s*\?\?(\s|$)/
-const AI_TRAILING_RE = /[^\s?]\?\?$/
+// `??` 标记的识别与剥离**共用 shared 里的那一份**（主进程与渲染层必须同规则，否则会漂移）
+// ⚠️ `export { X } from '...'` **不会把 X 引入本文件作用域** —— 必须另写一行 import。
+import { detectAiSuggestion, stripAiMarker } from '@t1000/shared'
 
-/** 这一行是否在请求 AI 建议 */
-export function detectAiSuggestion(line: string): boolean {
-  return AI_PREFIX_RE.test(line) || AI_TRAILING_RE.test(line)
-}
-
-/** 去掉 `??` 标记，得到"给 AI 看"的干净文本；非 AI 行原样返回 */
-export function stripAiMarker(line: string): string {
-  if (AI_PREFIX_RE.test(line)) return line.replace(/^\s*\?\?\s*/, '')
-  if (AI_TRAILING_RE.test(line)) return line.replace(/\s*\?\?$/, '')
-  return line
-}
+export { detectAiSuggestion, stripAiMarker }
 
 /** 传给 AI provider 的输入：`query` 是去掉标记后的干净文本 */
 export interface AiSuggestionInput {

@@ -147,3 +147,32 @@ export interface CommandSearchResponse {
   /** 是否因 limit 截断 —— UI 据此如实提示"还有更多"，而不是假装只有这些 */
   truncated: boolean
 }
+
+// ---------------------------------------------------------------------------
+// `??` AI 建议标记
+// ---------------------------------------------------------------------------
+
+/**
+ * 行尾紧跟 `??`（`docker run??`）或整行以 `??` 开头（`?? 描述`）。
+ *
+ * `echo ??` 这种**独立成词**的 `??` **不算** —— 那是给命令传的字面参数。
+ */
+const AI_TRAILING_RE = /[^\s?]\?\?$/
+const AI_PREFIX_RE = /^\s*\?\?(\s|$)/
+
+/**
+ * 这一行是否在请求 AI 建议。
+ *
+ * ⚠️ 放在 shared 是为了**主进程与渲染层共用同一份规则**：
+ * 两边各自实现一次，迟早会漂移（这个项目已经为"镜像声明"吃过亏）。
+ */
+export function detectAiSuggestion(line: string): boolean {
+  return AI_PREFIX_RE.test(line) || AI_TRAILING_RE.test(line)
+}
+
+/** 去掉 `??` 标记，得到给 AI 看的干净文本；非 AI 行**原样返回** */
+export function stripAiMarker(line: string): string {
+  if (AI_PREFIX_RE.test(line)) return line.replace(/^\s*\?\?\s*/, '')
+  if (AI_TRAILING_RE.test(line)) return line.replace(/\s*\?\?$/, '')
+  return line
+}

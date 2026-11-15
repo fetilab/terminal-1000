@@ -22,6 +22,9 @@ export type {
 
 import type { CompletionCandidate, CompletionKind, CommandContext } from '@t1000/shared'
 
+// `??` 标记识别与主进程**共用 shared 的同一份实现**（见 shared/completion.ts 的注释）
+export { detectAiSuggestion, stripAiMarker } from '@t1000/shared'
+
 export const KIND_LABEL: Record<CompletionKind, string> = {
   command: '命令',
   subcommand: '子命令',
