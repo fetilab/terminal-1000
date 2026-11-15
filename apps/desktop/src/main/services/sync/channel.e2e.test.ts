@@ -35,6 +35,8 @@ interface Running {
 }
 
 let running: Running | null = null
+/** 额外实例（同测试内需同时存在两台不同身份的服务端时用） */
+const extraRunning: Running[] = []
 
 /** 起一个真实 TSC/1 服务端；`dispatch` 是桩（我们只验传输层打通，不验业务路由） */
 type DispatchArg = {
@@ -76,11 +78,13 @@ beforeEach(() => {
   running = null
 })
 afterEach(() => {
-  if (running) {
-    running.server.close()
-    rmSync(running.dataDir, { recursive: true, force: true })
-    running = null
+  for (const r of [running, ...extraRunning]) {
+    if (r === null) continue
+    r.server.close()
+    rmSync(r.dataDir, { recursive: true, force: true })
   }
+  running = null
+  extraRunning.length = 0
 })
 
 describe('TSC/1 客户端 ↔ 真实服务端（互通）', () => {
@@ -196,6 +200,37 @@ describe('TSC/1 客户端 ↔ 真实服务端（互通）', () => {
       }, 3000)
     })
     expect(Date.now() - t0).toBeLessThan(1500) // 首字节即判 magic → 立刻断
+  })
+
+  it('★ 钉扎 A 后改连 B（不同身份）→ 必须拒绝且不建立连接', async () => {
+    // 两台服务端各自生成独立身份，模拟"服务端换了密钥"或被指向了另一台机器
+    running = await startServer()
+    const second = await startServer()
+    extraRunning.push(second)
+
+    expect(second.fingerprint.replace(/ /g, '')).not.toBe(running.fingerprint.replace(/ /g, ''))
+
+    // 先用 A 的身份连 A：正常
+    const toA = await SecureChannel.connect({
+      host: '127.0.0.1',
+      port: running.port,
+      pinnedFingerprint: running.fingerprint.replace(/ /g, ''),
+      pinnedPublicKey: running.publicKey,
+    })
+    toA.close()
+
+    // 再用 A 的钉扎去连 B：必须拒绝，且错误要能区分"身份变了"
+    const err = await SecureChannel.connect({
+      host: '127.0.0.1',
+      port: second.port,
+      pinnedFingerprint: running.fingerprint.replace(/ /g, ''),
+      pinnedPublicKey: running.publicKey,
+    }).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(SecureChannelError)
+    expect((err as SecureChannelError).kind).toBe('pin')
+    // 指纹以结构化字段携带，供上层区分"身份变更"与其它失败
+    expect((err as SecureChannelError).fingerprint).toBe(second.fingerprint.replace(/ /g, ''))
   })
 
   it('服务端不可达 → 明确报错（而不是静默）', async () => {
