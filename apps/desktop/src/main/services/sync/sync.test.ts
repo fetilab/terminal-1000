@@ -21,6 +21,7 @@ import type { Connection, SshConnection } from '@t1000/shared'
 import { StoreService, setStoreService } from '../store'
 import { getSettings, resetSettingsCache, updateSettings } from '../settings'
 import { _resetSyncStateForTests, _setLastVersionForTests, syncHandlers } from './index'
+import { fingerprintOf } from './protocol'
 
 // ── 启动真实后端 ──────────────────────────────────────
 
@@ -266,6 +267,40 @@ describe('sync 端到端（真实后端）', () => {
   //
   // 此前 push 是**全库转储**，`sync.scopes.*` 五项全被忽略 ——
   // 用户取消勾选"同步凭证"，凭证照样上传，属于违背用户显式设置的数据外发。
+  describe('服务端钉扎生命周期', () => {
+    it('trustServer 后 status.pinned 为真；forgetServer 后为假', async () => {
+      // 回归：清除钉扎曾写 undefined，而设置深合并会跳过 undefined，
+      // 于是 forgetServer 报成功但旧钉扎继续生效。
+      // trustServer 会校验指纹与公钥同源，所以这里按公钥算出指纹
+      const publicKey = Buffer.alloc(32, 3).toString('base64')
+      const fingerprint = fingerprintOf(Buffer.from(publicKey, 'base64')).replace(/ /g, '')
+      const pinned = await call<{ pinned: boolean; fingerprint: string }>('trustServer', {
+        fingerprint,
+        publicKey,
+      })
+      expect(pinned.pinned).toBe(true)
+
+      const after = await call<{ pinned: boolean; pinnedFingerprint: string | null }>('status', {})
+      expect(after.pinned).toBe(true)
+      expect(after.pinnedFingerprint).toBe(fingerprint)
+
+      await call('forgetServer', {})
+      const cleared = await call<{ pinned: boolean; pinnedFingerprint: string | null }>('status', {})
+      expect(cleared.pinned).toBe(false)
+      expect(cleared.pinnedFingerprint).toBeNull()
+    })
+
+    it('trustServer 拒绝指纹与公钥不匹配的输入', async () => {
+      // trustServer 是同步 handler，call() 会同步抛出，因此用 toThrow 而非 rejects
+      expect(() =>
+        call('trustServer', {
+          fingerprint: '00000000000000000000000000000000',
+          publicKey: Buffer.alloc(32, 9).toString('base64'),
+        }),
+      ).toThrow(/不匹配/)
+    })
+  })
+
   describe('同步范围过滤', () => {
     /** 造一份含连接与凭证的库 */
     function seedMachine(id: string): StoreService {

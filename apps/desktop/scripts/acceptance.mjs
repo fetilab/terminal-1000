@@ -899,9 +899,43 @@ async function main() {
         record('S18', '动态转发 SOCKS5', 'FAIL', String(err.message ?? err))
       }
 
-      // 远程转发（ssh -R）：**测试主机不实现 tcpip-forward**，无法在本机验证
-      record('S18b', '远程转发（ssh -R）', 'SKIP',
-        '进程内测试主机只实现 direct-tcpip，未实现 tcpip-forward；需一台支持 ssh -R 的真实服务端')
+      // ════ 远程转发（ssh -R）：远端监听 → 真实连接转回本机目标 ════
+      try {
+        // 本机目标服务：收到连接即回一段可核对载荷
+        const revTarget = createServer((sock) => sock.end('REMOTE_FORWARD_OK'))
+        await new Promise((r) => revTarget.listen(0, '127.0.0.1', r))
+        const revTargetPort = revTarget.address().port
+
+        const opened = await cdp.eval(INVOKE('forward', 'open', {
+          tunnel: {
+            kind: 'tunnel', id: `rev-${Date.now().toString(16)}`, name: '验收-ssh -R',
+            serverId: sessionId, type: 'remote',
+            // ssh -R：远端（测试主机）监听 remotePort，入站连接转回本机 localHost:localPort。
+            // remotePort 传 0 由服务端分配，实际端口经 forwardIn 回调返回。
+            remoteHost: '127.0.0.1', remotePort: 0,
+            localHost: '127.0.0.1', localPort: revTargetPort,
+            autoReconnect: false, createdAt: '', updatedAt: '',
+          },
+        }))
+        const revBoundPort = opened?.boundPort
+
+        // 连"远端监听的那个端口"取数：内容只能来自本机目标服务
+        const revGot = await new Promise((resolve, reject) => {
+          const s = netConnect(revBoundPort, '127.0.0.1')
+          let acc = ''
+          const timer = setTimeout(() => { s.destroy(); reject(new Error('远程转发取数超时')) }, 6000)
+          s.on('data', (d) => { acc += d.toString() })
+          s.on('end', () => { clearTimeout(timer); resolve(acc) })
+          s.on('error', (e) => { clearTimeout(timer); reject(e) })
+        })
+        revTarget.close()
+        await cdp.eval(INVOKE('forward', 'close', { tunnelId: opened.tunnelId }))
+        record('S18b', '远程转发（ssh -R）：远端监听 → 数据转回本机目标',
+          revGot.includes('REMOTE_FORWARD_OK') ? 'PASS' : 'FAIL',
+          `远端分配端口:${revBoundPort} → 本机目标 ${revTargetPort} → 读回 ${JSON.stringify(revGot)}`)
+      } catch (err) {
+        record('S18b', '远程转发（ssh -R）', 'FAIL', String(err.message ?? err))
+      }
 
       // ════ 第 13 条：并发广播（一次输入，多会话都收到）════
       try {

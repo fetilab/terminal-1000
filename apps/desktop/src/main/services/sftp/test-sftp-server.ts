@@ -24,7 +24,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import * as fs from 'node:fs'
-import { connect as netConnect } from 'node:net'
+import { connect as netConnect, createServer as netCreateServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 
@@ -288,6 +288,83 @@ export async function startTestSftpServer(
     })
 
     client.on('ready', () => {
+      /**
+       * 远程转发（`ssh -R`）：客户端请求在服务端监听 bindAddr:bindPort，
+       * 服务端接受后在本地监听，并把每个入站连接经 `forwarded-tcpip` 通道回连客户端。
+       *
+       * ssh2 服务端只把请求抛出 `request` 事件，监听与回连由使用方实现；
+       * 不实现时客户端收到的回复是 FAILURE，`ssh -R` 因此不可用。
+       */
+      const remoteForwards = new Map<string, ReturnType<typeof netCreateServer>>()
+      const forwardKey = (addr: string, port: number): string => `${addr}:${port}`
+
+      client.on('request', (accept, reject, name, info) => {
+        if (name !== 'tcpip-forward' && name !== 'cancel-tcpip-forward') {
+          if (name !== 'no-more-sessions@openssh.com') reject?.()
+          return
+        }
+
+        const bindAddr = typeof info?.bindAddr === 'string' ? info.bindAddr : '127.0.0.1'
+        const bindPort = typeof info?.bindPort === 'number' ? info.bindPort : 0
+        // 只监听回环：测试机不应对局域网暴露端口，请求其它地址一律拒绝
+        const listenHost = '127.0.0.1'
+
+        if (name === 'cancel-tcpip-forward') {
+          const existing = remoteForwards.get(forwardKey(bindAddr, bindPort))
+          if (existing) {
+            existing.close()
+            remoteForwards.delete(forwardKey(bindAddr, bindPort))
+            accept?.()
+          } else {
+            reject?.()
+          }
+          return
+        }
+
+        if (bindAddr !== '127.0.0.1' && bindAddr !== 'localhost' && bindAddr !== '') {
+          log.push({ op: 'TCPIP-FORWARD', dest: `${bindAddr}:${bindPort}`, status: SFTP_STATUS.FAILURE })
+          reject?.()
+          return
+        }
+
+        const forwardServer = netCreateServer((inbound) => {
+          const bound = forwardServer.address()
+          const boundPort = typeof bound === 'object' && bound !== null ? bound.port : bindPort
+          // boundAddr/boundPort 必须回客户端**请求时记录**的值（请求地址 + 分配到的端口），
+          // 客户端按这两个字段匹配自己发起的远程转发；填本地监听地址会匹配失败并被拒绝开通道。
+          client.forwardOut(
+            bindAddr,
+            boundPort,
+            inbound.remoteAddress ?? '127.0.0.1',
+            inbound.remotePort ?? 0,
+            (err, stream) => {
+              if (err) {
+                inbound.destroy()
+                return
+              }
+              inbound.pipe(stream).pipe(inbound)
+              stream.on('close', () => inbound.destroy())
+              inbound.on('close', () => stream.destroy())
+            },
+          )
+        })
+
+        forwardServer.on('error', () => {
+          log.push({ op: 'TCPIP-FORWARD', dest: `${bindAddr}:${bindPort}`, status: SFTP_STATUS.FAILURE })
+          reject?.()
+        })
+
+        forwardServer.listen(bindPort, listenHost, () => {
+          const bound = forwardServer.address()
+          const boundPort = typeof bound === 'object' && bound !== null ? bound.port : bindPort
+          remoteForwards.set(forwardKey(bindAddr, boundPort), forwardServer)
+          remoteForwards.set(forwardKey(bindAddr, bindPort), forwardServer)
+          log.push({ op: 'TCPIP-FORWARD', dest: `${listenHost}:${boundPort}`, status: SFTP_STATUS.OK })
+          // 请求 0 端口时须回传实际端口，否则客户端无法得知要连哪里
+          accept?.(bindPort === 0 ? boundPort : undefined)
+        })
+      })
+
       client.on('session', (accept) => {
         const session = accept()
 

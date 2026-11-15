@@ -83,8 +83,14 @@ const tunnelSchema = z.object({
     if (v.remoteHost === undefined || v.remoteHost.trim() === '') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['remoteHost'], message: '该转发类型需要远端主机' })
     }
-    if (v.remotePort === undefined || v.remotePort === 0) {
+    if (v.remotePort === undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['remotePort'], message: '该转发类型需要远端端口' })
+      return
+    }
+    // remote（ssh -R）允许 0：端口由服务端分配，实际值经 forwardIn 回调返回。
+    // local 的远端端口是连接目标，为 0 无法建立连接。
+    if (v.type === 'local' && v.remotePort === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['remotePort'], message: '本地转发需要远端端口' })
     }
   })
 

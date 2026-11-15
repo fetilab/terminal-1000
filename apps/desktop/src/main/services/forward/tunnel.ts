@@ -136,7 +136,7 @@ export class Tunnel {
     this.setState('ready')
     const desc =
       c.type === 'remote'
-        ? `远端 ${c.remoteHost}:${c.remotePort} → 本机 ${c.localHost}:${c.localPort}`
+        ? `远端 ${c.remoteHost}:${this.boundPort || c.remotePort} → 本机 ${c.localHost}:${c.localPort}`
         : c.type === 'dynamic'
           ? `SOCKS5 监听 ${c.localHost}:${this.boundPort}`
           : `本机 ${c.localHost}:${this.boundPort} → ${c.remoteHost}:${c.remotePort}`
@@ -144,12 +144,13 @@ export class Tunnel {
     log.info(`隧道就绪 ${this.tunnelId} (${c.type}) ${desc}`)
   }
 
-  /** 本地转发：本地监听，每个连接经 SSH forwardOut 到远端目标 */
   /** local/remote 必须有远端目标；缺了要给明确错误（而不是拿 '' 去连） */
   private requireRemoteTarget(): { host: string; port: number } {
     const host = this.config.remoteHost
     const port = this.config.remotePort
-    if (host === undefined || host === '' || port === undefined || port === 0) {
+    // remote 的端口 0 表示由服务端分配，是合法值；local 的端口 0 无法连接
+    const portInvalid = port === undefined || (port === 0 && this.config.type !== 'remote')
+    if (host === undefined || host === '' || portInvalid) {
       throw new Error(
         `${this.config.type} 转发需要远端主机与端口（当前 remoteHost=${JSON.stringify(host)} remotePort=${String(port)}）`,
       )
@@ -205,8 +206,11 @@ export class Tunnel {
     const session = resolveCarrierSession(c.serverId)
 
     await new Promise<void>((resolve, reject) => {
-      session.client.forwardIn(target.host, target.port, (err) => {
+      session.client.forwardIn(target.host, target.port, (err, realPort) => {
         if (err) return reject(AppError.internal(`远端监听失败: ${err.message}`))
+        // remotePort 为 0 时端口由服务端分配，实际值只在回调中返回；
+        // 不记录则界面无法显示应连接哪个端口。
+        if (typeof realPort === 'number' && realPort > 0) this.boundPort = realPort
         resolve()
       })
     })

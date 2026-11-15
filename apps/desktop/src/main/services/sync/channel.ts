@@ -69,6 +69,8 @@ export class SecureChannelError extends Error {
   constructor(
     message: string,
     readonly kind: 'connect' | 'handshake' | 'pin' | 'protocol' | 'timeout' | 'closed',
+    /** kind 为 'pin' 时对端出示的指纹（32 位十六进制，无空格） */
+    readonly fingerprint?: string,
   ) {
     super(message)
     this.name = 'SecureChannelError'
@@ -177,6 +179,7 @@ export class SecureChannel {
             `服务端身份与已记录的不一致（可能被中间人）：\n  已记录指纹 ${pinnedFp}\n  本次指纹 ${presentedFp}` +
               (keyMismatch ? '\n  （公钥字节也不一致）' : ''),
             'pin',
+            presentedFp,
           )
         }
       } else if (isNew) {
@@ -186,6 +189,7 @@ export class SecureChannel {
           throw new SecureChannelError(
             `服务端首次连接（未钉扎）。指纹：${fingerprintOf(serverHello.identityPub)} —— 请核对后接受`,
             'pin',
+            presentedFp,
           )
         }
         // 接受 TOFU：签名仍照验（证明对方持有该公钥的私钥），但**没有钉扎可比**

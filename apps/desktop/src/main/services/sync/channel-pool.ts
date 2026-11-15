@@ -102,9 +102,9 @@ export async function getChannel(
     channel = await SecureChannel.connect(options)
   } catch (err) {
     if (err instanceof SecureChannelError && err.kind === 'pin') {
-      // 握手完成但拒绝发生在钉扎比对，指纹可从错误信息取出后交给调用方
-      const fp = extractFingerprint(String(err.message))
-      if (fp !== null) throw new UntrustedServerError(fp)
+      // 指纹由 SecureChannelError 结构化携带；从错误文案中解析不可靠
+      // （fingerprintOf 每 4 位含空格，正则易失配）
+      if (err.fingerprint !== undefined) throw new UntrustedServerError(err.fingerprint)
     }
     throw err
   }
@@ -117,12 +117,6 @@ export async function getChannel(
 
   pool.set(k, { channel, fingerprint: channel.peerFingerprint })
   return channel
-}
-
-/** 取出拒绝原因中的指纹，格式为 32 位十六进制 */
-function extractFingerprint(message: string): string | null {
-  const m = message.match(/[0-9a-f]{32}/i)
-  return m === null ? null : m[0].toLowerCase()
 }
 
 /** 丢弃端点通道；退出登录或令牌变更后调用，下次请求重新握手 */

@@ -206,7 +206,13 @@ export interface SyncSettings {
    * 两个字段都要：`fingerprint` 用于可读比对，`publicKey` 用于验签 ——
    * 只比指纹不够（验签用的是对端出示的公钥）。见 `services/sync/channel.ts` 的注释。
    */
-  pin?: { fingerprint: string; publicKey: string }
+  /**
+   * 显式 `null` 表示"已清除钉扎"。
+   *
+   * 设置深合并会跳过 `undefined`，因此清除必须写 `null` ——
+   * 写 `undefined` 会让旧钉扎继续生效。
+   */
+  pin?: { fingerprint: string; publicKey: string } | null
   /** 访问令牌（本地加密存放） */
   token?: string
   /**

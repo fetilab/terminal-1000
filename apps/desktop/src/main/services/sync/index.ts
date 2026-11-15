@@ -189,7 +189,7 @@ async function callOverTsc1(
   const { host, port } = tsc1Target()
   let channel
   try {
-    channel = await getChannel(host, port, settings.pin)
+    channel = await getChannel(host, port, settings.pin ?? undefined)
   } catch (err) {
     if (err instanceof UntrustedServerError) {
       // 未钉扎：把指纹交给用户核对（**不自动信任**）。
@@ -502,7 +502,8 @@ export const syncHandlers: Record<string, IpcHandler> = {
 
   /** 清除钉扎（服务端确实换了密钥时才用；之后会重新走首次连接流程） */
   forgetServer: () => {
-    updateSyncSettings({ pin: undefined })
+    // 写 null 而非 undefined：设置深合并会跳过 undefined，旧钉扎会继续生效
+    updateSyncSettings({ pin: null })
     closeAllChannels()
     return { pinned: false }
   },
@@ -525,7 +526,7 @@ export const syncHandlers: Record<string, IpcHandler> = {
        * 当前传输方式与钉扎状态；界面需展示，避免用户在未加密传输下同步。
        */
       transport: settings.transport ?? 'tsc1',
-      pinned: settings.pin !== undefined,
+      pinned: settings.pin != null,
       /** 已钉扎的指纹（可展示给用户核对；它本身不是秘密） */
       pinnedFingerprint: settings.pin?.fingerprint ?? null,
     }
