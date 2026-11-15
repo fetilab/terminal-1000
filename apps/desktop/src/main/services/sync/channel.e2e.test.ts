@@ -37,9 +37,14 @@ interface Running {
 let running: Running | null = null
 
 /** 起一个真实 TSC/1 服务端；`dispatch` 是桩（我们只验传输层打通，不验业务路由） */
-async function startServer(
-  dispatch?: (req: { method: string; path: string; body?: unknown }) => Promise<unknown>,
-): Promise<Running> {
+type DispatchArg = {
+  method: string
+  path: string
+  body?: unknown
+  req?: { headers?: Record<string, string> }
+}
+
+async function startServer(dispatch?: (arg: DispatchArg) => Promise<unknown>): Promise<Running> {
   const dataDir = mkdtempSync(join(tmpdir(), 't1000-tsc1-'))
   const logs: string[] = []
   const { server, identity } = await startTsc1Server({
@@ -56,7 +61,7 @@ async function startServer(
   })
   const addr = server.address()
   const port = typeof addr === 'object' && addr ? addr.port : 0
-  const publicKey = readIdentityPublicRaw(dataDir) as Buffer
+  const publicKey = readIdentityPublicRaw(dataDir) ?? Buffer.alloc(0)
   return {
     server,
     identity,
@@ -130,12 +135,10 @@ describe('TSC/1 客户端 ↔ 真实服务端（互通）', () => {
     let seenAuth: string | undefined
     // 注意：服务端把 node 风格的 req 放在 `req` 字段里（dispatch({method,path,body,req,res})），
     // 所以 headers 在 `arg.req.headers` 而不是顶层 —— 我第一版读错了一层。
-    running = await startServer(
-      async (arg: { req?: { headers?: Record<string, string> } }) => {
-        seenAuth = arg.req?.headers?.['authorization']
-        return { ok: true }
-      },
-    )
+    running = await startServer(async (arg) => {
+      seenAuth = arg.req?.headers?.['authorization']
+      return { ok: true }
+    })
     const ch = await SecureChannel.connect({
       host: '127.0.0.1',
       port: running.port,
