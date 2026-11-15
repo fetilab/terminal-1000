@@ -38,6 +38,7 @@ import {
 } from './settingsFields'
 import { HighlightsEditor } from './HighlightsEditor'
 import { HotkeysEditor } from './HotkeysEditor'
+import { ServerIdentityPanel } from './ServerIdentityPanel'
 import { VaultSettings } from './VaultSettings'
 import './settings.css'
 
@@ -403,6 +404,9 @@ export default function SettingsView(): React.JSX.Element {
                 ['后端', settings.sync.endpoint || '未设置'],
               ]}
             />
+
+            <Section>传输与服务端身份</Section>
+            <ServerIdentityPanel />
           </>
         ) : null}
       </div>

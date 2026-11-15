@@ -21,6 +21,11 @@ import { Field, Switch, TextInput } from '../../components/Form'
 import { Icon } from '../../components/Icon'
 import { toast } from '../../components/Toast'
 import { invoke, subscribe } from '../../lib/ipc'
+import {
+  ServerIdentityPanel,
+  classifySyncError,
+  type SyncErrorInfo,
+} from '../settings/ServerIdentityPanel'
 import { errorText, formatRelativeTime } from '../../lib/format'
 import { IpcCallError } from '../../lib/ipc'
 import { actions } from '../../lib/store'
@@ -35,6 +40,10 @@ interface SyncStatus {
   lastVersion: number | null
   lastError: string | null
   conflictPolicy: string
+  /** 传输方式：http 仅回环，tsc1 为加密通道 */
+  transport: 'http' | 'tsc1'
+  pinned: boolean
+  pinnedFingerprint: string | null
 }
 
 export default function SyncPanel(): React.JSX.Element {
@@ -43,6 +52,10 @@ export default function SyncPanel(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<{ phase: string; done: number; total: number } | null>(null)
   const [conflict, setConflict] = useState<string | null>(null)
+  /** 登录被拒时带过来的指纹；非空即展开服务端身份确认流程 */
+  const [identityFingerprint, setIdentityFingerprint] = useState<string | null>(null)
+  /** 登录失败的归类结果（身份变化要渲染成常驻告警，而不是只弹 toast） */
+  const [identityError, setIdentityError] = useState<SyncErrorInfo | null>(null)
 
   const [endpoint, setEndpoint] = useState('')
   const [username, setUsername] = useState('')
@@ -103,11 +116,38 @@ export default function SyncPanel(): React.JSX.Element {
       )
       await refresh()
     } catch (err) {
-      toast.error(`登录失败：${errorText(err)}`)
+      handleSyncFailure(err, '登录')
     } finally {
       setBusy(false)
     }
   }
+
+  /**
+   * 同步操作失败的统一处理。
+   *
+   * 身份类错误必须在**任何**同步操作上都能变成常驻告警 —— 推送/拉取同样会撞上
+   * 身份变化，只在登录处处理会漏掉它们。
+   */
+  const handleSyncFailure = useCallback((err: unknown, what: string): void => {
+    const info = classifySyncError(err)
+    if (info.kind === 'untrusted-server') {
+      setIdentityFingerprint(info.fingerprint ?? '')
+      setIdentityError(info)
+      toast.warn('该同步服务端身份尚未确认，请先核对指纹')
+      return
+    }
+    if (info.kind === 'identity-changed') {
+      setIdentityFingerprint('')
+      setIdentityError(info)
+      toast.error('服务端身份与已记录的不一致，可能是中间人攻击，请先核对')
+      return
+    }
+    if (info.kind === 'plaintext-not-allowed') {
+      toast.error('明文传输被拒绝：请在设置里把传输方式改为 TSC/1')
+      return
+    }
+    toast.error(`${what}失败：${errorText(err)}`)
+  }, [])
 
   const doPush = async (force = false): Promise<void> => {
     setBusy(true)
@@ -124,7 +164,7 @@ export default function SyncPanel(): React.JSX.Element {
         toast.warn(err.message)
         setConflict(null)
       } else {
-        toast.error(`推送失败：${errorText(err)}`)
+        handleSyncFailure(err, '推送')
       }
     } finally {
       setBusy(false)
@@ -138,7 +178,7 @@ export default function SyncPanel(): React.JSX.Element {
       toast.ok('已从云端拉取并合并')
       await refresh()
     } catch (err) {
-      toast.error(`拉取失败：${errorText(err)}`)
+      handleSyncFailure(err, '拉取')
     } finally {
       setBusy(false)
     }
@@ -292,6 +332,23 @@ export default function SyncPanel(): React.JSX.Element {
             <br />
             选择「保留本地」会用本机数据覆盖云端；「采用远端」会用云端数据覆盖本机。
           </Banner>
+        </div>
+      ) : null}
+
+      {/* 未钉扎 / 身份变化时展开：探测、核对、信任都在这里完成。
+          放在登录条件**之外** —— 未登录时同样需要它（未钉扎登录失败正是从这里继续）。 */}
+      {identityFingerprint !== null || (status && !status.pinned) ? (
+        <div style={{ marginBottom: 14 }}>
+          <Section>服务端身份确认</Section>
+          <ServerIdentityPanel
+            initialFingerprint={identityFingerprint ?? undefined}
+            initialError={identityError ?? undefined}
+            onChanged={() => {
+              setIdentityFingerprint(null)
+              setIdentityError(null)
+              void refresh()
+            }}
+          />
         </div>
       ) : null}
 

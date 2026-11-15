@@ -165,3 +165,83 @@
   cursor: pointer;
   user-select: none;
 }
+
+/* ── 同步：传输方式摘要与服务端指纹 ─────────────────── */
+
+.synctransport-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.synctransport-summary__label {
+  color: var(--t1000-fg-dim);
+  font-size: 12px;
+}
+
+/*
+ * 指纹按 4 字符一组展示，等宽 + 加大字距：
+ * 用户要拿着它去服务器日志逐组核对，字符粘连会直接导致核对失败。
+ */
+.syncfingerprint {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--t1000-border-accent);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-accent-softer);
+}
+
+.syncfingerprint__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: var(--t1000-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.syncfingerprint__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.syncfingerprint__group {
+  padding: 3px 8px;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-raised);
+  color: var(--t1000-fg);
+  font-family: var(--t1000-font-mono);
+  font-size: 13.5px;
+  letter-spacing: 1px;
+}
+
+.synckey {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.synckey__label {
+  color: var(--t1000-fg-dim);
+  font-size: 12px;
+}
+
+.synckey__value {
+  font-family: var(--t1000-font-mono);
+  font-size: 12.5px;
+  letter-spacing: 1px;
+  color: var(--t1000-ok);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}

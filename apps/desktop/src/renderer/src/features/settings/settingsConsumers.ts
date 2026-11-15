@@ -63,6 +63,9 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'transfer.preserveTimestamps': 'main services/sftp/transfer.ts',
 
   // ── 同步 ──
+  'sync.transport':
+    'settings 的传输方式字段 + ServerIdentityPanel 的明文告警；写入走 sync.setTransport，' +
+    '主进程按回环判定拒绝非回环明文（FORBIDDEN + detail.code=PLAINTEXT_NOT_ALLOWED）',
   'sync.enabled': 'main services/sync/index.ts（启用门控）',
   'sync.autoSync': 'main services/sync/index.ts（自动同步）',
   'sync.endpoint': 'main services/sync/index.ts（后端地址）+ 渲染层同步面板可编辑',

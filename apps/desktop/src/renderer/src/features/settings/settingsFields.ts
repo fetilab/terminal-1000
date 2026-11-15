@@ -252,6 +252,18 @@ export const SETTINGS_FIELDS: Record<
   sync: [
     { path: 'sync.enabled', label: '启用同步', kind: 'switch', hint: '服务端只存密文，密钥不出本机（零知识）' },
     { path: 'sync.autoSync', label: '自动同步', kind: 'switch' },
+    {
+      path: 'sync.transport',
+      label: '传输方式',
+      kind: 'select',
+      hint:
+        'TSC/1 为加密通道，公网直连必须用它；明文 HTTP 仅允许回环地址，' +
+        '指向非回环地址会被拒绝（PLAINTEXT_NOT_ALLOWED）。不提供自动回退。',
+      options: [
+        { value: 'tsc1', label: 'TSC/1 加密通道（推荐）' },
+        { value: 'http', label: '明文 HTTP（仅回环）' },
+      ],
+    },
     { path: 'sync.endpoint', label: '后端地址', kind: 'text', wide: true },
     {
       path: 'sync.conflictPolicy',
