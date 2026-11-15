@@ -44,9 +44,7 @@ let settingsReader: (() => CompletionSettings) | null = null
 /**
  * 注入 AI 建议通道。
  *
- * ⚠️ **必须同时丢弃引擎单例**：引擎在构造时接收 `aiProvider`，
- * 若只改模块变量而引擎已经建好，注入就"晚了一步"、根本不生效
- * （这正是当初 `??` 通道不可达的成因之一）。丢单例后下次调用会带上新 provider 重建。
+ * 同时丢弃引擎单例：引擎在构造时接收 provider，已存在的实例不会感知本次注入。
  */
 export function configureCompletionAi(provider: AiSuggestionProvider | null): void {
   aiProvider = provider

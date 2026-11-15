@@ -178,7 +178,7 @@ function isLoopbackHost(host: string): boolean {
 /**
  * 走 TSC/1 加密通道。
  *
- * ⚠️ **不允许任何情况下退回 HTTP**（规范 §3.3.1）：失败就是失败。
+ * 不退回 HTTP（规范 §3.3.1）。
  * 只要有 fallback，攻击者阻断握手即可降级成功，加密层就成了装饰。
  */
 async function callOverTsc1(
@@ -457,7 +457,7 @@ const resolveSchema = z.object({
 })
 
 export const syncHandlers: Record<string, IpcHandler> = {
-  /** 设置传输方式。**显式**选择 —— 见规范 §3.3.1（禁止按探测自动回退） */
+  /** 设置传输方式；显式指定，不按探测回退（规范 §3.3.1） */
   setTransport: (payload) => {
     const { transport } = parseInput(
       z.object({ transport: z.enum(['http', 'tsc1']) }),
@@ -490,7 +490,7 @@ export const syncHandlers: Record<string, IpcHandler> = {
       z.object({ fingerprint: z.string().min(1), publicKey: z.string().min(1) }),
       payload,
     )
-    // 自检：指纹必须与公钥对得上（防止把两个不匹配的值写进去，那会导致永远连不上）
+    // 指纹与公钥必须来自同一次探测，否则钉扎后无法建立连接
     const expect = fingerprintOf(Buffer.from(publicKey, 'base64')).replace(/ /g, '')
     if (expect !== fingerprint.replace(/ /g, '')) {
       throw AppError.badRequest('指纹与公钥不匹配（两者必须来自同一次探测）')
@@ -522,10 +522,7 @@ export const syncHandlers: Record<string, IpcHandler> = {
       lastError: state.lastError ?? null,
       conflictPolicy: settings.conflictPolicy,
       /**
-       * 当前传输方式与钉扎状态。
-       *
-       * 界面**必须**能显示这个 —— 用户在"以为加密了、其实走明文"的情况下做同步，
-       * 是本项目明确要避免的静默失败（规范 §3.3.1）。
+       * 当前传输方式与钉扎状态；界面需展示，避免用户在未加密传输下同步。
        */
       transport: settings.transport ?? 'tsc1',
       pinned: settings.pin !== undefined,

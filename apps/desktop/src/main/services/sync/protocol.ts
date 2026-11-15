@@ -62,9 +62,8 @@ const b64u = (b: Buffer): string => b.toString('base64url')
 /**
  * 由 32 字节私钥标量构造 X25519 私钥对象。
  *
- * ⚠️ **不要走 JWK**：JWK 的 OKP 私钥要求同时给出 `x`（公钥），而我们从标量反推不出公钥时
- * 只能填占位值 —— 填全零会被 Node 直接拒（`Invalid JWK OKP key`）。
- * 用 PKCS#8 DER 包装（OID 1.3.101.110 = X25519）是标准做法，也绕开了这个校验。
+ * 使用 PKCS#8 DER（OID 1.3.101.110）：JWK 形式的 OKP 私钥要求同时给出公钥坐标 `x`，
+ * 由标量无法反推，占位值会被 Node 拒绝（`Invalid JWK OKP key`）。
  */
 export function x25519PrivateFromRaw(raw: Buffer): KeyObject {
   if (raw.length !== 32) throw new Error('X25519 私钥必须是 32 字节')
@@ -225,10 +224,9 @@ export function verifyAndDerive(args: {
     .update(Buffer.concat([args.hello, prefix]))
     .digest()
 
-  // 用**对端出示的身份公钥**验签：证明"对方持有该公钥对应的私钥"。
-  // ⚠️ 它**不证明身份** —— 任何人都能现场生成一对密钥并自签。
-  // 身份性来自调用方把 `presentedFingerprint(serverHello)` 与**已存储的钉扎值**比对。
-  // 两步互补、缺一不可，所以这里刻意不把钉扎塞进来 —— 那会让人误以为"验签通过即可信"。
+  // 以对端出示的身份公钥验签，仅证明其持有对应私钥。
+  // 身份由调用方将 presentedFingerprint(serverHello) 与已存储的钉扎值比对确认，
+  // 因此本函数不接收钉扎参数。
   const ok = verify(
     null,
     digest,
@@ -314,8 +312,7 @@ export function seal(
   const ct = Buffer.concat([cipher.update(plaintext), cipher.final()])
   const tag = cipher.getAuthTag()
   const body = Buffer.concat([nonce, ct, tag])
-  // 帧头 12 字节 = [u32 len][u64 seq] → seq 必须写在偏移 **4**（4+8=12），
-  // 我第一版写成 8（8+8=16 > 12）—— 直接越界报错
+  // 帧头 12 字节 = [u32 len][u64 seq]，seq 位于偏移 4
   const head = Buffer.alloc(12)
   head.writeUInt32BE(body.length, 0)
   head.writeBigUInt64BE(seq, 4)

@@ -157,12 +157,9 @@ export class SecureChannel {
       const decide = options.onPin ?? defaultPinDecision
       const isNew = pinnedFp === undefined
 
-      // 钉扎比对：这一步是"防换人"。它和"验签"是**两件不同的事**，都不能省。
-      //
-      // ⚠️ 必须**同时比对公钥字节**，不能只比指纹：
-      // 验签用的是**对端出示的** identity_pub，所以"签名能过"只证明对方持有该公钥的私钥，
-      // 并不说明它就是**我们钉扎的那把**。只比指纹的实现在这里会出现"公钥被换掉仍放行"
-      // （前提是攻击者能让指纹一致 —— 比指纹字节更严的一条防线，成本几乎为零）。
+      // 钉扎比对：指纹与公钥字节都要比。
+      // 验签使用对端出示的 identity_pub，签名有效仅说明对方持有该公钥的私钥，
+      // 不足以确认它就是已钉扎的那一把。
       const keyMismatch =
         pinnedFp !== undefined &&
         options.pinnedPublicKey !== undefined &&
@@ -183,8 +180,7 @@ export class SecureChannel {
           )
         }
       } else if (isNew) {
-        // 首次连接（TOFU）：由上层**显式**决定是否接受。
-        // 默认策略拒绝（规范 §5：不能静默信任），调用方要么先探测确认、要么明确表示接受。
+        // 首次连接由 onPin 显式决定；默认策略拒绝（规范 §5）。
         const accepted = decide({ fingerprint: presentedFp, isNew: true })
         if (!accepted) {
           throw new SecureChannelError(
@@ -250,8 +246,7 @@ export class SecureChannel {
       return Promise.reject(new SecureChannelError('连接已关闭', 'closed'))
     }
     const id = this.nextId++
-    // 规范 §6.1：应用层只认 `headers.authorization`（白名单），**不是**自造的 token 字段。
-    // 服务端会丢弃其余头 —— 所以这里绝不能把令牌放进别的键里（放错就等于没带令牌）。
+    // 规范 §6.1：应用层只识别 headers.authorization，服务端丢弃其余头。
     const payload = Buffer.from(
       JSON.stringify({
         id,
@@ -370,11 +365,10 @@ export class SecureChannel {
 }
 
 /**
- * 默认钉扎策略：**任何不一致都拒绝**（指纹不符 **或** 公钥字节不符）。
+ * 默认钉扎策略：指纹或公钥字节任一项不符即拒绝，首次连接亦拒绝。
  *
- * ⚠️ 只比指纹是不够的：验签用的是**对端出示的**公钥，所以"签名能过"不说明它就是
- * 我们钉扎的那把。我第一版就只比了指纹 —— 测试（"钉扎公钥被换成别的"那条）直接把它抓出来了。
- * 首次连接（isNew）默认也拒绝：TOFU 必须由上层**显式**接受（规范 §5）。
+ * 验签使用对端出示的公钥，签名有效不能确认它就是已钉扎的那一把，因此需比对公钥字节。
+ * 首次连接由 onPin 显式接受（规范 §5）。
  */
 function defaultPinDecision(info: {
   fingerprint: string

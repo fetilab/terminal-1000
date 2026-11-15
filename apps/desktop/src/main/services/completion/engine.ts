@@ -59,8 +59,8 @@ export interface CompletionGenerator {
 }
 
 /** AI 建议通道（TODO：接入 services/ai；当前默认实现返回空） */
-// `??` 标记的识别与剥离**共用 shared 里的那一份**（主进程与渲染层必须同规则，否则会漂移）
-// ⚠️ `export { X } from '...'` **不会把 X 引入本文件作用域** —— 必须另写一行 import。
+// `??` 标记的识别与剥离复用 shared 的实现，与渲染层保持同一规则。
+// `export { X } from '...'` 不引入本文件作用域，需另行 import。
 import { detectAiSuggestion, stripAiMarker } from '@t1000/shared'
 
 export { detectAiSuggestion, stripAiMarker }
@@ -374,9 +374,7 @@ export interface CompletionEngineOptions {
   /**
    * 设置来源（**每次 complete 都会重新读**）。
    *
-   * 为什么要这个：此前没有任何地方把设置推给引擎，于是用户在设置面板关掉
-   * 「AI 建议（??）」**对引擎毫无影响** —— 开关是真的死的。
-   * 做成"每次读"而不是"启动时快照"，是为了设置面板改完**立即生效**，不必重启。
+   * 每次 complete 读取，使设置面板的变更立即生效，无需重建引擎。
    */
   settingsProvider?: () => Partial<CompletionSettings>
   /** 给命令名候选加一点「常用度」权重（命令名 → 权重），可选 */
