@@ -54,7 +54,13 @@ export interface SecureChannelOptions {
    *
    * 默认实现：首次接受并记录；**指纹不一致一律拒绝**。
    */
-  onPin?: (info: { fingerprint: string; isNew: boolean; pinned?: string | undefined }) => boolean
+  onPin?: (info: {
+    fingerprint: string
+    isNew: boolean
+    pinned?: string | undefined
+    /** 对端出示的公钥与钉扎的**字节**不一致（比指纹更严的一条判据） */
+    keyMismatch?: boolean
+  }) => boolean
   handshakeTimeoutMs?: number
   requestTimeoutMs?: number
 }
@@ -144,11 +150,27 @@ export class SecureChannel {
       const isNew = pinnedFp === undefined
 
       // 钉扎比对：这一步是"防换人"。它和"验签"是**两件不同的事**，都不能省。
-      if (!isNew && presentedFp !== pinnedFp) {
-        const allowed = decide({ fingerprint: presentedFp, isNew: false, pinned: pinnedFp })
+      //
+      // ⚠️ 必须**同时比对公钥字节**，不能只比指纹：
+      // 验签用的是**对端出示的** identity_pub，所以"签名能过"只证明对方持有该公钥的私钥，
+      // 并不说明它就是**我们钉扎的那把**。只比指纹的实现在这里会出现"公钥被换掉仍放行"
+      // （前提是攻击者能让指纹一致 —— 比指纹字节更严的一条防线，成本几乎为零）。
+      const keyMismatch =
+        pinnedFp !== undefined &&
+        options.pinnedPublicKey !== undefined &&
+        !serverHello.identityPub.equals(options.pinnedPublicKey)
+      const pinChanged = !isNew && (presentedFp !== pinnedFp || keyMismatch)
+      if (pinChanged) {
+        const allowed = decide({
+          fingerprint: presentedFp,
+          isNew: false,
+          pinned: pinnedFp,
+          keyMismatch,
+        })
         if (!allowed) {
           throw new SecureChannelError(
-            `服务端身份指纹与已记录的不一致（可能被中间人）：\n  已记录 ${pinnedFp}\n  本次收到 ${presentedFp}`,
+            `服务端身份与已记录的不一致（可能被中间人）：\n  已记录指纹 ${pinnedFp}\n  本次指纹 ${presentedFp}` +
+              (keyMismatch ? '\n  （公钥字节也不一致）' : ''),
             'pin',
           )
         }
@@ -193,12 +215,16 @@ export class SecureChannel {
       return Promise.reject(new SecureChannelError('连接已关闭', 'closed'))
     }
     const id = this.nextId++
+    // 规范 §6.1：应用层只认 `headers.authorization`（白名单），**不是**自造的 token 字段。
+    // 服务端会丢弃其余头 —— 所以这里绝不能把令牌放进别的键里（放错就等于没带令牌）。
     const payload = Buffer.from(
       JSON.stringify({
         id,
         method: options.method ?? 'GET',
         path,
-        ...(options.token === undefined ? {} : { token: options.token }),
+        ...(options.token === undefined
+          ? {}
+          : { headers: { authorization: `Bearer ${options.token}` } }),
         ...(options.body === undefined ? {} : { body: options.body }),
       }),
       'utf8',
@@ -308,9 +334,21 @@ export class SecureChannel {
   }
 }
 
-/** 默认钉扎策略：**指纹不一致一律拒绝**；首次连接由上层显式处理（见 connect 的注释） */
-function defaultPinDecision(info: { fingerprint: string; isNew: boolean; pinned?: string | undefined }): boolean {
+/**
+ * 默认钉扎策略：**任何不一致都拒绝**（指纹不符 **或** 公钥字节不符）。
+ *
+ * ⚠️ 只比指纹是不够的：验签用的是**对端出示的**公钥，所以"签名能过"不说明它就是
+ * 我们钉扎的那把。我第一版就只比了指纹 —— 测试（"钉扎公钥被换成别的"那条）直接把它抓出来了。
+ * 首次连接（isNew）默认也拒绝：TOFU 必须由上层**显式**接受（规范 §5）。
+ */
+function defaultPinDecision(info: {
+  fingerprint: string
+  isNew: boolean
+  pinned?: string | undefined
+  keyMismatch?: boolean
+}): boolean {
   if (info.isNew) return false
+  if (info.keyMismatch === true) return false
   return info.fingerprint === info.pinned
 }
 
