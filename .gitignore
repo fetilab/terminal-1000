@@ -24,7 +24,9 @@ data/
 *.db-shm
 secrets/
 backups/
-notes/
+# ⚠️ 必须锚定到仓库根：裸 `notes/` 会匹配**任意层级**的 notes 目录，
+# 曾经静默排除了产品源码 apps/.../services/notes/ 与 features/notes/（整个笔记域没进过 git）。
+/notes/
 session-log/
 
 # ── 内部/非公开材料（不属于开源项目内容）───────────

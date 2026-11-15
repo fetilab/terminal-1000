@@ -10,7 +10,8 @@
     "build": "pnpm --filter @t1000/desktop build",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "lint": "pnpm -r --if-present lint"
+    "lint": "pnpm -r --if-present lint",
+    "check:ignored": "node scripts/check-ignored-source.mjs"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
