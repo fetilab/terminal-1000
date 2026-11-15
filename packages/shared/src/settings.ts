@@ -190,6 +190,23 @@ export interface SyncSettings {
   enabled: boolean
   /** 后端地址 */
   endpoint?: string
+  /**
+   * 传输方式。**必须显式选择，不做自动回退** —— 见 `docs/SYNC-SECURE-CHANNEL.md` §3.3.1。
+   *
+   * 理由：只要允许"TSC/1 失败就退回明文 HTTP"，攻击者只需阻断握手即可降级成功，
+   * 整个加密层就只是装饰；而且那是**静默失败**（用户以为在加密通道里）。
+   *
+   * - `tsc1`：加密通道（公网直连的唯一正确选择）
+   * - `http`：明文，**仅允许用于回环**（本机开发/兼容）
+   */
+  transport?: 'http' | 'tsc1'
+  /**
+   * TSC/1 服务端钉扎（首次连接由用户**显式确认**指纹后写入）。
+   *
+   * 两个字段都要：`fingerprint` 用于可读比对，`publicKey` 用于验签 ——
+   * 只比指纹不够（验签用的是对端出示的公钥）。见 `services/sync/channel.ts` 的注释。
+   */
+  pin?: { fingerprint: string; publicKey: string }
   /** 访问令牌（本地加密存放） */
   token?: string
   /**

@@ -262,7 +262,22 @@ export const Actions = {
 
   settings: ['getAll', 'get', 'set', 'reset'] as const,
 
-  sync: ['status', 'login', 'logout', 'push', 'pull', 'resolveConflict'] as const,
+  sync: [
+    'status',
+    'login',
+    'logout',
+    'push',
+    'pull',
+    'resolveConflict',
+    /** 设置传输方式（http 仅回环 / tsc1 加密通道）。显式选择，不做自动回退 */
+    'setTransport',
+    /** 探测 TSC/1 服务端身份（只握手、不发数据）→ 交用户核对指纹 */
+    'inspectServer',
+    /** 用户确认指纹后写入钉扎 */
+    'trustServer',
+    /** 清除钉扎（仅在明确知道服务端换了密钥时用） */
+    'forgetServer',
+  ] as const,
 
   broadcast: [
     /** 用一批已打开的会话建立广播组 */

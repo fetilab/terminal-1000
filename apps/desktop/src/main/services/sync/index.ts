@@ -18,6 +18,14 @@
 import { z } from 'zod'
 import { Events, type SyncSettings } from '@t1000/shared'
 import { AppError, parseInput } from '../../errors'
+import {
+  ServerIdentityChangedError,
+  UntrustedServerError,
+  closeAllChannels,
+  getChannel,
+} from './channel-pool'
+import { SecureChannel } from './channel'
+import { fingerprintOf } from './protocol'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { createLogger } from '../../logger'
 import { getStoreService, type StoreEntity } from '../store'
@@ -131,11 +139,112 @@ interface HttpResult {
   body: unknown
 }
 
+/**
+ * 解析 TSC/1 的 host/port。
+ *
+ * 允许两种写法：`tsc1://host:port` 或 `http://host:port`（用户指着 TSC/1 端口）。
+ * **不接受不带端口的写法** —— TSC/1 端口与 HTTP 端口是分开的（理由见规范 §7：
+ * 8787 仅回环正是 HTTP 侧采信 XFF 的前提，而加密通道必须能公网直连）。
+ */
+function tsc1Target(): { host: string; port: number } {
+  const raw = getSyncSettings().endpoint
+  if (!raw) throw AppError.badRequest('未配置同步服务地址')
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw AppError.badRequest(`同步服务地址不合法: ${raw}`)
+  }
+  const port = url.port === '' ? 0 : Number(url.port)
+  if (!Number.isInteger(port) || port <= 0) {
+    throw AppError.badRequest(
+      'TSC/1 需要显式端口（例如 tsc1://host:8788）—— 加密通道与 HTTP 端口是分开的',
+    )
+  }
+  return { host: url.hostname, port }
+}
+
+/** 是否回环地址（明文 HTTP 只允许回环） */
+function isLoopbackHost(host: string): boolean {
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host === '[::1]' ||
+    host.endsWith('.localhost')
+  )
+}
+
+/**
+ * 走 TSC/1 加密通道。
+ *
+ * ⚠️ **不允许任何情况下退回 HTTP**（规范 §3.3.1）：失败就是失败。
+ * 只要有 fallback，攻击者阻断握手即可降级成功，加密层就成了装饰。
+ */
+async function callOverTsc1(
+  path: string,
+  options: { method?: string; body?: unknown; token?: string },
+  settings: SyncSettings,
+): Promise<HttpResult> {
+  const { host, port } = tsc1Target()
+  let channel
+  try {
+    channel = await getChannel(host, port, settings.pin)
+  } catch (err) {
+    if (err instanceof UntrustedServerError) {
+      // 未钉扎：把指纹交给用户核对（**不自动信任**）。
+      // 用 detail 带出结构化的 code/fingerprint，界面据此弹"确认指纹"对话框。
+      throw new AppError('UNAUTHORIZED', err.message, {
+        code: err.code,
+        fingerprint: err.fingerprint,
+      })
+    }
+    if (err instanceof ServerIdentityChangedError) {
+      throw new AppError('FORBIDDEN', err.message, {
+        code: err.code,
+        expected: err.expected,
+        actual: err.actual,
+      })
+    }
+    state.state = 'offline'
+    throw AppError.internal(
+      `无法建立加密同步通道（${host}:${port}）：${err instanceof Error ? err.message : String(err)}
+` +
+        '（不会退回明文 HTTP —— 见规范 §3.3.1）',
+    )
+  }
+  const res = await channel.request(path, {
+    method: options.method ?? 'GET',
+    ...(options.body === undefined ? {} : { body: options.body }),
+    ...(options.token === undefined ? {} : { token: options.token }),
+  })
+  return { status: res.status, body: res.body }
+}
+
 async function call(
   path: string,
   options: { method?: string; body?: unknown; token?: string } = {},
 ): Promise<HttpResult> {
-  const url = `${endpoint()}${path}`
+  const settings = getSyncSettings()
+  const transport = settings.transport ?? 'http'
+
+  if (transport === 'tsc1') {
+    return callOverTsc1(path, options, settings)
+  }
+
+  // 明文 HTTP：**只允许回环**（规范 §3.3.1）。非回环直接拒绝并给迁移指引 ——
+  // 这是"用户选择加密通道"的应有之义，不是可选项。
+  const url = new URL(endpoint())
+  if (!isLoopbackHost(url.hostname)) {
+    throw new AppError(
+      'FORBIDDEN',
+      `拒绝以明文 HTTP 连接非回环地址 ${url.hostname}：登录口令与会话令牌会在公网裸奔。\n` +
+        '请在「设置 → 同步」把传输方式改为 TSC/1（加密通道），并填好它的端口与服务端指纹。',
+      { code: 'PLAINTEXT_NOT_ALLOWED' },
+    )
+  }
+
+  const fullUrl = `${endpoint()}${path}`
   const headers: Record<string, string> = {}
   if (options.token) headers['authorization'] = `Bearer ${options.token}`
   if (options.body !== undefined) headers['content-type'] = 'application/json'
@@ -145,7 +254,7 @@ async function call(
 
   let res: Response
   try {
-    res = await fetch(url, {
+    res = await fetch(fullUrl, {
       method: options.method ?? 'GET',
       headers,
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
@@ -348,6 +457,56 @@ const resolveSchema = z.object({
 })
 
 export const syncHandlers: Record<string, IpcHandler> = {
+  /** 设置传输方式。**显式**选择 —— 见规范 §3.3.1（禁止按探测自动回退） */
+  setTransport: (payload) => {
+    const { transport } = parseInput(
+      z.object({ transport: z.enum(['http', 'tsc1']) }),
+      payload,
+    )
+    updateSyncSettings({ transport })
+    return { transport }
+  },
+
+  /**
+   * 探测 TSC/1 服务端身份。
+   *
+   * 只做一次握手拿到指纹与公钥，**不发送任何应用数据**、也不写入钉扎 ——
+   * 用户需要在另一条可信渠道（服务器本机日志）核对指纹后才调用 `trustServer`。
+   */
+  inspectServer: async () => {
+    const { host, port } = tsc1Target()
+    const probed = await SecureChannel.probe(host, port)
+    return {
+      fingerprint: probed.fingerprint,
+      // 公钥回传是为了让界面能把它交给 trustServer；它本身不是秘密，
+      // 但**指纹才是用户要核对的东西**
+      publicKey: probed.publicKey.toString('base64'),
+    }
+  },
+
+  /** 用户确认指纹一致后写入钉扎 */
+  trustServer: (payload) => {
+    const { fingerprint, publicKey } = parseInput(
+      z.object({ fingerprint: z.string().min(1), publicKey: z.string().min(1) }),
+      payload,
+    )
+    // 自检：指纹必须与公钥对得上（防止把两个不匹配的值写进去，那会导致永远连不上）
+    const expect = fingerprintOf(Buffer.from(publicKey, 'base64')).replace(/ /g, '')
+    if (expect !== fingerprint.replace(/ /g, '')) {
+      throw AppError.badRequest('指纹与公钥不匹配（两者必须来自同一次探测）')
+    }
+    updateSyncSettings({ pin: { fingerprint: expect, publicKey } })
+    state.state = 'idle'
+    return { pinned: true, fingerprint: expect }
+  },
+
+  /** 清除钉扎（服务端确实换了密钥时才用；之后会重新走首次连接流程） */
+  forgetServer: () => {
+    updateSyncSettings({ pin: undefined })
+    closeAllChannels()
+    return { pinned: false }
+  },
+
   status: (payload) => {
     parseInput(statusSchema, payload ?? {})
     const settings = getSyncSettings()

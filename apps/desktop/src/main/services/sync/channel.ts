@@ -94,11 +94,19 @@ export class SecureChannel {
   private closed = false
   /** 记录握手时对端出示的指纹，便于上层写入钉扎 */
   readonly peerFingerprint: string
+  /** 对端出示的身份公钥（TOFU 确认后由上层存为钉扎；验签也正是用它） */
+  readonly peerIdentityPub: Buffer
 
-  private constructor(socket: Socket, keys: DerivedKeys, peerFingerprint: string) {
+  private constructor(
+    socket: Socket,
+    keys: DerivedKeys,
+    peerFingerprint: string,
+    peerIdentityPub: Buffer,
+  ) {
     this.socket = socket
     this.keys = keys
     this.peerFingerprint = peerFingerprint
+    this.peerIdentityPub = peerIdentityPub
     socket.on('data', (chunk) => this.onData(chunk))
     socket.on('error', (err) => this.failAll(new SecureChannelError(`连接错误: ${err.message}`, 'connect')))
     socket.on('close', () => {
@@ -175,7 +183,8 @@ export class SecureChannel {
           )
         }
       } else if (isNew) {
-        // 首次连接（TOFU）：由上层决定是否接受并记录该指纹
+        // 首次连接（TOFU）：由上层**显式**决定是否接受。
+        // 默认策略拒绝（规范 §5：不能静默信任），调用方要么先探测确认、要么明确表示接受。
         const accepted = decide({ fingerprint: presentedFp, isNew: true })
         if (!accepted) {
           throw new SecureChannelError(
@@ -183,6 +192,8 @@ export class SecureChannel {
             'pin',
           )
         }
+        // 接受 TOFU：签名仍照验（证明对方持有该公钥的私钥），但**没有钉扎可比**
+        // —— 这正是 TOFU 的边界，安全性来自用户对指纹的带外核对。
       }
 
       // 临时私钥到此为止：之后不再需要（前向保密）
@@ -195,7 +206,7 @@ export class SecureChannel {
       })
 
       // 临时私钥到此为止：之后不再需要（前向保密）
-      return new SecureChannel(socket, keys, presentedFp)
+      return new SecureChannel(socket, keys, presentedFp, serverHello.identityPub)
     } catch (err) {
       socket.destroy()
       if (err instanceof SecureChannelError) throw err
@@ -204,6 +215,30 @@ export class SecureChannel {
         'handshake',
       )
     }
+  }
+
+  /**
+   * **探测**：连上去握手、拿到对端身份，但**不建立可用的长期通道**。
+   *
+   * 用途是信任引导（TOFU）——用户需要先看到指纹才能决定是否信任，
+   * 而"看到指纹"本身就必须先连一次。探测完立即关闭，不发送任何应用数据。
+   */
+  static async probe(
+    host: string,
+    port: number,
+    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+  ): Promise<{ fingerprint: string; publicKey: Buffer }> {
+    const ch = await SecureChannel.connect({
+      host,
+      port,
+      handshakeTimeoutMs: timeoutMs,
+      // 探测模式：接受首次连接（否则拿不到指纹），但**用完即关、不发数据**
+      onPin: (info) => info.isNew,
+    })
+    const fps = ch.peerFingerprint
+    const pub = Buffer.from(ch.peerIdentityPub)
+    ch.close()
+    return { fingerprint: fps, publicKey: pub }
   }
 
   /** 发一个请求并等响应；`id` 用于并发配对 */
