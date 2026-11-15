@@ -130,10 +130,13 @@ describe('TSC/1 冻结向量：独立复算（不使用被测实现）', () => {
     assert.notEqual(E.c2sKeyHex, E.s2cKeyHex)
   })
 
-  it('指纹 = SHA256(身份公钥) 前 16 字节，8 组 4 字符', () => {
+  it('指纹 = SHA256(身份公钥) 前 16 字节（向量存无空格形式，展示为 8 组 4 字符）', () => {
     const fp = createHash('sha256').update(hex(I.serverIdentityPubHex)).digest().subarray(0, 16).toString('hex')
-    assert.equal(fp.replace(/(.{4})(?=.)/g, '$1 '), VECTORS.fingerprint)
+    // 向量文件里存的是无空格的 32 位十六进制
+    assert.equal(fp, VECTORS.fingerprint.replace(/ /g, ''))
     assert.equal(VECTORS.fingerprint.replace(/ /g, '').length, 32)
+    // 人类可读形式：8 组 4 字符（口述带外核对用）
+    assert.equal(fp.replace(/(.{4})(?=.)/g, '$1 '), '6c8f 8607 dbe8 7077 a62a 2990 ce07 d94a')
   })
 
   it('首帧布局符合 §4，且能独立解密成预期明文', () => {
