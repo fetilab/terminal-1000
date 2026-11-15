@@ -136,3 +136,56 @@ export function readIdentityFingerprint(dir = dataDir()) {
   const raw = readIdentityPublicRaw(dir)
   return raw ? fingerprint(raw) : undefined
 }
+
+// ------------------------------------------------------------------ CLI 入口
+
+/**
+ * `node server/src/tsc1/identity.js --fingerprint`
+ *
+ * ## 为什么必须有这个命令
+ * 规范 §8 记的薄弱处之一：**`identity.key` 丢失后没有任何恢复路径** ——
+ * 所有已钉扎的客户端都会校验失败（§5 的唯一恢复方式是"用户手动更新指纹"）。
+ * 用户需要在服务器上**看到当前指纹**才能去做这件事；没有它就只能瞎猜。
+ *
+ * 输出格式与启动日志**完全一致**（8 组 4 字符），便于逐字符口述比对。
+ *
+ * 注意
+ * - 只读，**绝不打印私钥**（连种子长度都不打印）
+ * - 文件不存在时**不自动生成**：那会让"已钉扎客户端全部失败"这件事
+ *   悄悄发生在一个只读查询里。明确报错、要求用户知道自己在做什么。
+ */
+function runCli(argv) {
+  const wantsFingerprint = argv.includes('--fingerprint') || argv.includes('--print-fingerprint')
+
+  if (!wantsFingerprint) {
+    console.log('用法: node server/src/tsc1/identity.js --fingerprint')
+    console.log('  打印当前 TSC/1 服务端身份指纹（8 组 4 字符），供用户带外核对/更新钉扎。')
+    console.log('  数据目录由 T1000_DATA_DIR 指定（默认 ./data）。')
+    return 0
+  }
+
+  const dir = dataDir()
+  const file = identityPath(dir)
+
+  if (!existsSync(file)) {
+    console.error(`未找到身份密钥: ${file}`)
+    console.error('该实例还没有身份（首次启动时会自动生成）。此处不会自动创建 ——')
+    console.error('若你原本已有身份却看不到这个文件，说明数据目录不对（检查 T1000_DATA_DIR）。')
+    return 1
+  }
+
+  const fp = readIdentityFingerprint(dir)
+  if (!fp) {
+    console.error(`身份文件存在但内容不可解析: ${file}`)
+    return 1
+  }
+
+  console.log(fp)
+  return 0
+}
+
+// 仅在被直接执行时跑 CLI（被 import 时无副作用）
+const invokedDirectly = process.argv[1] && import.meta.url === `file://${process.argv[1]}`
+if (invokedDirectly) {
+  process.exit(runCli(process.argv.slice(2)))
+}

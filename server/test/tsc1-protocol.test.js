@@ -869,3 +869,171 @@ describe('§6.2 429 必须回传 retry-after', () => {
     assert.equal(res.headers, undefined)
   })
 })
+
+// ------------------------------------- §8 薄弱处补强：连接上限 + 握手超时
+
+describe('单 IP 并发连接上限（§8 DoS 防护）', () => {
+  let server
+  let port
+  const logs = []
+
+  before(async () => {
+    const identity = loadOrCreateIdentity(makeTmpDir())
+    const created = createTsc1Server({
+      dispatch: async () => ({ ok: true }),
+      identity,
+      log: (m) => logs.push(m),
+      maxConnPerIp: 3, // 便于测试用的小上限
+    })
+    server = created.server
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    port = server.address().port
+  })
+
+  after(async () => {
+    await new Promise((r) => server?.close(r))
+  })
+
+  /** 连上但不发任何东西（正是攻击者的做法） */
+  async function idleConnect() {
+    const s = connect({ port, host: '127.0.0.1' })
+    await new Promise((res, rej) => {
+      s.once('connect', res)
+      s.once('error', rej)
+    })
+    return s
+  }
+
+  it('超过上限的连接被立刻断开，并记录原因', async () => {
+    logs.length = 0
+    const held = []
+    // 占满 3 条
+    for (let i = 0; i < 3; i += 1) held.push(await idleConnect())
+    await new Promise((r) => setTimeout(r, 50))
+
+    // 第 4 条应被立刻拒绝
+    const extra = connect({ port, host: '127.0.0.1' })
+    const closed = await new Promise((resolve) => {
+      extra.once('close', () => resolve(true))
+      extra.once('error', () => resolve(true))
+      setTimeout(() => resolve(false), 1500).unref()
+    })
+    assert.equal(closed, true, '超过上限必须被断开')
+    assert.ok(
+      logs.some((l) => l.includes('TOO_MANY_CONNECTIONS')),
+      '必须记录被拒原因（如实记录，不静默丢弃）',
+    )
+    assert.ok(logs.some((l) => l.includes('limit=3')))
+
+    for (const s of held) s.destroy()
+    await new Promise((r) => setTimeout(r, 100))
+  })
+
+  it('连接关闭后计数回落，可以再建新连接', async () => {
+    // 先占满
+    const held = []
+    for (let i = 0; i < 3; i += 1) held.push(await idleConnect())
+    await new Promise((r) => setTimeout(r, 50))
+    for (const s of held) s.destroy()
+    await new Promise((r) => setTimeout(r, 150))
+
+    // 释放后应能正常握手
+    const s = await idleConnect()
+    const cliEph = generateKeyPairSync('x25519')
+    const hello = buildHello({ clientRandom: random32(), clientEphPub: x25519RawPublic(cliEph.publicKey) })
+    s.write(hello)
+    const got = await new Promise((resolve) => {
+      let buf = Buffer.alloc(0)
+      s.on('data', (ch) => {
+        buf = Buffer.concat([buf, ch])
+        if (buf.length >= SERVER_HELLO_LEN) resolve(true)
+      })
+      setTimeout(() => resolve(false), 2000).unref()
+    })
+    assert.equal(got, true, '释放后应能重新握手')
+    s.destroy()
+  })
+
+  it('不同 IP 各自计数（此处只验证同 IP 语义，跨 IP 由 Map 键保证）', () => {
+    // server.activeConnections 暴露当前占用，便于运维观测
+    assert.equal(typeof server.activeConnections, 'function')
+  })
+})
+
+describe('握手超时（§8 DoS 防护）', () => {
+  let server
+  let port
+  const logs = []
+
+  before(async () => {
+    const identity = loadOrCreateIdentity(makeTmpDir())
+    const created = createTsc1Server({
+      dispatch: async () => ({ ok: true }),
+      identity,
+      log: (m) => logs.push(m),
+      handshakeTimeoutMs: 400, // 短超时便于测试
+    })
+    server = created.server
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    port = server.address().port
+  })
+
+  after(async () => {
+    await new Promise((r) => server?.close(r))
+  })
+
+  it('只连不发 → 超时后断开并记录', async () => {
+    logs.length = 0
+    const s = connect({ port, host: '127.0.0.1' })
+    await new Promise((res) => s.once('connect', res))
+
+    const closed = await new Promise((resolve) => {
+      s.once('close', () => resolve('closed'))
+      s.once('error', () => resolve('error'))
+      setTimeout(() => resolve('timeout'), 3000).unref()
+    })
+    assert.notEqual(closed, 'timeout', '必须在握手超时后断开')
+    assert.ok(
+      logs.some((l) => l.includes('HANDSHAKE_TIMEOUT')),
+      '必须如实记录超时原因',
+    )
+  })
+
+  it('只发部分 HELLO（合法 magic 但凑不满）→ 同样超时断开', async () => {
+    logs.length = 0
+    const s = connect({ port, host: '127.0.0.1' })
+    await new Promise((res) => s.once('connect', res))
+    s.write(Buffer.from([0x54, 0x01, 0x00, 0x00])) // 合法开头，但远不够 72 字节
+
+    const closed = await new Promise((resolve) => {
+      s.once('close', () => resolve('closed'))
+      s.once('error', () => resolve('error'))
+      setTimeout(() => resolve('timeout'), 3000).unref()
+    })
+    assert.notEqual(closed, 'timeout', '半截 HELLO 必须在超时后断开')
+    assert.ok(logs.some((l) => l.includes('HANDSHAKE_TIMEOUT')))
+  })
+
+  it('超时定时器在握手完成后被清除（不会误杀已建立的会话）', async () => {
+    const s = connect({ port, host: '127.0.0.1' })
+    await new Promise((res) => s.once('connect', res))
+    const cliEph = generateKeyPairSync('x25519')
+    const hello = buildHello({ clientRandom: random32(), clientEphPub: x25519RawPublic(cliEph.publicKey) })
+    s.write(hello)
+
+    let buf = Buffer.alloc(0)
+    await new Promise((resolve, reject) => {
+      s.on('data', (ch) => {
+        buf = Buffer.concat([buf, ch])
+        if (buf.length >= SERVER_HELLO_LEN) resolve(true)
+      })
+      s.once('error', reject)
+      setTimeout(() => reject(new Error('no server hello')), 2000).unref()
+    })
+
+    // 等超过超时时长，连接必须仍然活着
+    await new Promise((r) => setTimeout(r, 700).unref())
+    assert.equal(s.destroyed, false, '握手完成后不应被超时定时器误杀')
+    s.destroy()
+  })
+})

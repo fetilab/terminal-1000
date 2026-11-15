@@ -67,6 +67,18 @@ export const SERVER_HELLO_IDPUB_OFFSET = 68
 /** 记录层 length 上限 16 MiB（超限立即断开，防内存耗尽） */
 export const MAX_FRAME_LEN = 16 * 1024 * 1024
 
+/**
+ * 握手超时（accept → SERVER_HELLO 发完），默认 10 秒。
+ *
+ * 攻击者连上、发几个字节、然后不发完 HELLO，就能用一个连接占住资源
+ * （slowloris 变体）。「首字节即判 magic」挡得住**非** TSC/1 流量，
+ * 挡不住"magic 合法但 HELLO 不发完"的情况 —— 这条补上。
+ *
+ * 放在 crypto.js 是为了让 listener / server / 测试都能引用，且不产生循环依赖
+ * （listener 依赖 server，server 不应反过来依赖 listener）。
+ */
+export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000
+
 /** 记录层固定开销：12B nonce + 16B tag */
 export const FRAME_OVERHEAD = 12 + 16
 

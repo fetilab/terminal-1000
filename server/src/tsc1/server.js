@@ -14,6 +14,7 @@
 import { generateKeyPairSync } from 'node:crypto'
 import { HttpError } from '../util.js'
 import {
+  DEFAULT_HANDSHAKE_TIMEOUT_MS,
   HELLO_LEN,
   MAX_FRAME_LEN,
   NONCE_PREFIX_C2S,
@@ -48,9 +49,11 @@ const DEFAULT_RETRY_AFTER_SEC = 60
  * @param opts.dispatch 路由分发函数（通常传 index.js 的 dispatch）
  * @param opts.peerIp   对端真实 IP（**绝不采信 XFF**：TSC/1 是直连端口）
  * @param opts.generateEph 临时密钥对生成器（测试可注入固定密钥）
+ * @param opts.handshakeTimeoutMs 握手超时（accept → SERVER_HELLO 发完）
  */
 export function handleTsc1Connection(socket, opts) {
   const { identity, log, dispatch, peerIp, generateEph } = opts
+  const handshakeTimeoutMs = opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
 
   // 临时私钥：握手完成、会话密钥派生后**立即丢弃**（前向保密）
   let eph = (generateEph ?? defaultGenerateEph)()
@@ -60,9 +63,34 @@ export function handleTsc1Connection(socket, opts) {
   let sender = null
   let buffer = Buffer.alloc(0)
 
+  /**
+   * 握手超时定时器。
+   *
+   * 攻击者只要连上、发几个字节、然后不发了，就能用一个连接占住资源
+   * （slowloris 变体）。「首字节即判 magic」挡得住**非** TSC/1 流量，
+   * 挡不住"发了合法 magic 但不发完 HELLO"的情况 —— 这条补上。
+   *
+   * 握手完成时立刻清除；unref 避免它把进程吊住不退出。
+   */
+  const handshakeTimer =
+    handshakeTimeoutMs > 0
+      ? setTimeout(() => {
+          if (phase === 'await-hello') {
+            fail('HANDSHAKE_TIMEOUT', `握手超时（${handshakeTimeoutMs}ms 内未完成）`)
+          }
+        }, handshakeTimeoutMs)
+      : null
+  handshakeTimer?.unref()
+
+  const clearHandshakeTimer = () => {
+    if (handshakeTimer) clearTimeout(handshakeTimer)
+  }
+
   const fail = (code, message) => {
     if (phase === 'closed') return
     phase = 'closed'
+    clearHandshakeTimer()
+    // 如实记原因，不静默断（只记 IP 与原因，不记明文/对端数据）
     log(`TSC1 fail ip=${peerIp} code=${code} msg=${message}`)
     receiver?.close()
     sender?.close()
@@ -154,6 +182,9 @@ export function handleTsc1Connection(socket, opts) {
         signature,
       }),
     )
+
+    // SERVER_HELLO 已发出 ⇒ 握手完成，撤掉超时定时器
+    clearHandshakeTimer()
   }
 
   /** 应用层消息 → 复用路由 → 响应消息 */
