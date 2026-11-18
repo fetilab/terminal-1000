@@ -1,0 +1,4 @@
+#!/bin/sh
+# 假 FreeRDP 客户端外壳（Wayland 名称；用于验证 wlfreerdp 秒退的专用提示）。
+T1000_FAKE_RDP_INVOKED_AS=$(basename -- "$0") \
+  exec node "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/client.mjs" "$@"

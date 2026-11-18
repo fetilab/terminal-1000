@@ -1,0 +1,4 @@
+#!/bin/sh
+# 假 FreeRDP 客户端外壳（X11 名称）。把调用转交给上一级的 client.mjs，见该文件说明。
+T1000_FAKE_RDP_INVOKED_AS=$(basename -- "$0") \
+  exec node "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/client.mjs" "$@"
