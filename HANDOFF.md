@@ -1,7 +1,7 @@
 # terminal-1000 会话交接
 
 面向接手本项目的下一个 agent 会话。读完这一份即可继续，不必回溯历史对话。
-最后更新：2026-11-15
+最后更新：2026-11-18
 
 ---
 
@@ -26,12 +26,12 @@ AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研�
 | 指标 | 值 |
 |---|---|
 | 提交 | 见 `git log --oneline \| wc -l` |
-| 源码规模 | 约 8.3 万行 TS/TSX，330 个跟踪文件 |
-| 单元测试 | `pnpm test` 全绿（约 1620 项，78 文件） |
+| 源码规模 | 约 8.5 万行 TS/TSX |
+| 单元测试 | `pnpm test` 全绿（约 1702 项，83 文件） |
 | typecheck | node 与 web 均 **0 错误** |
-| 整机验收 | `node scripts/acceptance.mjs` → **31 通过 / 0 失败 / 4 跳过** |
+| 整机验收 | `node scripts/acceptance.mjs` → **32 通过 / 0 失败 / 4 跳过**（S21 为新增身份变化端到端） |
 | IPC 域 | **23 个** |
-| 打包 | deb / AppImage；deb 约 93.4 MiB（预算 ≤100 MiB） |
+| 打包 | deb / AppImage；deb 约 93.4 MiB（预算 ≤100 MiB）；**rpm/pacman 未做** |
 
 ### 复现验证（三条命令）
 ```bash
@@ -118,8 +118,20 @@ hotkey、broadcast、quickcmd、system、update、shellIntegration（OSC 133 命
 
 ### 渲染层
 连接中心（分组树/搜索/批量）、终端工作区（xterm 6 + 分屏 + 12 项右键菜单 + 高亮装饰）、
-SFTP 浏览器（多选/批量/chmod 对话框/书签）、Monaco 编辑器（笔记 + 远端文件，懒加载）、
-监控面板、笔记、设置面板（含同步传输方式与指纹确认）、全局搜索、锁屏遮罩。
+SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）、Monaco 编辑器（笔记 + 远端文件，懒加载）、
+监控面板、笔记、设置面板（含同步传输方式与指纹确认、外观：预设/背景图/透明度/缩放）、全局搜索、锁屏遮罩。
+
+### 2026-11-18 会话新增（4 项任务全绿，提交 8f3d2aa..86d1937）
+- **task-35 关闭**：`apps/desktop/test-fixtures/` 进程内 RFB 3.8 服务端 + 假 FreeRDP 客户端夹具；
+  VNC 11 项 + RDP 10 项夹具测试默认运行（真机门控保留）。DES 期望值由 PyCryptodome 独立算出。
+- **task-37 关闭**：`classifySyncError`/`formatFingerprint` 拆到 `syncError.ts` 并补 8 项单测；
+  删除从错误文案正则抠指纹的兜底；acceptance 新增 **S21**（真起两台不同身份 TSC/1 服务端 →
+  钉扎 A 指向 B → 真实 UI 登录 → 断言常驻中间人告警含 expected/actual 且未误判）。
+- **P2 外观**：`theme/{color,presets,appearance}.ts` 纯函数层 + 5 套自研预设 × 明暗；
+  `app.appearance.*` 五字段全注册（面板不说谎约束）；背景图只允许本地来源；无会员门控；
+  theme.test.ts 13 项（WCAG AA 对比度、默认预设与 global.css 防漂移）。
+- **P2 SFTP 树视图**：SftpBrowser 树/列表切换（记忆于 localStorage），树锚定远端 home、
+  懒加载 + 与列表**共享同一份目录缓存**（一致性是结构保证）；treeModel 纯函数 40 项单测。
 
 ---
 
@@ -128,15 +140,13 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签）、Monaco 编辑器（�
 ### 明确未完成
 | 项 | 说明 |
 |---|---|
-| **task-35**（pending） | VNC 进程内 RFB 服务端 + RDP 假客户端，关闭两项"需真实运行才能判定" |
-| **task-37**（pending，代码已提交） | 同步传输方式与指纹确认界面；ui-dev 已实现并提交，任务卡未标完成 |
-| VNC / RDP 真机交互 | 需真实服务端；**用户已授权临时装测试服务端到 .187，用完删除，SSH 不动** |
-| P2 打磨 | 界面外观（背景图/透明度/缩放/多主题）、SFTP 树视图、记账本方向 A |
-| 打包 | 只有 deb/AppImage，未做 rpm/pacman |
-| `SERVER_IDENTITY_CHANGED` 渲染层 | 通道层已验证；渲染层的常驻告警**尚无端到端证据** |
+| 打包 | 只有 deb/AppImage，未做 rpm/pacman（electron-builder 加 target 即可，需验证 rpmbuild/系统依赖） |
+| P2 记账本 | 方向 A（spec 未细化，做之前先与用户对齐） |
+| VNC / RDP 真机交互 | 夹具端到端已覆盖协议层；真实 tigervnc/xrdp 的真机门控测试保留（需外部机器，用户曾授权临时装 .187） |
 
 ### 4 项 SKIP 的验收条目
-见 `apps/desktop/scripts/acceptance.mjs` 中 `record(..., 'SKIP', ...)` 的位置，多数因缺真实服务端。
+见 `apps/desktop/scripts/acceptance.mjs` 中 `record(..., 'SKIP', ...)` 的位置（密码生成器[7]、
+终端搜索/分屏[3]、SOCKS5[2b]、AI 真实对话[9]），多数因缺真实服务端。
 
 ---
 
@@ -160,6 +170,13 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签）、Monaco 编辑器（�
     分类错误优先于措辞问题 —— 先怀疑 code 分得对不对。
 12. **同步网络调用抛错要落状态**：`call()` 抛错若不兜底，`state` 停在 `syncing`，
     界面看起来像还在同步（已用 `callWithStateFallback` 统一处理）。
+13. **沙箱里的后台进程不跨命令存活**（bwrap `--die-with-parent`）：Xvfb/Electron 必须与
+    验收脚本在**同一次 bash 调用**里起跑，"先起 Xvfb 再下一次调用跑验收"必挂
+    （症状：CDP target 未就绪）。
+14. **沙箱内 /tmp 不与宿主共享**，写进去的探针/截图下次调用就没了；临时脚本放工作区，
+    验收截图要么读完即用、要么拷回仓库外的工作区路径。
+15. **图标栏按钮只渲染 SVG**，标签在 `aria-label`/`title` —— CDP 驱动外壳导航必须用
+    `button[aria-label="外部服务"]`，按 textContent 找永远匹配不上（S21 曾因此连挂三轮）。
 
 ---
 
