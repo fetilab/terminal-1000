@@ -465,6 +465,195 @@ async function main() {
     }
 
     // ════════════════════════════════════════════════════════════
+    // S21：同步服务端身份变化 → 渲染层**常驻告警**（端到端）
+    //
+    // 补的缺口：通道层早已验证"钉扎不符会被拒"，但**渲染层**那条告警从没有端到端证据。
+    // 这里真起两台不同身份的 TSC/1 服务端：先钉扎 A，再把地址指向 B —— 即"身份变了"。
+    //
+    // 顺带钉死一条纪律：分类必须来自结构化 `detail.code`。从错误文案里正则抠指纹
+    // 在带空格指纹的格式下永不匹配，而"可能是中间人"退化成"请核对后信任"
+    // 等于把用户引导去信任攻击者的密钥。
+    // ════════════════════════════════════════════════════════════
+    {
+      const startedServers = []
+      /** 32 位 hex 按 4 位分组，与界面展示的一致 */
+      const formatFp = (raw) => (String(raw).replace(/\s+/g, '').match(/.{1,4}/g) ?? []).join(' ')
+
+      try {
+        const { startTsc1Server } = await import(`${REPO_ROOT}server/src/tsc1/listener.js`)
+
+        /** 起一台真实 TSC/1 服务端；port=0 由内核分配，两台各自生成独立身份 */
+        const startServer = async () => {
+          const dataDir = mkdtempSync(join(tmpdir(), 't1000-acc-tsc1-'))
+          const { server, identity } = await startTsc1Server({
+            dataDir,
+            host: '127.0.0.1',
+            port: 0,
+            log: () => {},
+            dispatch: async () => ({ ok: true }),
+          })
+          const addr = server.address()
+          const entry = {
+            port: typeof addr === 'object' && addr ? addr.port : 0,
+            fingerprint: identity.fingerprint,
+            publicKey: identity.publicKeyRaw.toString('base64'),
+            close: () => {
+              try { server.close() } catch { /* 已关 */ }
+              rmSync(dataDir, { recursive: true, force: true })
+            },
+          }
+          startedServers.push(entry)
+          return entry
+        }
+
+        /** 调 IPC 但**保留错误结构**：INVOKE 会把错误压成一句话，读不到 detail */
+        const tryInvoke = (domain, action, payload) =>
+          cdp.eval(`(async () => {
+             const r = await window.t1000.invoke(${JSON.stringify(domain)}, ${JSON.stringify(action)}, ${JSON.stringify(payload ?? null)});
+             return r && r.ok === true ? { ok: true, data: r.data } : { ok: false, error: (r && r.error) ?? null };
+           })()`)
+        const clickText = (text, timeoutMs = 10000) => cdp.eval(`(async () => {
+          const deadline = Date.now() + ${timeoutMs};
+          while (Date.now() < deadline) {
+            const el = [...document.querySelectorAll('button')]
+              .find((b) => (b.textContent || '').includes(${JSON.stringify(text)}) && !b.disabled);
+            if (el) { el.click(); return true; }
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          return false;
+        })()`)
+        const waitText = (text, timeoutMs = 10000) => cdp.eval(`(async () => {
+          const deadline = Date.now() + ${timeoutMs};
+          while (Date.now() < deadline) {
+            if ((document.body.innerText || '').includes(${JSON.stringify(text)})) return true;
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          return false;
+        })()`)
+
+        // ⓪ S12 曾 lockNow：锁屏遮罩还在（store.unlock 只清密钥、不发 SECURITY_UNLOCKED，
+        //    遮罩由事件驱动，外壳被 visibility:hidden）。走**真实解锁界面**退掉它 ——
+        //    这也正是真实用户的唯一解锁路径。
+        const lockSeen = await cdp.eval(`(async () => {
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline) {
+            const box = document.querySelector('.lockscreen input[type=password]');
+            if (box) {
+              const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box), 'value').set;
+              setter.call(box, 'Acceptance#2026');
+              box.dispatchEvent(new Event('input', { bubbles: true }));
+              return true;
+            }
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          return false;
+        })()`)
+        const lockCleared = lockSeen === true ? await clickText('解锁') : false
+        const shellBack = await cdp.eval(`(async () => {
+          const deadline = Date.now() + 8000;
+          while (Date.now() < deadline) {
+            // 图标栏按钮只渲染 SVG，标签在 aria-label —— 用 textContent 永远找不到
+            const btn = document.querySelector('button[aria-label="外部服务"]');
+            if (btn) return true;
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          return false;
+        })()`)
+
+        const serverA = await startServer()
+        await cdp.eval(INVOKE('settings', 'set', { path: 'sync.transport', value: 'tsc1' }))
+        await cdp.eval(INVOKE('settings', 'set', { path: 'sync.endpoint', value: `tsc1://127.0.0.1:${serverA.port}` }))
+        // 从"未钉扎"开始，保证下面这一枪打的是**首次连接**
+        await cdp.eval(INVOKE('sync', 'forgetServer', {}))
+
+        // ① 未钉扎登录失败：detail 必须结构化到达（不是 INTERNAL，也不是从文案里猜）
+        const unpinned = await tryInvoke('sync', 'login', {
+          endpoint: `tsc1://127.0.0.1:${serverA.port}`, username: 'acc', password: 'acc-pass',
+        })
+        const unpinnedCode = unpinned?.error?.detail?.code
+        const unpinnedFp = unpinned?.error?.detail?.fingerprint
+
+        // ② 探测并钉扎 A（与界面"探测 → 核对 → 信任"是同一条主进程路径）
+        const probed = await cdp.eval(INVOKE('sync', 'inspectServer', {}))
+        await cdp.eval(INVOKE('sync', 'trustServer', { fingerprint: probed.fingerprint, publicKey: probed.publicKey }))
+
+        // ③ 换另一台不同身份的服务端，并把地址指向它
+        const serverB = await startServer()
+        const different = serverB.fingerprint.replace(/\s/g, '') !== serverA.fingerprint.replace(/\s/g, '')
+        await cdp.eval(INVOKE('settings', 'set', { path: 'sync.endpoint', value: `tsc1://127.0.0.1:${serverB.port}` }))
+
+        // ④ 结构化读到"身份变化"的 code 与 expected/actual（契约面）
+        const changed = await tryInvoke('sync', 'login', {
+          endpoint: `tsc1://127.0.0.1:${serverB.port}`, username: 'acc', password: 'acc-pass',
+        })
+        const changedCode = changed?.error?.detail?.code
+        const expectedShown = formatFp(changed?.error?.detail?.expected ?? serverA.fingerprint)
+        const actualShown = formatFp(changed?.error?.detail?.actual ?? serverB.fingerprint)
+
+        // ⑤ 走**真实界面**：外部服务 → 同步与云端 → 填表 → 点登录。
+        //    上面 ①④ 只证明契约面，这一步才是"渲染层"的证据。
+        const navRail = await cdp.eval(`(() => {
+          const btn = document.querySelector('button[aria-label="外部服务"]');
+          if (!btn) return false; btn.click(); return true;
+        })()`)
+        const navSync = await clickText('同步与云端')
+        const panelUp = await waitText('两个口令是两回事')
+
+        // SyncPanel 的输入顺序：后端地址 / 用户名 / 登录口令 / 同步口令
+        const filled = await cdp.eval(`(() => {
+          const setVal = (el, v) => {
+            const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
+            setter.call(el, v);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          };
+          const inputs = [...document.querySelectorAll('.svc-body input')];
+          if (inputs.length < 3) return false;
+          setVal(inputs[0], 'tsc1://127.0.0.1:${serverB.port}');
+          setVal(inputs[1], 'acc');
+          setVal(inputs[2], 'acc-pass');
+          return true;
+        })()`)
+        await sleep(200)
+        const clicked = await clickText('登录')
+
+        // ⑥ 断言**常驻告警**。刻意不认 "可能是中间人"：toast 里也有同样措辞，
+        //    认它会把这个条目变成"弹了个提示就算过"。用 Banner 独有的"本次收到："，
+        //    并反断言没有出现"服务端身份尚未确认"（那是把中间人误判成"请核对后信任"）。
+        const bannerUp = await waitText('本次收到：', 12000)
+        await sleep(2500) // toast 早已划走；Banner 必须还在
+        const bodyText = (await cdp.eval(`document.body.innerText || ''`)) || ''
+        const persistent = bodyText.includes('本次收到：')
+        const showsExpected = bodyText.includes(expectedShown)
+        const showsActual = bodyText.includes(actualShown)
+        const notMisclassified = !bodyText.includes('服务端身份尚未确认')
+
+        const ok =
+          unpinnedCode === 'UNTRUSTED_SERVER' && typeof unpinnedFp === 'string' &&
+          different &&
+          changedCode === 'SERVER_IDENTITY_CHANGED' &&
+          shellBack && navRail && navSync && panelUp && filled && clicked &&
+          bannerUp && persistent &&
+          showsExpected && showsActual && notMisclassified
+
+        const diagExpr = '({"buttons": document.querySelectorAll("button").length, ' +
+          '"lock": !!document.querySelector(".lockscreen"), ' +
+          '"shellVis": (() => { const s = document.querySelector(".app-shell"); return s ? getComputedStyle(s).visibility : "no-shell" })(), ' +
+          '"head": (document.body.innerText || "").slice(0, 120)})'
+        const domDiag = ok ? '' : ' ‖DOM=' + JSON.stringify(await cdp.eval(diagExpr).catch((e) => String(e && e.message ? e.message : e)))
+        record('S21', '同步身份变化：渲染层常驻告警（真 TSC/1 服务端 + 真 UI 端到端）', ok ? 'PASS' : 'FAIL',
+          `未钉扎code=${unpinnedCode ?? '—'} 身份变化code=${changedCode ?? '—'} 两身份不同=${different} ` +
+          `锁屏=${lockSeen ? '见' : '无'} 解锁=${lockCleared} 外壳恢复=${shellBack} ` +
+          `导航=${navRail}/${navSync} 面板=${panelUp} 填表=${filled} 点登录=${clicked} ` +
+          `告警出现=${bannerUp} 常驻=${persistent} ` +
+          `已记录显示=${showsExpected} 本次收到显示=${showsActual} 未误判成"未钉扎"=${notMisclassified}` + domDiag)
+      } catch (err) {
+        record('S21', '同步身份变化：渲染层常驻告警', 'FAIL', String(err?.message ?? err))
+      } finally {
+        for (const s of startedServers) s.close()
+      }
+    }
+
+    // ════════════════════════════════════════════════════════════
     // 以下条目需要**真实 SSH 主机**：用仓库自带的 SSH 测试主机
     // （scripts/ssh-test-host.mjs：真实 ssh2 服务端 + 真实子进程 + 真实文件系统）
     // ════════════════════════════════════════════════════════════

@@ -25,8 +25,12 @@ import { Field, TextInput } from '../../components/Form'
 import { Icon } from '../../components/Icon'
 import { toast } from '../../components/Toast'
 import { invoke } from '../../lib/ipc'
-import { errorText } from '../../lib/format'
+import { classifySyncError, formatFingerprint, type SyncErrorInfo } from './syncError'
 import './settings.css'
+
+// 外部服务面板从这里取分类器与类型，保持既有引用路径稳定
+export { classifySyncError, formatFingerprint }
+export type { SyncErrorInfo }
 
 export interface SyncStatusView {
   transport: 'http' | 'tsc1'
@@ -34,86 +38,6 @@ export interface SyncStatusView {
   pinnedFingerprint: string | null
   endpoint: string
   loggedIn: boolean
-}
-
-/** 主进程错误里的 `detail` 结构（只在已知 code 时可信） */
-interface SyncErrorDetail {
-  code?: string
-  fingerprint?: string
-  expected?: string
-  actual?: string
-}
-
-export interface SyncErrorInfo {
-  /** 主进程用来描述"这次失败属于哪一类"的稳定标识 */
-  kind: 'plaintext-not-allowed' | 'untrusted-server' | 'identity-changed' | 'other'
-  message: string
-  fingerprint?: string
-  expected?: string
-  actual?: string
-}
-
-/**
- * 把 IPC 错误归类。导出是给**登录入口**（外部服务面板）复用的 ——
- * 未钉扎的登录失败必须能直接进入本确认流程，而不是只在那边显示一条报错。
- */
-export function classifySyncError(err: unknown, pinnedFingerprint?: string | null): SyncErrorInfo {
-  const message = errorText(err)
-  const e = err as { code?: string; detail?: unknown }
-  const detail = (typeof e?.detail === 'object' && e.detail !== null ? e.detail : {}) as SyncErrorDetail
-
-  if (detail.code === 'PLAINTEXT_NOT_ALLOWED') return { kind: 'plaintext-not-allowed', message }
-  if (detail.code === 'UNTRUSTED_SERVER') {
-    /**
-     * 已钉扎却收到"未钉扎"时，**实际是身份变了**。
-     *
-     * `channel-pool` 的 `onPin: () => false` 会让 SecureChannel 在钉扎比对阶段就拒绝，
-     * 那个错误被统一转成 `UntrustedServerError` —— 于是"对端身份与记录不符"和
-     * "首次连接"用了同一个 code。这里用手上的两个指纹把它纠正回来：
-     * 我们有 `status.pinnedFingerprint`，错误里也有对端出示的指纹，两者不同即身份变化。
-     * 这直接决定用户看到的是"请核对后信任"还是"可能是中间人"——不能弄反。
-     */
-    const offered = detail.fingerprint?.replace(/\s+/g, '').toLowerCase()
-    const pinned = pinnedFingerprint?.replace(/\s+/g, '').toLowerCase()
-    if (offered && pinned && offered !== pinned) {
-      return { kind: 'identity-changed', message, expected: pinned, actual: offered }
-    }
-    return {
-      kind: 'untrusted-server',
-      message,
-      ...(detail.fingerprint === undefined ? {} : { fingerprint: detail.fingerprint }),
-    }
-  }
-  if (detail.code === 'SERVER_IDENTITY_CHANGED') {
-    return {
-      kind: 'identity-changed',
-      message,
-      ...(detail.expected === undefined ? {} : { expected: detail.expected }),
-      ...(detail.actual === undefined ? {} : { actual: detail.actual }),
-    }
-  }
-
-  // 回退：主进程在未钉扎时可能**没能**带上 `detail.code`。
-  // `channel-pool.extractFingerprint` 用 `/[0-9a-f]{32}/` 取指纹，而 `fingerprintOf`
-  // 是每 4 位加空格输出的，正则匹配不到 → 那里不抛 UntrustedServerError →
-  // 路由层把它归成 INTERNAL，`detail` 丢失。这里按消息特征兜住，
-  // 保证"未钉扎登录失败 → 进入确认流程"这条路今天就能走通；
-  // 主进程修好后走上面的结构化分支，行为不变。
-  const spaced = message.match(/(?:[0-9a-f]{4}\s+){7}[0-9a-f]{4}/i)
-  if (spaced || /未钉扎|需要你核对身份指纹/.test(message)) {
-    const offered = spaced ? spaced[0].replace(/\s+/g, '').toLowerCase() : undefined
-    const pinned = pinnedFingerprint?.replace(/\s+/g, '').toLowerCase()
-    if (offered && pinned && offered !== pinned) {
-      return { kind: 'identity-changed', message, expected: pinned, actual: offered }
-    }
-    return {
-      kind: 'untrusted-server',
-      message,
-      ...(spaced ? { fingerprint: spaced[0].replace(/\s+/g, '') } : {}),
-    }
-  }
-  if (/身份与已记录的不一致/.test(message)) return { kind: 'identity-changed', message }
-  return { kind: 'other', message }
 }
 
 /** 明文传输只允许回环：与主进程 `isLoopbackHost` 的判定保持一致 */
@@ -125,12 +49,6 @@ function isLoopbackEndpoint(endpoint: string): boolean {
   } catch {
     return false
   }
-}
-
-/** 32 个 hex 字符按 4 个一组分开，便于口述核对 */
-export function formatFingerprint(raw: string): string {
-  const hex = raw.replace(/\s+/g, '')
-  return (hex.match(/.{1,4}/g) ?? []).join(' ')
 }
 
 export interface ServerIdentityPanelProps {

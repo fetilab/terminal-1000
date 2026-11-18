@@ -132,8 +132,9 @@ export default function SyncPanel(): React.JSX.Element {
    * 身份变化，只在登录处处理会漏掉它们。
    */
   const handleSyncFailure = useCallback((err: unknown, what: string): void => {
-    // 传已钉扎指纹：主进程会把"身份不符"也报成 UNTRUSTED_SERVER，
-    // 靠这两个指纹才能把它纠正成"身份变化"（措辞与后果完全不同）
+    // 传已钉扎指纹：主进程按结构化 code 分类；若上游漏标 identityChanged 而退回
+    // UNTRUSTED_SERVER，这枚指纹能让分类仍落到"身份变化" —— 措辞与后果完全不同，
+    // 提示"核对后信任"会把用户引向攻击者的密钥
     const info = classifySyncError(err, statusRef.current?.pinnedFingerprint ?? null)
     if (info.kind === 'untrusted-server') {
       setIdentityFingerprint(info.fingerprint ?? '')
