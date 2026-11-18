@@ -21,6 +21,7 @@ import { Icon, type IconName } from '../../components/Icon'
 import { toast } from '../../components/Toast'
 import { invoke } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
+import { applyAppearance } from '../../theme/appearance'
 import {
   actions,
   applyHighlightRules,
@@ -79,6 +80,7 @@ function useSettings(): {
       setSettings(all)
       setError(null)
       applyTheme(all.app.theme)
+      applyAppearance(all)
     } catch (err) {
       setError(errorText(err))
     } finally {
@@ -102,6 +104,8 @@ function useSettings(): {
         )
         setSettings(next)
         if (path === 'app.theme') applyTheme(next.app.theme)
+        // 外观分组任一字段变化即整套重放（幂等）：预设/背景图/透明度/缩放立即生效
+        if (path.startsWith('app.appearance.')) applyAppearance(next)
         // 终端相关改一项就推一次，已打开的 xterm 立刻跟着变（热更新）
         if (path.startsWith('terminal.')) applyTerminalSettings(next.terminal)
       } catch (err) {
@@ -121,6 +125,7 @@ function useSettings(): {
       )
       setSettings(next)
       applyTheme(next.app.theme)
+      applyAppearance(next)
       applyTerminalSettings(next.terminal)
       toast.ok(`「${SECTION_META[section].label}」已恢复默认值`)
     } catch (err) {

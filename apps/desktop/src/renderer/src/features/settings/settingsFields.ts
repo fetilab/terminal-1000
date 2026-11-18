@@ -13,6 +13,7 @@
 
 import type { Settings } from '@t1000/shared'
 import type { SettingsSectionId } from '../../lib/store'
+import { THEME_PRESETS } from '../../theme/presets'
 
 /** 分区联合类型定义在 lib/store（唯一真源），这里只是别名，避免两份定义漂移 */
 export type SettingsSection = SettingsSectionId
@@ -64,7 +65,48 @@ export const SETTINGS_FIELDS: Record<
   readonly FieldDef[]
 > = {
   app: [
-    { path: 'app.theme', label: '主题', kind: 'select', options: THEME_OPTIONS, hint: '浅色主题仍在打磨中' },
+    { path: 'app.theme', label: '主题', kind: 'select', options: THEME_OPTIONS, hint: '跟随系统明暗，或固定深浅' },
+    {
+      path: 'app.appearance.preset',
+      label: '配色预设',
+      kind: 'select',
+      options: THEME_PRESETS.map((p) => ({ value: p.id, label: p.label })),
+      hint: '在明暗之上再叠一套自研配色；默认「冷青」与历史观感一致',
+    },
+    {
+      path: 'app.appearance.backgroundImage',
+      label: '背景图',
+      kind: 'text',
+      wide: true,
+      hint: '本地图片绝对路径（也可用 file:/data: 链接）。刻意不支持 http(s)：背景图不应发起外部请求',
+    },
+    {
+      path: 'app.appearance.backgroundOpacity',
+      label: '背景图可见度',
+      kind: 'number',
+      min: 0,
+      max: 1,
+      step: 0.05,
+      hint: '仅在设置了背景图时生效',
+    },
+    {
+      path: 'app.appearance.opacity',
+      label: '界面不透明度',
+      kind: 'number',
+      min: 0.5,
+      max: 1,
+      step: 0.05,
+      hint: '越低，背景图透出越多；1 = 实心',
+    },
+    {
+      path: 'app.appearance.scale',
+      label: '界面缩放',
+      kind: 'number',
+      min: 0.8,
+      max: 1.4,
+      step: 0.05,
+      hint: '整体放大/缩小界面（0.8 ~ 1.4）',
+    },
     { path: 'app.restoreLastSession', label: '启动时恢复上次会话', kind: 'switch', hint: '只恢复界面状态，不会自动重连主机' },
     { path: 'app.minimizeToTray', label: '关闭窗口时最小化到托盘', kind: 'switch' },
     { path: 'app.showTrayIcon', label: '显示托盘图标', kind: 'switch' },

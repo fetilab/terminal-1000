@@ -1,0 +1,104 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 terminal-1000 contributors */
+
+/*
+ * 外观层：半透明表面、背景图、界面缩放。
+ *
+ * 由 global.css 顶部 @import 引入，排在令牌定义之后 —— 这里对同名令牌的写法
+ * 因此覆盖 global.css 里的静态值（同优先级、后写的胜出）。
+ *
+ * 设计要点：表面令牌**不再写死颜色**，而是从 `-solid` 版本按
+ * `--t1000-surface-alpha` 派生。alpha=100% 时 color-mix 的结果与实色完全相同，
+ * 所以默认观感与加这一层之前一模一样；调低透明度（或设背景图）才真的透出后面那层。
+ */
+
+:root {
+  /* JS（theme/appearance.ts）按设置写入；这里给的是"没有 JS 也要正确"的兜底 */
+  --t1000-surface-alpha: 100%;
+  --t1000-bg-image: none;
+  --t1000-bg-image-opacity: 0;
+  --t1000-ui-scale: 1;
+
+  --t1000-bg: color-mix(in srgb, var(--t1000-bg-solid) var(--t1000-surface-alpha), transparent);
+  --t1000-bg-sunken: color-mix(
+    in srgb,
+    var(--t1000-bg-sunken-solid) var(--t1000-surface-alpha),
+    transparent
+  );
+  --t1000-bg-raised: color-mix(
+    in srgb,
+    var(--t1000-bg-raised-solid) var(--t1000-surface-alpha),
+    transparent
+  );
+  --t1000-bg-panel: color-mix(
+    in srgb,
+    var(--t1000-bg-panel-solid) var(--t1000-surface-alpha),
+    transparent
+  );
+  --t1000-bg-hover: color-mix(
+    in srgb,
+    var(--t1000-bg-hover-solid) var(--t1000-surface-alpha),
+    transparent
+  );
+  --t1000-bg-active: color-mix(
+    in srgb,
+    var(--t1000-bg-active-solid) var(--t1000-surface-alpha),
+    transparent
+  );
+  --t1000-bg-input: color-mix(
+    in srgb,
+    var(--t1000-bg-input-solid) var(--t1000-surface-alpha),
+    transparent
+  );
+}
+
+/*
+ * html 兜底为实色：body/表面的半透明要叠加在**本主题的底色**上，
+ * 否则透出来的会是窗口默认色（浅色主题下会露出白底、深色下露出黑底）。
+ */
+html {
+  background: var(--t1000-bg-solid);
+}
+
+/*
+ * 背景图铺满视口、位于所有内容之下。
+ * 用 body::before 而不是 body 的 background：body 的背景会被子元素的实色盖住，
+ * 而且这样不必改动 body 自身可能带的其他背景/渐变。
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image: var(--t1000-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: var(--t1000-bg-image-opacity);
+  pointer-events: none;
+}
+
+/*
+ * #root 抬到背景图之上。
+ *
+ * 这一条不能只在"有背景图"时加：`position: fixed` 的伪元素属于定位层，
+ * 而 .rail/.panel/.content 都是非定位元素，若 #root 不建层，背景图会盖住它们的底色。
+ * z-index + position 让 #root 成为独立层叠上下文，内部所有视图都在背景图之上。
+ */
+#root {
+  position: relative;
+  z-index: 1;
+  /*
+   * 界面缩放：zoom 会把元素连同其尺寸一起放大，所以宽高先除以缩放系数补回来，
+   * 否则放大后会溢出视口（100% × 1.2 = 120%）。
+   */
+  zoom: var(--t1000-ui-scale, 1);
+  width: calc(100% / var(--t1000-ui-scale, 1));
+  height: calc(100% / var(--t1000-ui-scale, 1));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    background-attachment: scroll;
+  }
+}

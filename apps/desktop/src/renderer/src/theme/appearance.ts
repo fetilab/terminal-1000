@@ -1,0 +1,213 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 terminal-1000 contributors
+
+/**
+ * 外观设置（主题预设 / 背景图 / 界面透明度 / 界面缩放）的解析与应用。
+ *
+ * **设置分组为什么是 `app.appearance.*`、而 packages/shared 不动**：
+ * 设置文档的深合并保留未知键（见 main/services/settings/index.ts 里 sessionRecording 的先例），
+ * 所以渲染层可以先行落地一个新分组；等 shared 补上强类型组后，
+ * 把 resolveAppearance 换成直读 `settings.app.appearance` 即可，消费点不用改。
+ *
+ * 结构上分两层：
+ * - 解析与配色是**纯函数**（color.ts / presets.ts），可在 node 下单测；
+ * - 只有 applyAppearance 及其下游碰 document，因此不需要 jsdom 也能覆盖逻辑。
+ */
+
+import type { ThemeMode } from '@t1000/shared'
+import { paletteFor, paletteToCssVars, isThemePresetId, type AppearanceMode, type ThemePresetId } from './presets'
+
+export interface AppearanceConfig {
+  preset: ThemePresetId
+  /** 本地图片的绝对路径（也接受 file:/data:/blob: URL）；空串表示不设背景图 */
+  backgroundImage: string
+  /** 背景图可见度 0~1 */
+  backgroundOpacity: number
+  /** 界面不透明度 0.5~1：越低，背景图/桌面透出越多 */
+  opacity: number
+  /** 界面缩放 0.8~1.4 */
+  scale: number
+}
+
+export const APPEARANCE_DEFAULTS: AppearanceConfig = {
+  preset: 'aurora',
+  backgroundImage: '',
+  backgroundOpacity: 0.35,
+  // 默认 1（实心）——不改变现状观感；只有在设了背景图时才会自动略微透出
+  opacity: 1,
+  scale: 1,
+}
+
+/** 设置项路径；与 settingsFields.ts 的声明保持一致（那边是"设置必须被消费"的唯一真源） */
+export const APPEARANCE_PATHS = {
+  preset: 'app.appearance.preset',
+  backgroundImage: 'app.appearance.backgroundImage',
+  backgroundOpacity: 'app.appearance.backgroundOpacity',
+  opacity: 'app.appearance.opacity',
+  scale: 'app.appearance.scale',
+} as const
+
+/**
+ * 设了背景图后，界面不透明度再乘这个系数。
+ *
+ * 不加这一步，"背景图"会被实心面板完全挡住 —— 用户会以为设置没生效。
+ * 系数取 0.78：默认值下背景图明显可见，同时面板仍有足够底色保证文字可读。
+ */
+export const BACKGROUND_SURFACE_FACTOR = 0.78
+
+const OPACITY_MIN = 0.5
+const OPACITY_MAX = 1
+const SCALE_MIN = 0.8
+const SCALE_MAX = 1.4
+
+/** 与 settingsFields.readPath 同语义；这里自带一份是为了让 theme/ 不反向依赖设置面板 */
+function readPath(obj: unknown, path: string): unknown {
+  let current: unknown = obj
+  for (const part of path.split('.')) {
+    if (typeof current !== 'object' || current === null) return undefined
+    current = (current as Record<string, unknown>)[part]
+  }
+  return current
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, value))
+}
+
+/** 解析设置文档里的外观分组；缺字段/脏值一律回退默认，绝不让界面因设置损坏而不可用 */
+export function resolveAppearance(settings: unknown): AppearanceConfig {
+  const raw = readPath(settings, 'app.appearance')
+  const source = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
+  const image = source.backgroundImage
+  return {
+    preset: isThemePresetId(source.preset) ? source.preset : APPEARANCE_DEFAULTS.preset,
+    backgroundImage: typeof image === 'string' ? image.trim() : APPEARANCE_DEFAULTS.backgroundImage,
+    backgroundOpacity: clampNumber(
+      source.backgroundOpacity,
+      0,
+      1,
+      APPEARANCE_DEFAULTS.backgroundOpacity,
+    ),
+    opacity: clampNumber(source.opacity, OPACITY_MIN, OPACITY_MAX, APPEARANCE_DEFAULTS.opacity),
+    scale: clampNumber(source.scale, SCALE_MIN, SCALE_MAX, APPEARANCE_DEFAULTS.scale),
+  }
+}
+
+/** 读 `app.theme`；未知值按 system 处理 */
+export function readThemeMode(settings: unknown): ThemeMode {
+  const value = readPath(settings, 'app.theme')
+  return value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+}
+
+/** 把三态主题解析成实际明暗（`prefersLight` 由调用方给，便于纯函数测试） */
+export function resolveMode(theme: ThemeMode, prefersLight: boolean): AppearanceMode {
+  if (theme === 'system') return prefersLight ? 'light' : 'dark'
+  return theme
+}
+
+/**
+ * 把设置里的图片值转成可用的 URL。
+ *
+ * 只接受本地来源：`data:` / `blob:` / `file:` / 绝对路径 / 渲染层相对路径。
+ * **刻意不支持 http(s)** —— 那会让每次启动都向外部发起请求，等于对外泄漏"这台机器在用它"，
+ * 而背景图完全没有远程加载的必要。
+ */
+export function backgroundImageUrl(raw: string): string {
+  const value = raw.trim()
+  if (!value) return ''
+  if (/^(data:image\/|blob:|file:)/i.test(value)) return value
+  // 其它带协议的（http:/https:/javascript:/…）一律拒绝
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return ''
+  if (value.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(value)) {
+    const encoded = value
+      .replace(/\\/g, '/')
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/')
+    return `file://${encoded.startsWith('/') ? '' : '/'}${encoded}`
+  }
+  return value
+}
+
+/** 供设置界面的 `<img>` 探针直接使用（与 CSS 里的写法同源） */
+export function backgroundImageProbeUrl(raw: string): string {
+  return backgroundImageUrl(raw)
+}
+
+/** 转成 CSS `url()` 里的字符串；引号与反斜杠必须转义，否则用户路径能破坏整条声明 */
+function cssUrlValue(url: string): string {
+  // eslint-disable-next-line no-control-regex
+  const safe = url.replace(/[\u0000-\u001f]/g, '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `url("${safe}")`
+}
+
+/** 背景图存在时界面不透明的实际系数 */
+export function effectiveSurfaceAlpha(config: AppearanceConfig, hasImage: boolean): number {
+  return hasImage ? config.opacity * BACKGROUND_SURFACE_FACTOR : config.opacity
+}
+
+function prefersLight(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  return window.matchMedia('(prefers-color-scheme: light)').matches
+}
+
+let cachedSettings: unknown = null
+let cachedScale: number | null = null
+let watching = false
+
+/**
+ * 把外观应用到根节点。
+ *
+ * 幂等；`system` 模式下会自行监听 `prefers-color-scheme` —— 系统明暗切换时重放一次，
+ * 否则预设令牌会停留在旧明暗上（面板跟随系统变色、但色系令牌没跟上，正是"浅色下低对比"的成因）。
+ */
+export function applyAppearance(settings: unknown): AppearanceConfig {
+  const config = resolveAppearance(settings)
+  const mode = resolveMode(readThemeMode(settings), prefersLight())
+
+  cachedSettings = settings
+  applyToDocument(config, mode)
+
+  if (!watching && typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    watching = true
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+      if (readThemeMode(cachedSettings) === 'system') applyAppearance(cachedSettings)
+    })
+  }
+  return config
+}
+
+/** 直接按已解析的配置应用（测试与"预览"场景用；生产路径走 applyAppearance） */
+export function applyAppearanceConfig(config: AppearanceConfig, mode: AppearanceMode): void {
+  applyToDocument(config, mode)
+}
+
+function applyToDocument(config: AppearanceConfig, mode: AppearanceMode): void {
+  if (typeof document === 'undefined') return
+  const root = document.documentElement
+
+  for (const [name, value] of Object.entries(paletteToCssVars(paletteFor(config.preset, mode), mode))) {
+    root.style.setProperty(name, value)
+  }
+
+  root.dataset.theme = mode
+  root.dataset.appearancePreset = config.preset
+
+  const url = backgroundImageUrl(config.backgroundImage)
+  root.style.setProperty('--t1000-bg-image', url ? cssUrlValue(url) : 'none')
+  root.style.setProperty('--t1000-bg-image-opacity', String(config.backgroundOpacity))
+  root.style.setProperty(
+    '--t1000-surface-alpha',
+    `${(effectiveSurfaceAlpha(config, Boolean(url)) * 100).toFixed(1)}%`,
+  )
+  root.style.setProperty('--t1000-ui-scale', String(config.scale))
+
+  document.body?.classList.toggle('t1000-has-bg', Boolean(url))
+
+  // 缩放变了要让终端等自绘区域重新量尺寸（xterm 的格子尺寸不会自己跟着 zoom 变）
+  if (cachedScale !== null && cachedScale !== config.scale) {
+    window.dispatchEvent(new Event('resize'))
+  }
+  cachedScale = config.scale
+}

@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 terminal-1000 contributors */
 
+/* 外观层（半透明表面 / 背景图 / 界面缩放）必须在令牌之后生效，故从本文件引入 */
+@import './appearance.css';
+
 /*
  * 设计令牌 —— 全部自研。
  *
@@ -9,14 +12,26 @@
  * 圆角统一 8/5px 两档（大面板可用 14px），动效统一 120~180ms。
  */
 :root {
-  /* ── 表面层次 ───────────────────────────────── */
-  --t1000-bg: #12141a;
-  --t1000-bg-sunken: #0d0f14;
-  --t1000-bg-raised: #191c24;
-  --t1000-bg-panel: #1e222b;
-  --t1000-bg-hover: #252a35;
-  --t1000-bg-active: #2c3240;
-  --t1000-bg-input: #171a21;
+  /*
+   * 表面层次：`*-solid` 是实色真源，`--t1000-bg*` 是它的**可半透明**派生版本
+   * （派生规则在 styles/appearance.css）。界面透明度/背景图只改一个
+   * `--t1000-surface-alpha`，所有表面一起变，不必逐个组件改样式；
+   * alpha=100% 时 color-mix 结果与实色完全相同，故默认观感不变。
+   */
+  --t1000-bg-solid: #12141a;
+  --t1000-bg-sunken-solid: #0d0f14;
+  --t1000-bg-raised-solid: #191c24;
+  --t1000-bg-panel-solid: #1e222b;
+  --t1000-bg-hover-solid: #252a35;
+  --t1000-bg-active-solid: #2c3240;
+  --t1000-bg-input-solid: #171a21;
+  --t1000-bg: var(--t1000-bg-solid);
+  --t1000-bg-sunken: var(--t1000-bg-sunken-solid);
+  --t1000-bg-raised: var(--t1000-bg-raised-solid);
+  --t1000-bg-panel: var(--t1000-bg-panel-solid);
+  --t1000-bg-hover: var(--t1000-bg-hover-solid);
+  --t1000-bg-active: var(--t1000-bg-active-solid);
+  --t1000-bg-input: var(--t1000-bg-input-solid);
   --t1000-overlay: rgba(6, 8, 12, 0.62);
 
   /* ── 描边 ───────────────────────────────────── */
@@ -379,34 +394,37 @@ a {
  * 青色强调在浅底上要压暗一档才够对比度，所以 accent 不是同一支色值。
  */
 :root[data-theme='light'] {
-  --t1000-bg: #f4f6f9;
-  --t1000-bg-sunken: #e9edf3;
-  --t1000-bg-raised: #ffffff;
-  --t1000-bg-panel: #f9fafc;
-  --t1000-bg-hover: #eef1f6;
-  --t1000-bg-active: #e2e8f1;
-  --t1000-bg-input: #ffffff;
+  --t1000-bg-solid: #f4f6f9;
+  --t1000-bg-sunken-solid: #e9edf3;
+  --t1000-bg-raised-solid: #ffffff;
+  --t1000-bg-panel-solid: #f9fafc;
+  --t1000-bg-hover-solid: #eef1f6;
+  --t1000-bg-active-solid: #e2e8f1;
+  --t1000-bg-input-solid: #ffffff;
   --t1000-overlay: rgba(28, 34, 44, 0.34);
 
   --t1000-border: #dde3ec;
   --t1000-border-strong: #c3ccda;
-  --t1000-border-accent: rgba(20, 154, 168, 0.45);
+  --t1000-border-accent: rgba(14, 117, 129, 0.45);
 
   --t1000-fg: #1b2029;
   --t1000-fg-muted: #5a6474;
   --t1000-fg-dim: #7d8798;
-  --t1000-fg-faint: #a4aebd;
+  /* 原 #a4aebd 对底色只有 2.07:1 —— 提示类文字在浅色下基本读不清，压暗到 3.06:1 */
+  --t1000-fg-faint: #848e9e;
 
-  --t1000-accent: #12909e;
-  --t1000-accent-strong: #0d7481;
+  /* 原 #12909e：对底色 3.52:1（链接文字）、白字放其上 3.81:1（实心按钮），两处都不足 4.5:1 */
+  --t1000-accent: #0e7581;
+  --t1000-accent-strong: #0a5c66;
   --t1000-accent-fg: #ffffff;
-  --t1000-accent-soft: rgba(18, 144, 158, 0.13);
-  --t1000-accent-softer: rgba(18, 144, 158, 0.06);
+  --t1000-accent-soft: rgba(14, 117, 129, 0.13);
+  --t1000-accent-softer: rgba(14, 117, 129, 0.06);
 
   --t1000-danger: #c62f34;
   --t1000-danger-soft: rgba(198, 47, 52, 0.12);
-  --t1000-warn: #9a6f14;
-  --t1000-warn-soft: rgba(154, 111, 20, 0.13);
+  /* 原 #9a6f14 对底色 4.16:1（作为文字偏弱），压暗到 5.06:1 */
+  --t1000-warn: #8a6210;
+  --t1000-warn-soft: rgba(138, 98, 16, 0.13);
   --t1000-ok: #217a4d;
   --t1000-ok-soft: rgba(33, 122, 77, 0.13);
   --t1000-info: #3f5fd0;

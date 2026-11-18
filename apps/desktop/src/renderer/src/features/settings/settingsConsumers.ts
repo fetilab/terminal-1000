@@ -22,6 +22,11 @@
 export const SETTINGS_CONSUMERS: Record<string, string> = {
   // ── 外观与通用 ──
   'app.theme': 'lib/store.ts applyTheme() → 根节点 data-theme + 终端配色跟随',
+  'app.appearance.preset': 'theme/appearance.ts applyAppearance() → paletteFor(preset) 写入根节点全套 CSS 令牌（背景/面板/文字/强调）',
+  'app.appearance.backgroundImage': 'theme/appearance.ts applyAppearance() → --t1000-bg-image（只接受本地来源，http(s) 一律拒绝）',
+  'app.appearance.backgroundOpacity': 'theme/appearance.ts applyAppearance() → --t1000-bg-image-opacity',
+  'app.appearance.opacity': 'theme/appearance.ts applyAppearance() → --t1000-surface-alpha（设了背景图时乘 BACKGROUND_SURFACE_FACTOR）',
+  'app.appearance.scale': 'theme/appearance.ts applyAppearance() → --t1000-ui-scale',
 
   // ── 终端（全部由 features/terminal/TerminalPane 消费，且支持热更新） ──
   'terminal.fontFamily': 'TerminalPane 创建时使用 + 热更新 term.options.fontFamily',

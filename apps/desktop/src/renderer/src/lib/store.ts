@@ -43,6 +43,7 @@ import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { invoke, subscribe } from './ipc'
 import { ensureUnlocked } from './vault'
 import { toast } from '../components/Toast'
+import { applyAppearance } from '../theme/appearance'
 import { errorText } from './format'
 
 /* ────────────────────────────────────────────── 类型 */
@@ -844,6 +845,8 @@ export async function loadInitialSettings(): Promise<void> {
       {},
     )
     applyTheme(settings.app.theme)
+    // 外观层（预设/背景图/透明度/缩放）在主题之后应用：它要对 data-theme 派生的令牌做覆盖
+    applyAppearance(settings)
     setState({
       transferConflictPolicy: settings.transfer.conflictPolicy,
       aiMode: settings.ai.mode,
