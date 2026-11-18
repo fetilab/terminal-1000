@@ -347,6 +347,75 @@
 }
 .sftp-batch__preview li { display: flex; align-items: center; gap: 6px; padding: 1px 0; color: var(--t1000-fg-muted); }
 
+/* ── 树视图 ─────────────────────────────────────────────────────────── */
+
+/* 行沿用列表那套 4 列网格（.sftp-row），缩进只加在名称格里 ——
+   这样切换视图时列宽、省略号行为完全一致，不会"像两个不同的列表" */
+.sftp-tree__row { cursor: default; }
+
+/* 键盘活动行：方向键移动的是它，不是"选中"（两者语义不同） */
+.sftp-tree__row--active {
+  box-shadow: inset 2px 0 0 var(--t1000-accent);
+}
+
+.sftp-tree__twisty {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: var(--t1000-radius-sm);
+  background: transparent;
+  color: var(--t1000-fg-dim);
+  cursor: pointer;
+}
+
+.sftp-tree__twisty:hover {
+  background: var(--t1000-bg-hover);
+  color: var(--t1000-fg);
+}
+
+/* 文件的占位：让文件图标与同级目录的图标落在同一竖线上 */
+.sftp-tree__spacer {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+/* 展开后尚未取回子项 / 取回失败时的状态行 */
+.sftp-tree__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding-right: 14px;
+  color: var(--t1000-fg-faint);
+  font-size: 11.5px;
+}
+
+.sftp-tree__status--error { color: var(--t1000-danger); }
+
+.sftp-tree__status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-tree__retry {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  border-radius: var(--t1000-radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
 /* ── 改权限对话框：预备执行命令区域 ─────────────────────────────────────── */
 .sftp-chmod__plan {
   display: flex; flex-direction: column; gap: 4px; padding: 8px 10px;

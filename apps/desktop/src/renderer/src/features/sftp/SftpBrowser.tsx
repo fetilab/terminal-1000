@@ -28,7 +28,9 @@ import { Button, IconButton } from '../../components/Button'
 import { Badge, Banner, EmptyState, Loading } from '../../components/Feedback'
 import { Checkbox, Field, TextInput } from '../../components/Form'
 import { Icon } from '../../components/Icon'
+import { ContextMenu, type ContextMenuItem } from '../../components/ContextMenu'
 import { Modal } from '../../components/Modal'
+import { Segmented } from '../../components/Segmented'
 import { toast } from '../../components/Toast'
 import { VirtualList } from '../../components/VirtualList'
 import {
@@ -67,11 +69,61 @@ import {
   isSelected,
   selectAll,
   selectedEntries,
+  type ClickMods,
   type SelectionState,
 } from './selection'
+import {
+  ancestorsOf,
+  collapsePath,
+  dropDir,
+  expandPaths,
+  flattenTree,
+  isSelfOrDescendant,
+  sortEntries,
+  toggleExpanded,
+  treeKeyIntent,
+  withDir,
+  type DirCache,
+  type TreeNode,
+} from './treeModel'
+import { SftpTree } from './SftpTree'
 import './sftp.css'
 
 const LOCAL_DIR_KEY = 't1000:sftp-local-dir'
+const VIEW_KEY = 't1000:sftp-view'
+
+/**
+ * 视图模式。列表是既有主视图，树是按需懒加载的目录导航视图；
+ * 两者共用同一份目录缓存、排序、选择与动作处理，不做并行实现。
+ */
+type SftpViewMode = 'list' | 'tree'
+
+/** 稳定空数组：避免 `dirs[cwd] ?? []` 每次都产生新引用，把下游 memo 全部打穿 */
+const EMPTY_ENTRIES: readonly RemoteEntry[] = []
+
+function rememberedViewMode(): SftpViewMode {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'
+  } catch {
+    return 'list'
+  }
+}
+
+function rememberViewMode(mode: SftpViewMode): void {
+  try {
+    localStorage.setItem(VIEW_KEY, mode)
+  } catch {
+    /* 无痕模式下忽略 */
+  }
+}
+
+/** 删掉一个键并返回新对象（不改原对象）；键不存在时原样返回，避免无意义重渲染 */
+function withoutKey<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
+  if (!(key in record)) return record as Record<string, T>
+  const next: Record<string, T> = { ...record }
+  delete next[key]
+  return next
+}
 
 function rememberedLocalDir(): string {
   try {
@@ -283,7 +335,11 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   const [bmDialog, setBmDialog] = useState<
     { mode: 'add' | 'rename'; id?: string; path: string; name: string } | null
   >(null)
-  const [entries, setEntries] = useState<RemoteEntry[]>([])
+  /**
+   * 目录缓存：path → 已取回的条目。列表与树**共用同一份**，
+   * 「同一目录在两种视图里条目一致」因此是结构上保证的，而不是两处各取一次再对齐。
+   */
+  const [dirs, setDirs] = useState<DirCache<RemoteEntry>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // 多选状态（含连选锚点）。单选值由它派生，保证既有单文件操作语义不变。
@@ -293,6 +349,17 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   const [batchChmodOpen, setBatchChmodOpen] = useState(false)
   const [batchDownloadOpen, setBatchDownloadOpen] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
+
+  const [viewMode, setViewMode] = useState<SftpViewMode>(rememberedViewMode)
+  /** 树的固定锚点（远端 home）。树不随 cwd 重根，否则展开一个目录整棵树都会跳走 */
+  const [treeRoot, setTreeRoot] = useState('')
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>())
+  /** 正在取子项的目录（展开时按需懒加载） */
+  const [dirLoading, setDirLoading] = useState<ReadonlySet<string>>(() => new Set<string>())
+  const [dirErrors, setDirErrors] = useState<Record<string, string>>({})
+  /** 树里键盘活动行（与选中分开：方向键只移动它） */
+  const [activeKey, setActiveKey] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: RemoteEntry } | null>(null)
 
   const [mkdir, setMkdir] = useState(false)
   const [renameTarget, setRenameTarget] = useState<RemoteEntry | null>(null)
@@ -307,6 +374,18 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
 
   const conflictPolicy = useStoreShallow((s) => ({ v: s.transferConflictPolicy })).v
   const seq = useRef(0)
+  /**
+   * 把 showHidden 放进 ref：`load` 的依赖里若含它，切换"显示隐藏"会让 home effect
+   * 重新执行并把 cwd 重置回主目录。过滤条件的变化由下面的 effect 显式处理。
+   */
+  const showHiddenRef = useRef(showHidden)
+  showHiddenRef.current = showHidden
+  const dirsRef = useRef(dirs)
+  dirsRef.current = dirs
+  const expandedRef = useRef(expanded)
+  expandedRef.current = expanded
+  /** 同一目录的并发请求去重（展开 + 刷新可能同时落到一个目录） */
+  const inflight = useRef(new Set<string>())
 
   useEffect(() => {
     wireTransferEvents()
@@ -329,6 +408,10 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     }
   }, [])
 
+  /**
+   * 列表导航：取目录并把它设为 cwd（同时写进共享缓存）。
+   * 只捕获一次请求（seq 全局递增）——快速点面包屑时先发后到的响应必须丢弃。
+   */
   const load = useCallback(
     async (path: string) => {
       if (!sessionId) return
@@ -339,24 +422,61 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         const list = await invoke<'sftp', 'list', Record<string, unknown>, RemoteEntry[]>(
           'sftp',
           'list',
-          { sessionId, path, showHidden },
+          { sessionId, path, showHidden: showHiddenRef.current },
         )
         // 丢弃过期响应：快速点面包屑时先发的可能后到
         if (mySeq !== seq.current) return
-        setEntries(Array.isArray(list) ? list : [])
+        setDirs((prev) => withDir(prev, path, Array.isArray(list) ? list : []))
+        setDirErrors((prev) => withoutKey(prev, path))
         setCwd(path)
       } catch (err) {
         if (mySeq !== seq.current) return
-        setError(errorText(err))
-        setEntries([])
+        const message = errorText(err)
+        setError(message)
+        setDirs((prev) => dropDir(prev, path))
+        setDirErrors((prev) => ({ ...prev, [path]: message }))
       } finally {
         if (mySeq === seq.current) setLoading(false)
       }
     },
-    [sessionId, showHidden],
+    [sessionId],
   )
 
-  // 首次进入：先问远端 home，避免猜错起始目录
+  /**
+   * 树视图的按需懒加载：只写缓存，不动 cwd、不动 loading（那是列表导航的状态）。
+   * 失败要落进 dirErrors —— 否则展开一个没权限的目录会永远停在"读取中…"。
+   */
+  const fetchDir = useCallback(
+    async (path: string): Promise<void> => {
+      if (!sessionId) return
+      if (inflight.current.has(path)) return
+      inflight.current.add(path)
+      setDirLoading((prev) => new Set(prev).add(path))
+      setDirErrors((prev) => withoutKey(prev, path))
+      try {
+        const list = await invoke<'sftp', 'list', Record<string, unknown>, RemoteEntry[]>(
+          'sftp',
+          'list',
+          { sessionId, path, showHidden: showHiddenRef.current },
+        )
+        setDirs((prev) => withDir(prev, path, Array.isArray(list) ? list : []))
+      } catch (err) {
+        const message = errorText(err)
+        setDirErrors((prev) => ({ ...prev, [path]: message }))
+      } finally {
+        inflight.current.delete(path)
+        setDirLoading((prev) => {
+          if (!prev.has(path)) return prev
+          const next = new Set(prev)
+          next.delete(path)
+          return next
+        })
+      }
+    },
+    [sessionId],
+  )
+
+  // 首次进入：先问远端 home，避免猜错起始目录。树的锚点也用同一个值。
   useEffect(() => {
     if (!sessionId) return
     let cancelled = false
@@ -367,10 +487,14 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           'home',
           { sessionId },
         )
-        if (!cancelled && res?.path) void load(res.path)
+        if (!cancelled && res?.path) {
+          setTreeRoot(res.path)
+          void load(res.path)
+        }
       } catch (err) {
         if (!cancelled) {
           setError(errorText(err))
+          setTreeRoot('/')
           void load('/')
         }
       }
@@ -380,22 +504,74 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     }
   }, [sessionId, load])
 
-  const sorted = useMemo(() => {
-    const copy = entries.slice()
-    copy.sort((a, b) => {
-      // 目录永远排在文件前面，再按名字排
-      const da = a.type === 'directory' ? 0 : 1
-      const db = b.type === 'directory' ? 0 : 1
-      if (da !== db) return da - db
-      return a.name.localeCompare(b.name, 'zh-CN')
-    })
-    return copy
-  }, [entries])
+  /**
+   * 「显示隐藏」切换后缓存整体失效：缓存里存的是旧过滤条件下的结果，混着用会让
+   * 树和列表对同一目录给出**不同**条目。这里清空缓存并按当前需要重取（保留展开状态）。
+   */
+  const hiddenRef = useRef(showHidden)
+  useEffect(() => {
+    if (hiddenRef.current === showHidden) return
+    hiddenRef.current = showHidden
+    setDirs({})
+    setDirErrors({})
+    inflight.current.clear()
+    const targets = new Set<string>()
+    if (cwd) targets.add(cwd)
+    if (treeRoot) targets.add(treeRoot)
+    for (const p of expandedRef.current) targets.add(p)
+    if (cwd) void load(cwd)
+    for (const p of targets) {
+      if (p !== cwd) void fetchDir(p)
+    }
+  }, [showHidden, cwd, treeRoot, load, fetchDir])
+
+  const cwdEntries = dirs[cwd] ?? EMPTY_ENTRIES
+  /** 列表行的排序。树也用 `sortEntries`，两个视图对同一目录的条目与顺序必然一致 */
+  const sorted = useMemo(() => sortEntries(cwdEntries), [cwdEntries])
+
+  const treeRootEntries = useMemo(() => sortEntries(dirs[treeRoot] ?? EMPTY_ENTRIES), [dirs, treeRoot])
+  const treeRows = useMemo(
+    () =>
+      flattenTree<RemoteEntry>({
+        roots: treeRootEntries,
+        expanded,
+        childrenOf: (path) => dirs[path],
+        statusOf: (path) => {
+          const message = dirErrors[path]
+          if (message !== undefined) return { status: 'error' as const, message }
+          return dirLoading.has(path) ? { status: 'loading' as const } : undefined
+        },
+      }),
+    [treeRootEntries, expanded, dirs, dirErrors, dirLoading],
+  )
+
+  /**
+   * 所有已知条目（当前目录 + 树里已加载的目录），按 path 去重、当前目录优先。
+   * 树视图里选中的条目可能不在 cwd，单文件动作与批量操作必须能定位到它；
+   * 列表视图下选择只可能来自 cwd，因此这里与原先的行为完全一致。
+   */
+  const knownEntries = useMemo(() => {
+    const out: RemoteEntry[] = []
+    const seen = new Set<string>()
+    const add = (list: readonly RemoteEntry[] | undefined): void => {
+      for (const entry of list ?? []) {
+        if (seen.has(entry.path)) continue
+        seen.add(entry.path)
+        out.push(entry)
+      }
+    }
+    add(sorted)
+    for (const list of Object.values(dirs)) add(list)
+    return out
+  }, [sorted, dirs])
+
+  const entryByPath = useMemo(() => new Map(knownEntries.map((e) => [e.path, e])), [knownEntries])
 
   /** 只有"恰好选中一项"才启用单文件操作；多选时不显示，避免误触单击动作 */
   const selectedPath = selection.ids.length === 1 ? (selection.ids[0] ?? null) : null
   const selected = selectedPath
-  const pickedEntries = useMemo(() => selectedEntries(sorted, selection), [sorted, selection])
+  const selectedEntry = selected ? (entryByPath.get(selected) ?? null) : null
+  const pickedEntries = useMemo(() => selectedEntries(knownEntries, selection), [knownEntries, selection])
   const pickedDirs = countDirectories(pickedEntries)
   const multiSelecting = selection.ids.length >= 2
 
@@ -715,6 +891,222 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     }).then(() => reload())
   }
 
+  /* ── 树视图：动作 / 键盘（与列表共用同一套选择状态与动作） ───────────── */
+
+  const expandNode = useCallback(
+    (path: string): void => {
+      setExpanded((prev) => expandPaths(prev, [path]))
+      if (dirsRef.current[path] === undefined) void fetchDir(path)
+    },
+    [fetchDir],
+  )
+
+  const collapseNode = useCallback((path: string): void => {
+    setExpanded((prev) => collapsePath(prev, path))
+  }, [])
+
+  /** chevron 点击：切开展开态；展开时按需取子项（已缓存则不重复请求） */
+  const toggleNode = useCallback(
+    (path: string): void => {
+      const willExpand = !expandedRef.current.has(path)
+      setExpanded((prev) => toggleExpanded(prev, path))
+      if (willExpand && dirsRef.current[path] === undefined) void fetchDir(path)
+    },
+    [fetchDir],
+  )
+
+  /** 打开目录：展开它并把列表导航过去 —— 与列表双击同一语义（同一个 load） */
+  const openDir = useCallback(
+    (path: string): void => {
+      expandNode(path)
+      void load(path)
+    },
+    [expandNode, load],
+  )
+
+  /**
+   * 切到树视图时把 cwd 揭示出来：展开祖先链并按需取回缺失的祖先目录。
+   * 只处理树锚点之下的祖先 —— 锚点之上的路径本来就不在这棵树里。
+   */
+  const revealPath = useCallback(
+    async (path: string): Promise<void> => {
+      if (!treeRoot || path === treeRoot) {
+        setActiveKey(null)
+        return
+      }
+      const chain = ancestorsOf(path).filter((p) => isSelfOrDescendant(p, treeRoot))
+      if (chain.length > 0) setExpanded((prev) => expandPaths(prev, chain))
+      for (const dir of chain) {
+        if (dirsRef.current[dir] === undefined) await fetchDir(dir)
+      }
+      setActiveKey(path)
+    },
+    [treeRoot, fetchDir],
+  )
+
+  const switchView = useCallback(
+    (mode: SftpViewMode): void => {
+      setViewMode(mode)
+      rememberViewMode(mode)
+      if (mode === 'tree') {
+        if (cwd) void revealPath(cwd)
+      } else {
+        setActiveKey(null)
+      }
+    },
+    [cwd, revealPath],
+  )
+
+  const onTreeRowClick = useCallback(
+    (row: TreeNode<RemoteEntry>, mods: ClickMods): void => {
+      // 复用列表的多选状态机；连选范围按"当前可见的树行"计算
+      const ordered = treeRows.filter((r) => r.kind === 'entry').map((r) => r.path)
+      setSelection((prev) => clickSelection(prev, ordered, row.path, mods))
+      setActiveKey(row.key)
+    },
+    [treeRows],
+  )
+
+  /** Enter / 双击目录：与列表双击一致；文件不静默调起编辑器 */
+  const onTreeActivate = useCallback(
+    (row: TreeNode<RemoteEntry>): void => {
+      if (row.kind !== 'entry' || !row.entry) return
+      if (row.isDirectory) openDir(row.path)
+      else setActiveKey(row.key)
+    },
+    [openDir],
+  )
+
+  const onTreeKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>): void => {
+      const intent = treeKeyIntent<RemoteEntry>({
+        key: e.key,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        rows: treeRows,
+        activeKey,
+      })
+      switch (intent.kind) {
+        case 'ignore':
+          // 未识别的按键原样放行，绝不 preventDefault：终端快捷键不受影响
+          return
+        case 'move':
+          e.preventDefault()
+          e.stopPropagation()
+          setActiveKey(intent.key)
+          return
+        case 'expand':
+          e.preventDefault()
+          e.stopPropagation()
+          expandNode(intent.path)
+          return
+        case 'collapse':
+          e.preventDefault()
+          e.stopPropagation()
+          collapseNode(intent.path)
+          return
+        case 'activate':
+          e.preventDefault()
+          e.stopPropagation()
+          if (intent.isDirectory) openDir(intent.path)
+          else setActiveKey(intent.key)
+          return
+        case 'selectAll':
+          e.preventDefault()
+          e.stopPropagation()
+          setSelection(selectAll(treeRows.filter((r) => r.kind === 'entry').map((r) => r.path)))
+          return
+        case 'clear':
+          e.preventDefault()
+          e.stopPropagation()
+          setSelection(clearSelection())
+          return
+      }
+    },
+    [treeRows, activeKey, expandNode, collapseNode, openDir],
+  )
+
+  /**
+   * 右键先选中目标再打开；菜单动作作用于"看得见的选择"，
+   * 并且只调用工具栏/批量条在用的那些 setter —— 不另写一套动作逻辑。
+   */
+  const openRowMenu = useCallback((entry: RemoteEntry, x: number, y: number): void => {
+    setSelection((prev) => (prev.ids.includes(entry.path) ? prev : { ids: [entry.path], anchor: entry.path }))
+    setMenu({ x, y, entry })
+  }, [])
+
+  const menuTargets = useMemo((): RemoteEntry[] => {
+    if (!menu) return []
+    if (selection.ids.length >= 2 && selection.ids.includes(menu.entry.path)) return pickedEntries
+    return [menu.entry]
+  }, [menu, selection, pickedEntries])
+
+  const menuItems = useMemo((): ContextMenuItem[] => {
+    if (!menu) return []
+    const many = menuTargets.length
+    const single = many === 1 ? menuTargets[0] : undefined
+    const items: ContextMenuItem[] = []
+    if (single) {
+      items.push({
+        id: 'open',
+        label: single.type === 'directory' ? '打开目录' : '用内置编辑器打开',
+        icon: single.type === 'directory' ? 'folder-open' : 'edit',
+        onSelect: () => {
+          if (single.type === 'directory') openDir(single.path)
+          else setEditingPath(single.path)
+        },
+      })
+      items.push({ id: 'download', label: '下载', icon: 'download', onSelect: () => setDownloadTarget(single) })
+      items.push({ id: 'rename', label: '重命名', icon: 'edit', onSelect: () => setRenameTarget(single) })
+    } else {
+      items.push({
+        id: 'batch-download',
+        label: `批量下载（${many} 项）`,
+        icon: 'download',
+        onSelect: () => setBatchDownloadOpen(true),
+      })
+    }
+    items.push({
+      id: 'chmod',
+      label: many > 1 ? `批量改权限（${many} 项）` : '权限',
+      icon: 'sliders',
+      separatorBefore: true,
+      onSelect: () => {
+        if (many > 1) setBatchChmodOpen(true)
+        else if (single) setChmodTarget(single)
+      },
+    })
+    items.push({
+      id: 'delete',
+      label: many > 1 ? `批量删除（${many} 项）` : '删除',
+      icon: 'trash',
+      danger: true,
+      onSelect: () => {
+        if (many > 1) setBatchDeleteOpen(true)
+        else if (single) setDeleteTarget(single)
+      },
+    })
+    items.push({
+      id: 'copy-path',
+      label: many > 1 ? `复制 ${many} 个路径` : '复制路径',
+      icon: 'copy',
+      separatorBefore: true,
+      onSelect: () => {
+        if (!navigator.clipboard) {
+          toast.error('当前环境不支持剪贴板')
+          return
+        }
+        void navigator.clipboard
+          .writeText(menuTargets.map((e) => e.path).join('\n'))
+          .then(() => toast.ok('已复制路径'))
+          .catch(() => toast.error('复制路径失败'))
+      },
+    })
+    return items
+    // openDir 的依赖已包含 load/expandNode；setter 均来自 useState，引用稳定
+  }, [menu, menuTargets, openDir])
+
   if (!sessionId) {
     return (
       <main className="content" aria-label="文件">
@@ -814,31 +1206,40 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         <IconButton
           icon="download"
           label="下载"
-          disabled={!selected}
+          disabled={!selectedEntry}
           onClick={() => {
-            const entry = entries.find((e) => e.path === selected)
-            if (entry) setDownloadTarget(entry)
+            if (selectedEntry) setDownloadTarget(selectedEntry)
           }}
         />
         <IconButton
           icon="edit"
           label="用内置编辑器打开（语法高亮 + 查找替换）"
-          disabled={!selected}
+          disabled={!selectedEntry}
           onClick={() => {
-            const entry = entries.find((e) => e.path === selected)
-            if (entry && !entry.name.endsWith('/')) setEditingPath(entry.path)
+            if (selectedEntry && !selectedEntry.name.endsWith('/')) setEditingPath(selectedEntry.path)
           }}
         />
         <IconButton
           icon="download"
           label="用系统编辑器打开（物化到本地临时文件）"
-          disabled={!selected}
+          disabled={!selectedEntry}
           onClick={() => {
-            const entry = entries.find((e) => e.path === selected)
-            if (entry) void openRemoteEditor(entry)
+            if (selectedEntry) void openRemoteEditor(selectedEntry)
           }}
         />
         <div className="t-toolbar__spacer" />
+        <div data-testid="sftp-view-toggle">
+          <Segmented
+            bare
+            ariaLabel="SFTP 视图模式"
+            value={viewMode}
+            onChange={switchView}
+            items={[
+              { value: 'list', label: '列表', icon: 'list' },
+              { value: 'tree', label: '树', icon: 'folder-open' },
+            ]}
+          />
+        </div>
         <label className="sftp-row__perm" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <Checkbox checked={showHidden} onChange={setShowHidden} ariaLabel="显示隐藏文件" bare />
           显示隐藏
@@ -875,86 +1276,110 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         <span>修改时间</span>
       </div>
 
-      <div
-        className="sftp-list"
-        data-testid="sftp-list"
-        tabIndex={0}
-        role="listbox"
-        aria-multiselectable
-        // 快捷键只在列表被聚焦/鼠标落在列表里时生效 —— 绝不抢终端的 Ctrl+A
-        onKeyDown={(e) => {
-          const mod = e.ctrlKey || e.metaKey
-          if (mod && (e.key === 'a' || e.key === 'A')) {
-            e.preventDefault()
-            e.stopPropagation()
-            setSelection(selectAll(sorted.map((x) => x.path)))
-            return
-          }
-          if (e.key === 'Escape') {
-            e.preventDefault()
-            setSelection(clearSelection())
-          }
-        }}
-        onMouseDown={(e) => {
-          const el = e.currentTarget
-          if (document.activeElement !== el) el.focus()
-          // 空白处按下清除选择；用 closest 判断，兼容虚拟列表的内层滚动容器
-          if (!(e.target as HTMLElement).closest('[data-testid="sftp-row"]')) {
-            setSelection(clearSelection())
-          }
-        }}
-      >
-        {loading && entries.length === 0 ? (
-          <Loading text="读取目录…" />
-        ) : sorted.length === 0 && !error ? (
-          <EmptyState icon="folder" title="空目录" text="这个目录下没有可显示的内容。" />
-        ) : (
-          <VirtualList
-            items={sorted}
-            rowHeight={30}
-            className="sftp-scroll"
-            getKey={(e) => e.path}
-            renderRow={(entry) => {
-              const kind = entryIconType(entry)
-              const isDir = entry.type === 'directory'
-              return (
-                <div
-                  className={`sftp-row${isSelected(selection, entry.path) ? ' sftp-row--selected' : ''}`}
-                  data-testid="sftp-row"
-                  data-path={entry.path}
-                  data-entry-type={entry.type}
-                  aria-selected={isSelected(selection, entry.path)}
-                  // 单击只改选择，**不做默认动作** —— 否则 Ctrl 点十个就会打开/下载十个
-                  onClick={(e) => {
-                    setSelection((prev) =>
-                      clickSelection(prev, sorted.map((x) => x.path), entry.path, {
-                        ctrl: e.ctrlKey,
-                        meta: e.metaKey,
-                        shift: e.shiftKey,
-                      }),
-                    )
-                  }}
-                  onDoubleClick={() => {
-                    // 双击打开仅限单选；连选过程中双击不触发
-                    if (isDir && selection.ids.length <= 1) void load(entry.path)
-                  }}
-                >
-                  <div className={`sftp-row__name${isDir ? ' sftp-row__name--dir' : kind === 'link' ? ' sftp-row__name--link' : ''}`}>
-                    <Icon name={kind === 'folder' ? 'folder' : kind === 'link' ? 'connections' : 'notes'} size={13} />
-                    <span title={entry.name}>{entry.name}</span>
-                    {kind === 'link' ? <Badge tone="outline">软链</Badge> : null}
+      {viewMode === 'list' ? (
+        <div
+          className="sftp-list"
+          data-testid="sftp-list"
+          tabIndex={0}
+          role="listbox"
+          aria-multiselectable
+          // 快捷键只在列表被聚焦/鼠标落在列表里时生效 —— 绝不抢终端的 Ctrl+A
+          onKeyDown={(e) => {
+            const mod = e.ctrlKey || e.metaKey
+            if (mod && (e.key === 'a' || e.key === 'A')) {
+              e.preventDefault()
+              e.stopPropagation()
+              setSelection(selectAll(sorted.map((x) => x.path)))
+              return
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              setSelection(clearSelection())
+            }
+          }}
+          onMouseDown={(e) => {
+            const el = e.currentTarget
+            if (document.activeElement !== el) el.focus()
+            // 空白处按下清除选择；用 closest 判断，兼容虚拟列表的内层滚动容器
+            if (!(e.target as HTMLElement).closest('[data-testid="sftp-row"]')) {
+              setSelection(clearSelection())
+            }
+          }}
+        >
+          {loading && sorted.length === 0 ? (
+            <Loading text="读取目录…" />
+          ) : sorted.length === 0 && !error ? (
+            <EmptyState icon="folder" title="空目录" text="这个目录下没有可显示的内容。" />
+          ) : (
+            <VirtualList
+              items={sorted}
+              rowHeight={30}
+              className="sftp-scroll"
+              getKey={(e) => e.path}
+              renderRow={(entry) => {
+                const kind = entryIconType(entry)
+                const isDir = entry.type === 'directory'
+                return (
+                  <div
+                    className={`sftp-row${isSelected(selection, entry.path) ? ' sftp-row--selected' : ''}`}
+                    data-testid="sftp-row"
+                    data-path={entry.path}
+                    data-entry-type={entry.type}
+                    aria-selected={isSelected(selection, entry.path)}
+                    // 单击只改选择，**不做默认动作** —— 否则 Ctrl 点十个就会打开/下载十个
+                    onClick={(e) => {
+                      setSelection((prev) =>
+                        clickSelection(prev, sorted.map((x) => x.path), entry.path, {
+                          ctrl: e.ctrlKey,
+                          meta: e.metaKey,
+                          shift: e.shiftKey,
+                        }),
+                      )
+                    }}
+                    onDoubleClick={() => {
+                      // 双击打开仅限单选；连选过程中双击不触发
+                      if (isDir && selection.ids.length <= 1) void load(entry.path)
+                    }}
+                    // 与树视图共用同一个右键菜单（同一批 setter，不存在两套动作）
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      openRowMenu(entry, e.clientX, e.clientY)
+                    }}
+                  >
+                    <div className={`sftp-row__name${isDir ? ' sftp-row__name--dir' : kind === 'link' ? ' sftp-row__name--link' : ''}`}>
+                      <Icon name={kind === 'folder' ? 'folder' : kind === 'link' ? 'connections' : 'notes'} size={13} />
+                      <span title={entry.name}>{entry.name}</span>
+                      {kind === 'link' ? <Badge tone="outline">软链</Badge> : null}
+                    </div>
+                    <span className="sftp-row__num" style={{ textAlign: 'right' }}>
+                      {isDir ? '—' : formatBytes(entry.size)}
+                    </span>
+                    <span className="sftp-row__perm">{entry.permissions}</span>
+                    <span className="sftp-row__num">{formatDate(new Date(entry.mtime).toISOString())}</span>
                   </div>
-                  <span className="sftp-row__num" style={{ textAlign: 'right' }}>
-                    {isDir ? '—' : formatBytes(entry.size)}
-                  </span>
-                  <span className="sftp-row__perm">{entry.permissions}</span>
-                  <span className="sftp-row__num">{formatDate(new Date(entry.mtime).toISOString())}</span>
-                </div>
-              )
-            }}
-          />
-        )}
-      </div>
+                )
+              }}
+            />
+          )}
+        </div>
+      ) : (
+        <SftpTree
+          rows={treeRows}
+          selection={selection}
+          activeKey={activeKey}
+          loading={loading && treeRootEntries.length === 0}
+          emptyText={treeRoot ? `「${treeRoot}」下没有可显示的内容。` : '还没有拿到远端主目录。'}
+          onRowClick={onTreeRowClick}
+          onRowDoubleClick={onTreeActivate}
+          onToggle={(row) => toggleNode(row.path)}
+          onContextMenu={(row, x, y) => {
+            if (row.entry) openRowMenu(row.entry, x, y)
+          }}
+          onKeyDown={onTreeKeyDown}
+          onBlankMouseDown={() => setSelection(clearSelection())}
+          onRetry={(row) => void fetchDir(row.path)}
+        />
+      )}
 
       {multiSelecting ? (
         <div className="sftp-queue__head sftp-batchbar" data-testid="batch-toolbar">
@@ -1004,20 +1429,17 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
             {selected}
           </span>
           <Button size="sm" variant="ghost" icon="edit" onClick={() => {
-            const e = entries.find((x) => x.path === selected)
-            if (e) setRenameTarget(e)
+            if (selectedEntry) setRenameTarget(selectedEntry)
           }}>
             重命名
           </Button>
           <Button size="sm" variant="ghost" icon="sliders" onClick={() => {
-            const e = entries.find((x) => x.path === selected)
-            if (e) setChmodTarget(e)
+            if (selectedEntry) setChmodTarget(selectedEntry)
           }}>
             权限
           </Button>
           <Button size="sm" variant="danger" icon="trash" onClick={() => {
-            const e = entries.find((x) => x.path === selected)
-            if (e) setDeleteTarget(e)
+            if (selectedEntry) setDeleteTarget(selectedEntry)
           }}>
             删除
           </Button>
@@ -1366,6 +1788,15 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           onSaved={() => reload()}
         />
       ) : null}
+
+      {/* 行右键菜单：列表与树共用（同一份菜单项构造） */}
+      <ContextMenu
+        open={menu !== null}
+        x={menu?.x ?? 0}
+        y={menu?.y ?? 0}
+        items={menuItems}
+        onClose={() => setMenu(null)}
+      />
 
       {bmDialog ? (
         <Modal
