@@ -67,6 +67,22 @@
   min-width: 0;
 }
 
+/* 文件栏（左）：与终端并存而非互换；SftpBrowser 根是 .content，这里约束它的外框 */
+.term-files {
+  display: flex;
+  flex: 0 0 440px;
+  min-width: 280px;
+  max-width: 45%;
+  min-height: 0;
+  border-right: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-panel);
+}
+
+.term-files .content {
+  flex: 1;
+  min-width: 0;
+}
+
 .term-main {
   display: flex;
   flex-direction: column;

@@ -189,7 +189,9 @@ export interface TerminalTab {
   layout: PaneLayout
   /** 该标签右侧是否展开监控 */
   monitorOpen: boolean
-  /** 工作区视图：终端 / 远端文件（SFTP） */
+  /** 该标签左侧是否展开文件栏（ssh/local 有文件系统；telnet 没有） */
+  filesOpen: boolean
+  /** 工作区视图：终端 / 远端文件（SFTP）；三栏布局下终端类会话不再切换，保留字段兼容既有存档 */
   mode: 'terminal' | 'sftp'
   createdAt: number
 }
@@ -1650,7 +1652,7 @@ export async function writeToSession(kind: TabKind, sessionId: string, data: str
 let tabSeq = 0
 
 function makeTab(
-  partial: Omit<TerminalTab, 'tabId' | 'createdAt' | 'layout' | 'monitorOpen' | 'encoding' | 'mode'> & {
+  partial: Omit<TerminalTab, 'tabId' | 'createdAt' | 'layout' | 'monitorOpen' | 'filesOpen' | 'encoding' | 'mode'> & {
     encoding?: TerminalEncoding
   },
 ): TerminalTab {
@@ -1660,6 +1662,7 @@ function makeTab(
     createdAt: Date.now(),
     layout: 'single',
     monitorOpen: false,
+    filesOpen: true,
     mode: 'terminal',
     encoding: partial.encoding ?? 'utf-8',
     ...partial,
@@ -1715,6 +1718,12 @@ export function toggleTabMonitor(tabId: string): void {
   const tab = state.tabs.find((t) => t.tabId === tabId)
   if (!tab) return
   updateTab(tabId, { monitorOpen: !tab.monitorOpen })
+}
+
+export function toggleTabFiles(tabId: string): void {
+  const tab = state.tabs.find((t) => t.tabId === tabId)
+  if (!tab) return
+  updateTab(tabId, { filesOpen: !tab.filesOpen })
 }
 
 /**
@@ -1812,8 +1821,10 @@ export async function connectTo(connection: UiConnection): Promise<void> {
       { sessionId: string }
     >(connection.kind === 'telnet' ? 'telnet' : 'ssh', 'connect', { connection })
     if (res?.sessionId) {
-      updateTab(tab.tabId, { sessionId: res.sessionId, state: 'ready' })
-      if (state.monitorOpen) void startMonitor(res.sessionId)
+      // 连接即开监控：采集脚本自动上传（collector 做版本比对，只传一次）并开始拉数据，
+      // 右栏只是它的展示面 —— 不因面板开着与否决定采不采集
+      updateTab(tab.tabId, { sessionId: res.sessionId, state: 'ready', monitorOpen: true })
+      void startMonitor(res.sessionId)
       touchConnection(connection.id)
     }
   } catch (err) {

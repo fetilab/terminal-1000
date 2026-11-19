@@ -32,7 +32,7 @@ import {
   openLocalTerminal,
   setActiveTab,
   setTabLayout,
-  setTabMode,
+  toggleTabFiles,
   toggleTabMonitor,
   useStoreShallow,
   type PaneLayout,
@@ -97,6 +97,8 @@ export default function TerminalWorkspace(): React.JSX.Element {
   const toolbarVisible = useStoreShallow((s) => ({ v: s.toolbarVisible })).v
   const isTerminalLike =
     active?.kind === 'ssh' || active?.kind === 'local' || active?.kind === 'telnet' || active === undefined
+  /** 有文件系统的会话才有文件栏：telnet 只是字符流，vnc/rdp/tunnel 是各自视图 */
+  const hasFiles = active?.kind === 'ssh' || active?.kind === 'local' || active === undefined
   const activeGroup = broadcastGroupOf(active?.sessionId)
   const groupOf = (sessionId: string | undefined): typeof activeGroup =>
     sessionId ? groups.find((g) => g.members.some((m) => m.sessionId === sessionId)) : undefined
@@ -207,28 +209,15 @@ export default function TerminalWorkspace(): React.JSX.Element {
         {isTerminalLike ? (
         <>
         <div className="t-toolbar__divider" />
-        {/* 终端 / 远端文件：同一会话的两种视图，SFTP 依附于该会话 */}
-        <div className="t-segmented" role="tablist" aria-label="工作区视图">
-          {(
-            [
-              ['terminal', '终端'],
-              ['sftp', '文件'],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              role="tab"
-              aria-selected={(mono.mode ?? 'terminal') === value}
-              disabled={value === 'sftp' && !mono.sessionId}
-              title={value === 'sftp' && !mono.sessionId ? '会话建立后才能浏览远端文件' : undefined}
-              className={`t-segmented__item${(mono.mode ?? 'terminal') === value ? ' t-segmented__item--active' : ''}`}
-              onClick={() => setTabMode(mono.tabId, value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {/* 文件栏（左）：ssh/local 有文件系统；telnet 没有不给开关 */}
+        {hasFiles ? (
+          <IconButton
+            icon="folder"
+            label={mono.filesOpen ? '收起文件栏' : '展开文件栏'}
+            tone={mono.filesOpen ? 'accent' : 'default'}
+            onClick={() => toggleTabFiles(mono.tabId)}
+          />
+        ) : null}
         <div className="t-toolbar__divider" />
         {LAYOUTS.map((l) => (
           <IconButton
@@ -371,11 +360,14 @@ export default function TerminalWorkspace(): React.JSX.Element {
             </Suspense>
           </aside>
         ) : null}
-        {isTerminalLike && (mono.mode ?? 'terminal') === 'sftp' ? (
-          <Suspense fallback={<Loading text="正在载入文件浏览器…" />}>
-            <SftpBrowser sessionId={mono.sessionId} title={mono.title} />
-          </Suspense>
-        ) : (
+        {/* 文件栏（左）：与会话并存而非互换 —— ssh 用真 sftp，local 用本地后端（见 sftp 域） */}
+        {isTerminalLike && hasFiles && mono.filesOpen && mono.sessionId ? (
+          <aside className="term-files" aria-label="文件浏览">
+            <Suspense fallback={<Loading text="正在载入文件浏览器…" />}>
+              <SftpBrowser sessionId={mono.sessionId} title={mono.title} />
+            </Suspense>
+          </aside>
+        ) : null}
         <div className={`term-panes term-panes--${isTerminalLike ? layout : 'single'}`}>
           {tabs.map((tab) => {
             const visible = visibleIds.includes(tab.tabId)
@@ -420,9 +412,8 @@ export default function TerminalWorkspace(): React.JSX.Element {
             )
           })}
         </div>
-        )}
 
-        {isTerminalLike && mono.monitorOpen && (mono.mode ?? 'terminal') === 'terminal' ? (
+        {isTerminalLike && mono.monitorOpen ? (
           <Suspense fallback={<div className="monitor"><Loading text="正在载入监控面板…" /></div>}>
             <MonitorPanel
               sessionId={mono.sessionId}
