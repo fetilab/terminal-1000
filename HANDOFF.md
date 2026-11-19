@@ -13,6 +13,13 @@ AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研�
 
 工作目录：`/home/mosfet/dsh1/terminal-1000`
 
+### GitHub 与发布（2026-11-19 起）
+- 远端：`https://github.com/fetilab/terminal-1000`（public，GPL-3.0），分支 `master`
+- 本机推送走 `https://github.com:443/...`（绕开全局 insteadOf 的只读代理重写）或
+  `ssh.github.com:443`（公钥已注册到 fetilab 账号）；fastgithub/gh-proxy 只能克隆不能推送
+- Release：`v0.1.0` 已发布，deb/rpm/pacman/AppImage/flatpak/exe 六附件（exe 为实验性）
+- flatpak 需要 24.08 运行时 + `org.electronjs.Electron2.BaseApp`（已装，源为 USTC 镜像）
+
 ### 合规红线（必须遵守）
 - **绝不把 `research/` 下的任何内容写进产品**：那是逆向材料（原软件解包、文档摘录）。
   产品代码、语料、文案、图标一律**自研**。
