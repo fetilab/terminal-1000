@@ -71,6 +71,13 @@ linux:
     - AppImage
     - rpm
     - pacman
+    - flatpak
+# Electron 45 需要 24.08 运行时（默认 20.08 的 glibc 跑不起来），BaseApp 提供 Electron 运行环境
+flatpak:
+  runtime: org.freedesktop.Platform
+  runtimeVersion: 24.08
+  base: org.electronjs.Electron2.BaseApp
+  baseVersion: 24.08
   category: Network
   synopsis: 远程连接管理器（SSH/SFTP/Telnet/VNC/RDP）
   description: >-
@@ -93,3 +100,10 @@ deb:
     - xdg-utils
     - libatspi2.0-0
     - libsecret-1-0
+
+# Windows 交叉构建（实验性）：wine 已装可出 NSIS 安装器；原生模块（node-pty/better-sqlite3）
+# 仍是在 Linux ABI 下重建的，未做 win32 交叉编译 —— 正式 Windows 包应在 Windows CI 上出。
+win:
+  target:
+    - nsis
+  signAndEditExecutable: false

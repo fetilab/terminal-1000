@@ -5,7 +5,29 @@
 **terminal-1000** 把终端、文件传输、端口转发、图形远程桌面和服务器监控整合到一个桌面应用，
 面向需要管理多台服务器的开发者与运维人员。
 
-**许可证：[GPL-3.0](LICENSE)** · 状态：**开发中（尚未发布）**
+**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.1.0**
+
+---
+
+## 下载与安装
+
+全部安装包在本仓库的 [Releases](../../releases) 提供，同样可以用下面的打包命令自行构建：
+
+| 格式 | 适用 | 说明 |
+|---|---|---|
+| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.1.0_amd64.deb` |
+| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.1.0.x86_64.rpm` |
+| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.1.0.pacman` |
+| `.AppImage` | 任意发行版 | 免安装，`chmod +x` 后直接运行 |
+| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.1.0-x86_64.flatpak` |
+| `.exe` | Windows | **实验性**，见下方说明 |
+
+> **Windows 包现状**：安装器可构建，但应用的原生模块（node-pty / better-sqlite3）目前只在
+> Linux ABI 下重建，未做 win32 交叉编译。Windows 用户请先用 WSL 或等待正式的
+> Windows CI 产物（见 [CONTRIBUTING.md](CONTRIBUTING.md) 的 CI 计划）。
+
+**系统要求**：Linux x86-64（GTK3 / libnotify / NSS）/ Windows 10+。首次启动会要求设置主密码，
+用于加密本机保存的全部服务器凭证。
 
 ---
 
@@ -75,6 +97,32 @@ terminal-1000 是一个**独立实现**的开源项目。它**不是**任何商�
 - 加密备份导入导出
 - 云同步（可选、自建后端、**零知识**：服务端只存密文，密钥不出本机）
 
+### 同步通道的安全模型（TSC/1）
+
+多端同步默认走自研的 **TSC/1 加密通道**（`docs/SYNC-SECURE-CHANNEL.md`），三条不变量：
+
+1. **零知识**：数据在本机用「同步口令」加密后才上传；服务端被攻破也只是密文泄露，
+   与备份文件被拿走同级。同步口令与服务端账号口令是两个独立的口令。
+2. **SSH 式信任（TOFU）**：首次连接核对服务端身份指纹（应用内只读探测，不带任何数据），
+   核对后**钉扎**；之后每次连接校验对端出示的身份，不符立即拒绝。
+3. **身份变化 ≠ 首次连接**：已钉扎的服务端换了身份时，界面给出的是**常驻的中间人告警**
+   （附已记录/本次收到两个指纹），而不是"请核对后信任"——这两件事被混淆等于引导用户
+   信任攻击者的密钥。此路径有端到端验收（`scripts/acceptance.mjs` 的 S21）盯防。
+
+握手失败**永不退回明文 HTTP**（规范 §3.3.1）：有退路就有降级攻击。
+
+### 自建同步后端
+
+同步是可选功能；不配置就是纯本地应用。要启用时自己跑 `server/`（零依赖纯 JS）：
+
+```bash
+cd server && node src/index.js   # 默认 HTTP 8787（仅回环）+ TSC/1 8788（可公网）
+```
+
+- 只依赖 Node ≥ 22，无 npm 依赖；数据落本地目录，账号/令牌/密文 blob 三类记录
+- 单机部署、反代、systemd 与指纹核对流程见 [docs/DEPLOYMENT-192.168.1.187.md](docs/DEPLOYMENT-192.168.1.187.md)
+- 协议规范与威胁模型见 [docs/SYNC-SECURE-CHANNEL.md](docs/SYNC-SECURE-CHANNEL.md)
+
 ### 扩展
 - AI 助手（BYO-key，支持 OpenAI / Anthropic 兼容接口）
   - 命令解释、生成、错误诊断
@@ -96,17 +144,45 @@ pnpm install
 pnpm dev        # 启动开发模式
 pnpm build      # 构建
 pnpm typecheck  # 类型检查
-pnpm test       # 单元测试
+pnpm test       # 单元测试（1700+ 项）
 ```
 
 原生模块（node-pty / better-sqlite3 / argon2）需针对 Electron ABI 重编译，`pnpm install` 后会自动执行。
 
+### 整机验收
+
+本项目有一条**对真实运行应用**的整机验收（通过 CDP 驱动真实 Electron，不是 mock），
+当前 32 通过 / 0 失败 / 4 跳过（跳过原因在脚本里逐条写明）：
+
+```bash
+cd apps/desktop
+Xvfb :75 -screen 0 1280x800x24 &           # 无头环境需要 X
+pnpm build && DISPLAY=:75 node scripts/acceptance.mjs
+```
+
+另有针对真实 SSH 测试主机的门控测试（`scripts/ssh-test-host.mjs`）与
+同步加密通道的真机验收（需部署后端），VNC/RDP 有进程内协议夹具覆盖、不依赖外部机器。
+
+### 打包
+
+```bash
+cd apps/desktop
+pnpm dist                        # 默认：deb + AppImage
+pnpm exec electron-builder --linux rpm pacman flatpak   # 其余 Linux 目标
+pnpm exec electron-builder --win nsis                   # Windows 安装器（实验性，见上文）
+```
+
+产物在 `apps/desktop/release/`。注意 rpm 构建依赖 fpm 1.9.3，它与 rpm ≥ 4.20 的
+rpmbuild 不兼容，需要把 `rpmbuild` 钉在 4.x 旧版（本机的垫片方案见 HANDOFF.md）。
+
 ### 目录结构
 
 ```
-packages/shared     全局类型与 IPC 契约
+packages/shared     全局类型与 IPC 契约（冻结，改动需评估影响）
 apps/desktop        Electron 应用（main / preload / renderer）
-server              可选的同步后端
+server              可选的同步后端（零依赖纯 JS）
+scripts             测试夹具：SSH 测试主机等
+docs                架构、性能目标、同步协议规范、部署
 ```
 
 ## 数据存放位置
@@ -133,7 +209,7 @@ server              可选的同步后端
 | [SECURITY.md](SECURITY.md) | 安全模型、已知边界、漏洞报告 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、提交规范、许可证头 |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 行为准则 |
-| [docs/](docs/) | 部署与性能目标等 |
+| [docs/](docs/) | 同步协议规范（TSC/1）、部署手册、性能目标 |
 
 ## 贡献
 
