@@ -1,7 +1,7 @@
 # terminal-1000 会话交接
 
 面向接手本项目的下一个 agent 会话。读完这一份即可继续，不必回溯历史对话。
-最后更新：2026-11-18
+最后更新：2026-11-19
 
 ---
 
@@ -31,7 +31,7 @@ AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研�
 | typecheck | node 与 web 均 **0 错误** |
 | 整机验收 | `node scripts/acceptance.mjs` → **32 通过 / 0 失败 / 4 跳过**（S21 为新增身份变化端到端） |
 | IPC 域 | **23 个** |
-| 打包 | deb / AppImage；deb 约 93.4 MiB（预算 ≤100 MiB）；**rpm/pacman 未做** |
+| 打包 | deb / AppImage / **rpm / pacman** 四目标；deb 93.4 MiB、rpm 91.6 MiB、pacman 93.5 MiB（预算 ≤100 MiB） |
 
 ### 复现验证（三条命令）
 ```bash
@@ -140,7 +140,17 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）
 ### 明确未完成
 | 项 | 说明 |
 |---|---|
-| 打包 | 只有 deb/AppImage，未做 rpm/pacman（electron-builder 加 target 即可，需验证 rpmbuild/系统依赖） |
+| 打包 | **已完成**：deb / AppImage / rpm / pacman（2026-11-19）。构建依赖见下方「rpm/pacman 构建环境」 |
+
+### rpm/pacman 构建环境（本机已配好，换机器要重做）
+- electron-builder 的 fpm 1.9.3 与 **rpm ≥ 4.20 不兼容**（buildroot 布局变更，BUILDROOT 不被填充、
+  spec 里 `%undefine` 被当注释）——症状是所有文件报 "File not found: …/BUILD/…-build/BUILDROOT/…"。
+- 解法：`~/.local/pkgshim/rpmbuild` 垫片把 rpmbuild 钉在**用户态解包的 rpm 4.18**
+  （`~/.pkg-tools/rpm4/`，来自 noble 的 deb 解包）；构建时 `PATH=~/.local/pkgshim:$PATH`。
+- 另需 `~/.rpmmacros` 写 `%_dbpath <可写目录>`，否则 rpm 6 以非 root 校验时会开系统 rpmdb 被拒。
+- 系统依赖（root 已装）：`apt-get install rpm libarchive-tools`（pacman 目标的 fpm 要 bsdtar）。
+- 产物在 `apps/desktop/release/`：`terminal-1000-0.1.0.x86_64.rpm`（91.6 MiB，310 文件）、
+  `terminal-1000-0.1.0.pacman`（93.5 MiB，376 项）。验证：`rpm -qip` / `bsdtar -tf`。
 | P2 记账本 | 方向 A（spec 未细化，做之前先与用户对齐） |
 | VNC / RDP 真机交互 | 夹具端到端已覆盖协议层；真实 tigervnc/xrdp 的真机门控测试保留（需外部机器，用户曾授权临时装 .187） |
 

@@ -69,6 +69,8 @@ linux:
   target:
     - deb
     - AppImage
+    - rpm
+    - pacman
   category: Network
   synopsis: 远程连接管理器（SSH/SFTP/Telnet/VNC/RDP）
   description: >-
