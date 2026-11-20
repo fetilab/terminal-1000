@@ -10,11 +10,17 @@
  * 所以：**切分算法只有一份**，预览负责画出来，终端负责登记 decoration。
  *
  * 关于能力边界（重要，界面上也如实写着）：
- * - xterm 的 decoration 只能设 `#RRGGBB` 的前景/背景色，
- *   **不支持粗体/斜体/下划线**；所以规则里的 bold/italic/underline 在终端里
- *   **不会生效**，预览也不再画它们（宁可少画，不要画了做不到）。
+ * - xterm 6.0.0 的 DOM 渲染器会把 `layer: 'top'` 装饰的 `foregroundColor`/
+ *   `backgroundColor` 逐单元格应用到命中的文字/底色上（`forEachDecorationAtCell`），
+ *   但**只接受 `#RRGGBB`**——内部 `css.toColor` 对其它格式抛异常，且装饰的颜色
+ *   getter 没有兜底，传非法值会砸掉渲染器。所以传给 `registerDecoration` 的颜色
+ *   必须先过 `normalizeHexColor`，解析不了就跳过。
+ * - 装饰只管颜色，**不支持粗体/斜体/下划线**；规则里的 bold/italic/underline 在
+ *   终端里不生效，预览也不画它们（宁可少画，不要画了做不到）。
  * - decoration 的 `x`/`width` 单位是**单元格**，不是字符下标，
- *   所以要按显示宽度把字符下标换算过去（见 `cellsFor`）。全宽字符（CJK）按 2 格算。
+ *   所以要按显示宽度把字符下标换算过去（见 `cellsFor`）。
+ *   宽度表与 `@xterm/addon-unicode11` 一致（终端挂了该插件，两边必须同表，
+ *   否则装饰会相对文字偏移）。
  */
 
 import type { HighlightRule } from '@t1000/shared'
@@ -104,11 +110,10 @@ export function segmentText(text: string, rules: readonly HighlightRule[]): High
 /**
  * 归一化成 `#RRGGBB`。
  *
- * ⚠️ 现在**不再用它来卡终端能不能显示** —— 实测发现 xterm 6.0 的 DOM 装饰渲染器
- * **根本不读 `backgroundColor`/`foregroundColor`**（typings 里有这两个选项，
- * 但 `browser/decorations/*` 里没有任何应用代码）。所以颜色是**我们自己**写到
- * 装饰元素上的，任意合法 CSS 颜色都能用。
- * 保留这个函数是因为它在做"用户输入是否是规范颜色"的判断时仍然有用。
+ * xterm 6.0.0 装饰的 `foregroundColor`/`backgroundColor` 只接受 `#RRGGBB`
+ * （内部 `css.toColor` 对其它格式**抛异常**，而装饰的颜色 getter 没有兜底，
+ * 传非法字符串会砸掉渲染器）。任何要传给 `registerDecoration` 的颜色都必须
+ * 先过这里；解析不了就放弃该颜色，绝不能把原始字符串传下去。
  */
 export function normalizeHexColor(input: string | undefined): string | null {
   if (!input) return null
@@ -124,7 +129,7 @@ export function normalizeHexColor(input: string | undefined): string | null {
   const rgb = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(s)
   if (rgb) {
     const a = rgb[4]
-    if (a !== undefined && Number(a) < 1) return null // 半透明没法用 cell 背景表达
+    if (a !== undefined && Number(a) < 1) return null // 半透明没法用 cell 颜色表达
     const to2 = (v: string): string => Math.max(0, Math.min(255, Number(v))).toString(16).padStart(2, '0')
     return `#${to2(rgb[1] ?? '0')}${to2(rgb[2] ?? '0')}${to2(rgb[3] ?? '0')}`
   }
@@ -132,44 +137,24 @@ export function normalizeHexColor(input: string | undefined): string | null {
 }
 
 /**
- * 一条规则要用的颜色。
+ * 命中片段最终用什么颜色显示 —— **预览与终端共用这一个函数**。
  *
- * **原样透传**：因为颜色由我们自己写到装饰元素上（见文件头说明），
- * 不经过 `#RRGGBB` 的窄化 —— 这样预览与终端能用完全相同的取值，
- * 用户填 `rgba()` / 颜色名也能生效。
+ * 语义：**文字本身变色**（用户要求把"涂背景"改成"涂文字"）。
+ * - 规则给了 `foreground` → 直接用作文字色；
+ * - 只给了 `background` → 把该色相用作文字色，保证规则仍然可见
+ *   （不然只配背景色的规则在终端里会"消失"）。
+ *
+ * 终端的落地方式见 TerminalPane 的 applyHighlights：把这里返回的颜色归一化成
+ * `#RRGGBB` 后传给 `registerDecoration({ layer: 'top', foregroundColor })`，
+ * xterm 自己把颜色涂到命中单元格的文字上——装饰元素本身保持透明。
+ * 预览（HighlightsEditor）本来就以 `foreground` 画文字，两边语义一致；
+ * 差异仅在"只配了背景色"的规则：预览画底色、终端画同色文字。
  */
-export function decorationColors(rule: HighlightRule): {
-  foregroundColor?: string
-  backgroundColor?: string
-} {
+export function segmentHighlightStyle(rule: HighlightRule): { color?: string } {
   const fg = rule.foreground?.trim()
+  if (fg) return { color: fg }
   const bg = rule.background?.trim()
-  return {
-    ...(fg ? { foregroundColor: fg } : {}),
-    ...(bg ? { backgroundColor: bg } : {}),
-  }
-}
-
-/**
- * 命中片段最终用什么样式显示 —— **预览与终端共用这一个函数**。
- *
- * ## 为什么是"底色"而不是"文字变色"
- * 我实测过 xterm 6.0 的 DOM 装饰：
- * 1. `IDecorationOptions` 的 `backgroundColor`/`foregroundColor` **没有任何实现去读**
- *    （`browser/decorations/*` 里 0 命中），颜色只能由我们自己写到装饰元素上；
- * 2. 装饰元素本身是**空的覆盖层**，只设 `color` 没有文字可染；
- * 3. 于是试过"把命中文本画进装饰元素再上色"——**实测会错位**（约半字符，
- *    截图里出现 `failled`/`runniing` 这种重影），比不着色更糟。
- *
- * 结论：用**底色**标出命中区域，最稳且真实。规则给了 `background` 就用它；
- * 只给了 `foreground` 就把它的色相拿来、取 22% 透明度做底。
- * 预览调同一个函数，所以**两边看到的是同一个效果**。
- */
-export function segmentHighlightStyle(rule: HighlightRule): { background?: string } {
-  const bg = rule.background?.trim()
-  if (bg) return { background: bg }
-  const fg = rule.foreground?.trim()
-  if (fg) return { background: `color-mix(in srgb, ${fg} 22%, transparent)` }
+  if (bg) return { color: bg }
   return {}
 }
 
@@ -189,29 +174,53 @@ export function unsupportedStyles(rule: HighlightRule): string[] {
  * 显示宽度（单元格数）。
  *
  * xterm 的 decoration 用「单元格」定位，而我们的规则按「字符」匹配，
- * 所以必须换算。这里按 East Asian Width 的 Wide/Fullwidth 记 2 格，
- * 组合记号记 0 格，其余 1 格 —— 覆盖了终端里绝大多数输出。
- * ⚠️ 与 xterm 内部的 wcwidth 表可能有极小差异（冷僻字符），
- * 那种情况下色的范围可能偏一两格；ASCII/CJK 常见内容不受影响。
+ * 所以必须换算。宽字符表**抄自 `@xterm/addon-unicode11` 的宽度表**
+ * （Unicode 11 的 East Asian Wide/Fullwidth）——终端挂了该插件，
+ * 单元格布局以它为准，这里的表必须与它一致，否则装饰会相对文字偏移。
+ * 零宽：组合附加符号、ZWJ（emoji ZWJ 序列的连接符）、变体选择符 FE00–FE0F。
+ * ⚠️ "⚠"(U+26A0) 这类 text-presentation emoji 不在宽表里，加 VS16 后
+ * 在 xterm 里仍按 1 格计（VS16 记 0 宽）——与 unicode11 插件保持一致。
  */
+const WIDE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f], [0x231a, 0x231b], [0x2329, 0x232a], [0x23e9, 0x23ec],
+  [0x23f0, 0x23f0], [0x23f3, 0x23f3], [0x25fd, 0x25fe], [0x2614, 0x2615],
+  [0x2648, 0x2653], [0x267f, 0x267f], [0x2693, 0x2693], [0x26a1, 0x26a1],
+  [0x26aa, 0x26ab], [0x26bd, 0x26be], [0x26c4, 0x26c5], [0x26ce, 0x26ce],
+  [0x26d4, 0x26d4], [0x26ea, 0x26ea], [0x26f2, 0x26f3], [0x26f5, 0x26f5],
+  [0x26fa, 0x26fa], [0x26fd, 0x26fd], [0x2705, 0x2705], [0x270a, 0x270b],
+  [0x2728, 0x2728], [0x274c, 0x274c], [0x274e, 0x274e], [0x2753, 0x2755],
+  [0x2757, 0x2757], [0x2795, 0x2797], [0x27b0, 0x27b0], [0x27bf, 0x27bf],
+  [0x2b1b, 0x2b1c], [0x2b50, 0x2b50], [0x2b55, 0x2b55],
+  [0x2e80, 0x2e99], [0x2e9b, 0x2ef3], [0x2f00, 0x2fd5], [0x2ff0, 0x2ffb],
+  [0x3000, 0x3029], [0x302e, 0x303e], [0x3041, 0x3096], [0x309b, 0x30ff],
+  [0x3105, 0x312f], [0x3131, 0x318e], [0x3190, 0x31ba], [0x31c0, 0x31e3],
+  [0x31f0, 0x321e], [0x3220, 0x3247], [0x3250, 0x4dbf], [0x4e00, 0xa48c],
+  [0xa490, 0xa4c6], [0xa960, 0xa97c], [0xac00, 0xd7a3], [0xf900, 0xfaff],
+  [0xfe10, 0xfe19], [0xfe30, 0xfe52], [0xfe54, 0xfe66], [0xfe68, 0xfe6b],
+  [0xff01, 0xff60], [0xffe0, 0xffe6],
+  // astral：emoji / 符号 / 表意扩展
+  [0x16fe0, 0x16fe3], [0x17000, 0x187f7], [0x18800, 0x18af2],
+  [0x1b000, 0x1b11e], [0x1b150, 0x1b152], [0x1b164, 0x1b167], [0x1b170, 0x1b2fb],
+  [0x1f004, 0x1f004], [0x1f0cf, 0x1f0cf], [0x1f18e, 0x1f18e], [0x1f191, 0x1f19a],
+  [0x1f200, 0x1f202], [0x1f210, 0x1f23b], [0x1f240, 0x1f248], [0x1f250, 0x1f251],
+  [0x1f260, 0x1f265], [0x1f300, 0x1f320], [0x1f32d, 0x1f335], [0x1f337, 0x1f37c],
+  [0x1f37e, 0x1f393], [0x1f3a0, 0x1f3ca], [0x1f3cf, 0x1f3d3], [0x1f3e0, 0x1f3f0],
+  [0x1f3f4, 0x1f3f4], [0x1f3f8, 0x1f43e], [0x1f440, 0x1f440], [0x1f442, 0x1f4fc],
+  [0x1f4ff, 0x1f53d], [0x1f54b, 0x1f54e], [0x1f550, 0x1f567], [0x1f57a, 0x1f57a],
+  [0x1f595, 0x1f596], [0x1f5a4, 0x1f5a4], [0x1f5fb, 0x1f64f], [0x1f680, 0x1f6c5],
+  [0x1f6cc, 0x1f6cc], [0x1f6d0, 0x1f6d2], [0x1f6d5, 0x1f6d5], [0x1f6eb, 0x1f6ec],
+  [0x1f6f4, 0x1f6fa], [0x1f7e0, 0x1f7eb], [0x1f90d, 0x1f971], [0x1f973, 0x1f976],
+  [0x1f97a, 0x1f9a2], [0x1f9a5, 0x1f9aa], [0x1f9ae, 0x1f9ca], [0x1f9cd, 0x1f9ff],
+  [0x1fa70, 0x1fa73], [0x1fa78, 0x1fa7a], [0x1fa80, 0x1fa82], [0x1fa90, 0x1fa95],
+  [0x20000, 0x2fffd], [0x30000, 0x3fffd],
+]
+
 export function charCells(cp: number): number {
-  if (cp === 0x200d) return 0
+  if (cp === 0x200d) return 0 // ZWJ
   if (cp >= 0x0300 && cp <= 0x036f) return 0 // 组合附加符号
-  if (
-    (cp >= 0x1100 && cp <= 0x115f) ||
-    (cp >= 0x2e80 && cp <= 0xa4cf) ||
-    (cp >= 0xa960 && cp <= 0xa97f) ||
-    (cp >= 0xac00 && cp <= 0xd7a3) ||
-    (cp >= 0xf900 && cp <= 0xfaff) ||
-    (cp >= 0xfe10 && cp <= 0xfe19) ||
-    (cp >= 0xfe30 && cp <= 0xfe6f) ||
-    (cp >= 0xff00 && cp <= 0xff60) ||
-    (cp >= 0xffe0 && cp <= 0xffe6) ||
-    (cp >= 0x1f300 && cp <= 0x1f64f) ||
-    (cp >= 0x1f900 && cp <= 0x1f9ff) ||
-    (cp >= 0x20000 && cp <= 0x3fffd)
-  ) {
-    return 2
+  if (cp >= 0xfe00 && cp <= 0xfe0f) return 0 // 变体选择符（VS15/VS16）
+  for (const [lo, hi] of WIDE_RANGES) {
+    if (cp >= lo && cp <= hi) return 2
   }
   return 1
 }

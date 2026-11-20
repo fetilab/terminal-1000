@@ -18,6 +18,8 @@ import { Button, IconButton } from '../../components/Button'
 import { Badge } from '../../components/Feedback'
 import { Field, Switch, TextInput } from '../../components/Form'
 import { Icon } from '../../components/Icon'
+// 与终端共用同一份"命中 → 颜色"映射，保证预览和终端所见一致
+import { segmentHighlightStyle } from '../terminal/highlights'
 
 /** 预览用的示例文本：故意包含错误、警告、成功、IP 四类，能同时验证 4 条内置规则 */
 const SAMPLE = `2026-11-07 09:12:03 [error] connection to 192.0.2.31 refused
@@ -28,7 +30,6 @@ Done. 3 hosts scanned, 1 unreachable`
 interface PreviewSeg {
   text: string
   color?: string
-  background?: string
   bold?: boolean
 }
 
@@ -81,10 +82,11 @@ function buildPreview(text: string, rules: HighlightRule[]): PreviewSeg[] {
 
 function toSeg(part: { rule?: HighlightRule; text: string }): PreviewSeg {
   if (!part.rule) return { text: part.text }
+  // 与终端同语义：命中处涂**文字色**（前景优先，仅配了背景色时用它当文字色），不画底色
+  const style = segmentHighlightStyle(part.rule)
   return {
     text: part.text,
-    ...(part.rule.foreground ? { color: part.rule.foreground } : {}),
-    ...(part.rule.background ? { background: part.rule.background } : {}),
+    ...(style.color ? { color: style.color } : {}),
     ...(part.rule.bold ? { bold: true } : {}),
   }
 }
@@ -156,7 +158,6 @@ export function HighlightsEditor({ rules, onChange }: HighlightsEditorProps): Re
               key={i}
               style={{
                 color: seg.color,
-                background: seg.background,
                 fontWeight: seg.bold ? 700 : undefined,
               }}
             >
@@ -236,7 +237,7 @@ export function HighlightsEditor({ rules, onChange }: HighlightsEditorProps): Re
                     onChange={(e) => patch(rule.id, { pattern: e.target.value })}
                   />
                 </Field>
-                <Field label="背景色（可选）">
+                <Field label="文字颜色（可选）">
                   <div className="t-inputgroup">
                     <TextInput
                       value={rule.background ?? ''}

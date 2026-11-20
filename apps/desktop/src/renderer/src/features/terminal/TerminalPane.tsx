@@ -14,8 +14,8 @@
  * xterm 的解析器按批处理，吞吐显著高于逐条写入。
  *
  * ## xterm 懒加载
- * `@xterm/xterm` 与三个 addon 都用动态 import，只有真正打开终端时才加载，
- * 满足「Monaco / xterm 懒加载，未打开相关面板不加载」的性能要求。
+ * `@xterm/xterm` 与四个 addon（fit / search / weblinks / unicode11）都用动态 import，
+ * 只有真正打开终端时才加载，满足「Monaco / xterm 懒加载，未打开相关面板不加载」的性能要求。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -23,6 +23,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
+import type { Unicode11Addon } from '@xterm/addon-unicode11'
 import { Events, type PublicProvider } from '@t1000/shared'
 import { Icon } from '../../components/Icon'
 import { Badge } from '../../components/Feedback'
@@ -55,12 +56,23 @@ import {
   type CompletionResult,
 } from './completion'
 import { CompletionPopup } from './CompletionPopup'
-import { cellsFor, segmentHighlightStyle, segmentText } from './highlights'
+import { cellsFor, normalizeHexColor, segmentHighlightStyle, segmentText } from './highlights'
 import './terminal.css'
 import './completion.css'
 
 /** 积压上限：超过就丢弃并在终端里明确告知，绝不无声无息地胀内存 */
 const MAX_BUFFER_CHARS = 4 * 1024 * 1024
+
+/**
+ * 字体栈的 emoji 回退。
+ *
+ * 终端主字体（JetBrains Mono 等编程字体）没有 emoji 字形，没有回退就会画豆腐块（□）。
+ * 只负责"把字形画出来"；emoji 占几格由 unicode11 插件的宽度表决定——两者缺一不可。
+ * 用户字体栈里已含 emoji 字体时不重复追加。
+ */
+const EMOJI_FALLBACK_FONTS = '"Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"'
+const withEmojiFallback = (fontFamily: string): string =>
+  /emoji/i.test(fontFamily) ? fontFamily : `${fontFamily}, ${EMOJI_FALLBACK_FONTS}`
 
 /**
  * 带背压的写入器。
@@ -391,19 +403,25 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
 
     void (async () => {
       try {
-        const [{ Terminal: XTerm }, { FitAddon: Fit }, { SearchAddon: Search }, { WebLinksAddon: Links }] =
-          await Promise.all([
-            import('@xterm/xterm'),
-            import('@xterm/addon-fit'),
-            import('@xterm/addon-search'),
-            import('@xterm/addon-web-links'),
-          ])
+        const [
+          { Terminal: XTerm },
+          { FitAddon: Fit },
+          { SearchAddon: Search },
+          { WebLinksAddon: Links },
+          { Unicode11Addon: Unicode11 },
+        ] = await Promise.all([
+          import('@xterm/xterm'),
+          import('@xterm/addon-fit'),
+          import('@xterm/addon-search'),
+          import('@xterm/addon-web-links'),
+          import('@xterm/addon-unicode11'),
+        ])
         if (disposed) return
 
         // 初值全部来自 settings.terminal（不再是硬编码），随后的改动由热更新 effect 负责
         const st = termSettingsRef.current
         const term = new XTerm({
-          fontFamily: st.fontFamily,
+          fontFamily: withEmojiFallback(st.fontFamily),
           fontSize: st.fontSize,
           lineHeight: st.lineHeight,
           letterSpacing: st.letterSpacing,
@@ -417,6 +435,13 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         })
         const fit = new Fit()
         const search = new Search()
+        // unicode11：Unicode 11 宽字符规则。必须在任何数据写入前加载——
+        // oh-my-zsh 主题的 emoji/图标宽度由它决定，缺了它 emoji 按窄字符排，
+        // 提示符从第一个 emoji 起整体错位（彩色块散落）。
+        // ⚠️ loadAddon 只**注册** provider（register 不改 activeVersion），
+        // 不显式切换的话 xterm 仍用内置 Unicode 6 表 —— 实测 ✅/⚡ 等仍按 1 格排。
+        term.loadAddon(new Unicode11())
+        term.unicode.activeVersion = '11'
         term.loadAddon(fit)
         term.loadAddon(search)
         // 链接点击交给主进程用系统浏览器打开（app.openExternal 内置协议白名单校验），
@@ -554,15 +579,17 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         /**
          * 高亮规则在终端里的应用点。
          *
-         * 语义与设置里的预览**完全一致**：都调 `segmentText()`（同一份切分算法）。
-         * 这个功能之前"预览有、终端无"，根因就是只有预览侧的实现。
+         * 语义与设置里的预览**完全一致**：都调 `segmentText()`（同一份切分算法）
+         * 和 `segmentHighlightStyle()`（同一个"命中 → 颜色"映射，文字变色）。
          *
-         * 三条由实测能力边界决定的做法：
-         * - xterm 6.0 的 DOM 装饰渲染器**不读** `backgroundColor`/`foregroundColor`
-         *   （typings 有、`browser/decorations/*` 里 0 命中），颜色只能我们自己写到
-         *   装饰元素上；而装饰元素是空覆盖层，**改不了文字颜色**，
-         *   把文字画进去又会错位（实测半字符重影），所以只做**底色**；
-         * - `x`/`width` 单位是**单元格**，规则按**字符**匹配，用 `cellsFor()` 换算；
+         * 落地方式由 xterm 6.0.0 的实测能力决定：
+         * - DOM 渲染器会把 `layer: 'top'` 装饰的 `foregroundColor` **逐单元格涂到
+         *   文字上**（`forEachDecorationAtCell` → 行 span 的内联 color）；
+         *   它只接受 `#RRGGBB`，且颜色 getter 对非法值抛异常且无兜底——
+         *   所以必须过 `normalizeHexColor()`，解析不了就放弃该命中；
+         * - 装饰元素本身保持透明（只挡指针事件），不写任何颜色；
+         * - `x`/`width` 单位是**单元格**，规则按**字符**匹配，用 `cellsFor()` 换算
+         *   （其宽度表与 unicode11 插件同源）；
          * - 只处理**已完成的行**（光标行还在输出），即"只对新渲染字符生效"，
          *   不重刷整个回滚缓冲。
          */
@@ -587,20 +614,30 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
             for (const seg of segmentText(text, rules)) {
               if (!seg.rule) continue
               const style = segmentHighlightStyle(seg.rule)
-              if (style.background === undefined) continue
+              if (style.color === undefined) continue
+              const fg = normalizeHexColor(style.color)
+              if (!fg) continue // 颜色不合规就放弃，绝不能把原始字符串传给 registerDecoration
               const x = cellsFor(text, seg.start)
               const width = Math.max(1, cellsFor(text, seg.end) - x)
               const marker = term.registerMarker(y - curY)
               if (!marker) continue
-              const deco = term.registerDecoration({ marker, anchor: 'left', x, width, height: 1, layer: 'top' })
+              const deco = term.registerDecoration({
+                marker,
+                anchor: 'left',
+                x,
+                width,
+                height: 1,
+                layer: 'top',
+                foregroundColor: fg,
+              })
               if (!deco) {
                 marker.dispose()
                 continue
               }
               deco.onRender((el: HTMLElement) => {
+                // 颜色由 xterm 涂在命中单元格的文字上（见上），装饰元素保持透明
                 el.textContent = ''
                 el.style.pointerEvents = 'none'
-                el.style.backgroundColor = style.background ?? 'transparent'
               })
               decorations.push(deco)
               deco.onDispose(() => {
@@ -674,7 +711,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   useEffect(() => {
     const term = termRef.current
     if (!term) return
-    term.options.fontFamily = termCfg.fontFamily
+    term.options.fontFamily = withEmojiFallback(termCfg.fontFamily)
     term.options.fontSize = termCfg.fontSize
     term.options.lineHeight = termCfg.lineHeight
     term.options.letterSpacing = termCfg.letterSpacing
