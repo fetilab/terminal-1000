@@ -161,6 +161,7 @@ function install(): void {
         encoding: 'utf-8' as const,
         layout: 'single' as const,
         monitorOpen: true,
+        filesOpen: true,
         mode: 'terminal' as const,
         createdAt: Date.now(),
       }
