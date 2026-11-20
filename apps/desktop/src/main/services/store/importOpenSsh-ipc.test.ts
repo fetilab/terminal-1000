@@ -9,7 +9,7 @@
  * 这样能一起验证 sshconfig-fs 的路径展开与权限处理。
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +19,17 @@ import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { StoreService, setStoreService, storeHandlers } from './index'
 import { LOCKED_MASK, isCiphertext } from './crypto'
 import { STORE_KEYS } from './db'
+
+/**
+ * 默认路径不能依赖真机状态：开发机装了 GitHub 推送后 ~/.ssh/config 就会出现，
+ * "缺省 → 未找到" 的两条用例会因此翻车。把 defaultHome 钉到临时目录，
+ * 配合 beforeEach 重建 tempDir，让"默认路径不存在"成为受控前提。
+ */
+const fakeHome = { current: '' }
+vi.mock('./sshconfig-fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./sshconfig-fs')>()
+  return { ...actual, defaultHome: () => fakeHome.current }
+})
 
 function makeCtx(tempDir: string): IpcContext {
   return {
@@ -83,6 +94,7 @@ describe('store.importOpenSsh（IPC 边界）', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 't1000-openssh-'))
+    fakeHome.current = dir
     sshDir = join(dir, '.ssh')
     mkdirSync(sshDir, { recursive: true })
     configPath = join(sshDir, 'config')
@@ -336,6 +348,7 @@ describe('importOpenSsh：锁定态必须拒绝写库', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 't1000-openssh-lock-'))
+    fakeHome.current = dir
     sshDir = join(dir, '.ssh')
     mkdirSync(sshDir, { recursive: true })
     configPath = join(sshDir, 'config')
