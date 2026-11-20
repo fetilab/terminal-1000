@@ -25,11 +25,12 @@ import type {
   SpecShortcut,
   SpecSubcommand,
 } from './specs/types'
-import { CATEGORY_LABELS, applyManual, normalizeSpec } from './specs/types'
+import { CATEGORY_LABELS, applyManual, isSafeSpecName, normalizeSpec } from './specs/types'
 import { CATALOG, CATALOG_BY_NAME } from './specs/catalog'
 import { CATEGORY_LOADERS } from './specs/details'
 import { COMMAND_CATEGORIES } from './specs/types'
 import { MANUAL_BY_NAME } from './specs/manual'
+import { mergeIndexEntries, type UserCorpusLayer } from './userCorpus'
 
 // ── LRU ──────────────────────────────────────────────────────────────────
 
@@ -203,14 +204,9 @@ interface DirectoryIndexFile {
 
 /**
  * 路径穿越防护：只允许普通命令名，拒绝空串 / 分隔符 / `..` / 控制字符。
- * （参考实现的 isSafeWithfigSpecKey 同类校验；这里是我们自己的实现。）
+ * 实现移到叶子模块 specs/types（用户语料文件也要用它），这里保留导出兼容既有 import。
  */
-export function isSafeSpecName(name: string): boolean {
-  if (name.length === 0 || name.length > 200) return false
-  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false
-  if (name === '.' || name === '..') return false
-  return /^[A-Za-z0-9@._+-]+$/.test(name)
-}
+export { isSafeSpecName } from './specs/types'
 
 /**
  * 从磁盘目录读取语料：`<dir>/index.json` + `<dir>/<name>.json`。
@@ -338,6 +334,7 @@ export const DEFAULT_NEGATIVE_TTL_MS = 30_000
 
 /**
  * 语料门面：索引只加载一次；spec 走 LRU；未命中走 TTL 负缓存。
+ * 可选的用户语料层（setUserLayer）在所有读取路径上覆盖内置语料：同名命令以用户文件为准。
  * 引擎只依赖它，因此所有「按需加载」的行为都能用计数断言验证。
  */
 export class CompletionCorpus {
@@ -352,6 +349,9 @@ export class CompletionCorpus {
   private cachedIndex: readonly CommandIndexEntry[] | null = null
   private byName: Map<string, CommandIndexEntry> | null = null
   private prefix: PrefixIndex<CommandIndexEntry> | null = null
+
+  /** 用户语料层（completion.corpusFile）；null = 未启用，只用内置语料 */
+  private userLayer: UserCorpusLayer | null = null
 
   private readonly counters = {
     specLoads: 0,
@@ -371,16 +371,37 @@ export class CompletionCorpus {
     this.now = options.now ?? (() => Date.now())
   }
 
+  /**
+   * 设置/移除用户语料层（null = 移除）。
+   *
+   * 层一换，索引/spec/搜索文档的全部缓存作废：下次访问按新层重建。
+   * 用户层条目**不经** LRU/负缓存——同名命令整体覆盖内置明细，重载以层为单位整体替换。
+   */
+  setUserLayer(layer: UserCorpusLayer | null): void {
+    this.userLayer = layer
+    this.specCache.clear()
+    this.negativeUntil.clear()
+    this.docsPromise = null
+    this.docsCache = []
+    this.cachedIndex = null
+    this.indexPromise = null
+    this.byName = null
+    this.prefix = null
+  }
+
   /** 索引（首屏唯一加载项），只读一次 */
   async index(): Promise<readonly CommandIndexEntry[]> {
     if (this.cachedIndex) return this.cachedIndex
     this.indexPromise ??= this.source.loadIndex().then((entries) => {
-      this.cachedIndex = entries
-      this.byName = new Map(entries.map((e) => [e.name, e]))
+      // 用户语料追加/覆盖索引条目：同名条目只覆盖用户显式提供的字段，新命令追加
+      const merged =
+        this.userLayer === null ? entries : mergeIndexEntries(entries, this.userLayer.indexEntries)
+      this.cachedIndex = merged
+      this.byName = new Map(merged.map((e) => [e.name, e]))
       const trie = new PrefixIndex<CommandIndexEntry>()
-      for (const entry of entries) trie.insert(entry.name, entry)
+      for (const entry of merged) trie.insert(entry.name, entry)
       this.prefix = trie
-      return entries
+      return merged
     })
     return this.indexPromise
   }
@@ -430,13 +451,19 @@ export class CompletionCorpus {
           (s): s is CommandSpec => s !== null,
         )
     const byName = new Map(specs.map((spec) => [spec.name, spec]))
+    // 用户语料覆盖的命令以用户文件为唯一真相：明细与手册字段都不再来自内置
+    if (this.userLayer !== null) {
+      for (const [name, userSpec] of this.userLayer.specs) byName.set(name, userSpec)
+    }
 
     return entries.map((entry) => {
       const base = byName.get(entry.name)
       // 浅拷贝：手册字段写在副本上，不污染 LRU 里的 spec
       const merged: CommandSpec = base === undefined ? { name: entry.name, options: [] } : { ...base }
-      const manual = MANUAL_BY_NAME.get(entry.name)
-      if (manual) applyManual(merged, manual)
+      if (this.userLayer?.specs.has(entry.name) !== true) {
+        const manual = MANUAL_BY_NAME.get(entry.name)
+        if (manual) applyManual(merged, manual)
+      }
 
       const doc: CommandDoc = {
         name: entry.name,
@@ -459,8 +486,11 @@ export class CompletionCorpus {
     })
   }
 
-  /** 单条命令详情：LRU → 负缓存 → 源加载 */
+  /** 单条命令详情：用户层（同名覆盖） → LRU → 负缓存 → 源加载 */
   async spec(name: string): Promise<CommandSpec | null> {
+    const userSpec = this.userLayer?.specs.get(name)
+    if (userSpec !== undefined) return userSpec
+
     const cached = this.specCache.get(name)
     if (cached !== undefined) {
       this.counters.specCacheHits += 1

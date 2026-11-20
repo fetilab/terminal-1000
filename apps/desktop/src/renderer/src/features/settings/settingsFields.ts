@@ -238,6 +238,26 @@ export const SETTINGS_FIELDS: Record<
     { path: 'completion.aiSuggestion', label: '使用 AI 建议（?? 前缀）', kind: 'switch' },
     { path: 'completion.debounceMs', label: '输入防抖 (ms)', kind: 'number', min: 0, max: 1000, step: 10 },
     { path: 'completion.maxSuggestions', label: '候选上限', kind: 'number', min: 1, max: 100, step: 1 },
+    {
+      // 用户语料文件的最小示例（与内置 specs/ 相同的紧凑格式，字段全部可选）：
+      // {
+      //   "t1000demo": {
+      //     "brief": "示例命令",
+      //     "category": "system",
+      //     "opts": [["--hello", "打招呼"]],
+      //     "subs": [["add", "添加一条记录"]]
+      //   }
+      // }
+      path: 'completion.corpusFile',
+      label: '补全语料文件',
+      kind: 'text',
+      wide: true,
+      hint:
+        '自建命令语料（JSON）的绝对路径，与内置语料合并，同名命令覆盖内置。' +
+        '格式：{ "命令名": { "brief": "简述", "category": "files|text|process|network|system|package|container|vcs|security", ' +
+        '"opts": [["-l", "长格式"]], "subs": [["add", "说明"]] } }，字段均可选。' +
+        '文件缺失或非法时自动只用内置语料，原因会写入日志',
+    },
   ],
 
   ai: [

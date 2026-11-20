@@ -165,6 +165,17 @@ export function applyManual(spec: CommandSpec, manual: ManualEntry): CommandSpec
   return spec
 }
 
+/**
+ * 路径穿越防护：只允许普通命令名，拒绝空串 / 分隔符 / `..` / 控制字符。
+ * 放在叶子模块：内置目录语料与用户语料文件都要用它校验命令名。
+ */
+export function isSafeSpecName(name: string): boolean {
+  if (name.length === 0 || name.length > 200) return false
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false
+  if (name === '.' || name === '..') return false
+  return /^[A-Za-z0-9@._+-]+$/.test(name)
+}
+
 /** 把紧凑行转成 CommandSpec（缺省字段一律补齐，避免下游判空） */
 export function normalizeSpec(name: string, rows: SpecRows): CommandSpec {
   const options: SpecOption[] = (rows.opts ?? []).map((row) => {

@@ -51,6 +51,10 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'completion.aiSuggestion': 'main services/completion/engine.ts（?? 前缀通道）',
   'completion.debounceMs': 'main 返回给渲染层，TerminalPane 用它做输入防抖',
   'completion.maxSuggestions': 'main services/completion/engine.ts（候选上限）',
+  'completion.corpusFile':
+    'main services/completion/index.ts（用户语料文件，与内置语料合并、同名命令覆盖内置；' +
+    '设置变更后下一次补全/搜索/listSpecs 自动重载；文件缺失或非法时降级为仅内置语料并写日志，' +
+    '状态可经 completionUserCorpusStatus() 查看）',
 
   // ── AI（消费点在主进程护栏与对话服务） ──
   'ai.mode': 'main services/ai/chat.ts（四种模式）',

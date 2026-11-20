@@ -377,6 +377,11 @@ export interface CompletionEngineOptions {
    * 每次 complete 读取，使设置面板的变更立即生效，无需重建引擎。
    */
   settingsProvider?: () => Partial<CompletionSettings>
+  /**
+   * 设置刷新后的钩子（读完设置后 await 一次）。
+   * 用于设置变更驱动的副作用（如用户语料文件重载）；实现必须自行容错，不得抛出。
+   */
+  onSettingsRefreshed?: () => void | Promise<void>
   /** 给命令名候选加一点「常用度」权重（命令名 → 权重），可选 */
   popularity?: ReadonlyMap<string, number>
 }
@@ -472,6 +477,11 @@ export class CompletionEngine {
         this.settings = { ...this.settings, ...this.options.settingsProvider() }
       } catch {
         // 设置读不到就用上一次的，不该因为设置服务异常让补全整个挂掉
+      }
+      try {
+        await this.options.onSettingsRefreshed?.()
+      } catch {
+        // 设置变更触发的副作用（如语料重载）失败不阻塞补全
       }
     }
     const limit = request.limit ?? this.settings.maxSuggestions
