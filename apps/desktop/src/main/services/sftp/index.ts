@@ -7,7 +7,9 @@
  * 职责边界：
  * - 这里只做 **参数校验（zod）+ 会话取用 + 结果整形**；
  * - 具体文件语义在 browser.ts（浏览/权限/读写），传输语义在 transfer.ts（队列/并发/进度/取消）；
- * - 取 SSH 会话走中立契约 `requireSession`，不 import ssh 服务内部实现。
+ * - 取 SSH 会话走中立契约 `requireSession`，不 import ssh 服务内部实现；
+ * - 后端选择集中在 `sftpFor`：本地终端（PTY 会话）用本机 fs 后端，SSH 用真 SFTP 通道，
+ *   两者同享 `SftpLike` 接口，业务代码不区分。
  *
  * 通道缓存：SFTP 子系统通道按会话复用（每次 sftp() 都开新通道既慢又浪费），
  * 通道 end/close 时清缓存，避免复用已死通道。
@@ -43,6 +45,7 @@ import {
   type SftpLike,
   planChmod,
 } from './browser'
+import { createLocalSftpLike, isLocalSession } from './local-backend'
 import { TransferEngine } from './transfer'
 
 // 编辑器相关形状的唯一定义处在 shared；这里再导出一次保持既有路径可用
@@ -134,8 +137,17 @@ function requireSessionOrThrow(id: string) {
   }
 }
 
-/** 取（或建立）该会话的 SFTP 通道 */
+/**
+ * 取（或建立）该会话的文件后端。
+ *
+ * 两种实现共用同一个 `SftpLike` 面：本地终端（PTY）没有 SSH 客户端，
+ * 文件语义直接映射到本机 fs（见 local-backend）；SSH 会话走真 SFTP 通道。
+ * 判别只看会话注册表里登记的 kind —— 渲染层因此无需感知后端差异，
+ * 上传/下载引擎也自动获得正确后端（它的 resolveSftp 就是本函数）。
+ */
 function sftpFor(id: string): Promise<SftpLike> {
+  if (isLocalSession(id)) return Promise.resolve(createLocalSftpLike())
+
   const cached = channels.get(id)
   if (cached) return cached.then(toSftpLike)
 

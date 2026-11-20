@@ -1355,7 +1355,8 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
                       {isDir ? '—' : formatBytes(entry.size)}
                     </span>
                     <span className="sftp-row__perm">{entry.permissions}</span>
-                    <span className="sftp-row__num">{formatDate(new Date(entry.mtime).toISOString())}</span>
+                    {/* mtime 契约是秒（SFTP 线路单位），new Date 需要毫秒 */}
+                    <span className="sftp-row__num">{formatDate(new Date(entry.mtime * 1000).toISOString())}</span>
                   </div>
                 )
               }}
