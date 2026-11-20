@@ -22,6 +22,7 @@ import {
   type GroupNode,
   type UiConnection,
 } from '../../lib/store'
+import { createConnectionLabel } from './protocolLabels'
 import './connections.css'
 
 /** 拖拽负载的 MIME，避免与外部拖入内容混淆 */
@@ -308,9 +309,10 @@ function GroupDialog({
 /* ── 侧边栏 ─────────────────────────────────────── */
 
 export function ConnectionsSidebar(): React.JSX.Element {
-  const { groups, filter, backendReady, backendError, loaded } = useStoreShallow((s) => ({
+  const { groups, filter, protocol, backendReady, backendError, loaded } = useStoreShallow((s) => ({
     groups: s.groups,
     filter: s.filter,
+    protocol: s.protocol,
     backendReady: s.backendReady,
     backendError: s.backendError,
     loaded: s.loaded,
@@ -427,8 +429,8 @@ export function ConnectionsSidebar(): React.JSX.Element {
         />
         <div style={{ flex: 1 }} />
         <IconButton icon="folder" label="新建分组" onClick={() => setDialogOpen(true)} />
-        <Button size="sm" variant="outline" icon="plus" onClick={() => actions.openCreate('ssh')}>
-          连接
+        <Button size="sm" variant="outline" icon="plus" onClick={() => actions.openCreate(protocol)}>
+          {createConnectionLabel(protocol)}
         </Button>
       </div>
 

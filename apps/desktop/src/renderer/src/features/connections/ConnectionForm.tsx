@@ -14,7 +14,7 @@
  * - 所有数字输入以 string 保存，避免「用户删光输入框」时被 Number('') = 0 吃掉。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   SSH_AUTH_TYPES,
   type ConnectionGroup,
@@ -417,6 +417,13 @@ export default function ConnectionForm(): React.JSX.Element {
   const targetKind = existing?.kind ?? editing?.kind ?? 'ssh'
   const isSsh = targetKind === 'ssh'
 
+  /**
+   * Modal 的焦点管理 effect 以 onClose 为依赖：传内联箭头函数时，本组件每次按键重渲染
+   * 都会重跑该 effect（cleanup 归还焦点 + rAF 重新聚焦第一个输入框），
+   * 表现为「配置框里打一个字符，焦点跳回名称框」。必须传稳定引用。
+   */
+  const closeEditor = useCallback(() => actions.closeEditor(), [])
+
   const [draft, setDraft] = useState<Draft>(() =>
     existing && existing.kind === 'ssh' ? toDraft(existing) : emptyDraft(),
   )
@@ -513,7 +520,7 @@ export default function ConnectionForm(): React.JSX.Element {
             ? connectionAddress(existing)
             : '字段按该协议的契约填写；带 * 的为必填'
         }
-        onClose={() => actions.closeEditor()}
+        onClose={closeEditor}
       >
         <ProtocolForm kind={targetKind as ProtocolKind} existingId={existing?.id} />
       </Modal>
@@ -529,7 +536,7 @@ export default function ConnectionForm(): React.JSX.Element {
       open
       title={existing ? `编辑连接 · ${existing.name}` : '新建 SSH 连接'}
       subtitle={existing ? connectionAddress(existing) : '按分区填写，带 * 的为必填'}
-      onClose={() => actions.closeEditor()}
+      onClose={closeEditor}
       footer={
         <>
           <Button variant="outline" icon="route" loading={testing} onClick={() => void onTest()}>

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 import { Suspense, lazy, useMemo, useState } from 'react'
-import type { ConnectionKind } from '@t1000/shared'
 import { Button } from '../../components/Button'
 import { Banner, EmptyState, Loading } from '../../components/Feedback'
 import { Switch } from '../../components/Form'
@@ -18,6 +17,7 @@ import {
 } from '../../lib/store'
 import { ConnectionList } from './ConnectionList'
 import { ImportOpenSshDialog } from './ImportOpenSshDialog'
+import { PROTOCOLS, createConnectionLabel, protocolLabel } from './protocolLabels'
 import './connections.css'
 
 /** 表单只在真正打开时加载：它是这个视图里最重的模块 */
@@ -31,14 +31,6 @@ async function loadDemoData(): Promise<void> {
   const { seedDemo } = await import('../../lib/demo-seed')
   await seedDemo()
 }
-
-const PROTOCOLS: ReadonlyArray<{ value: ConnectionKind; label: string }> = [
-  { value: 'ssh', label: 'SSH' },
-  { value: 'rdp', label: 'RDP' },
-  { value: 'telnet', label: 'Telnet' },
-  { value: 'tunnel', label: '隧道' },
-  { value: 'vnc', label: 'VNC' },
-]
 
 export default function ConnectionsView(): React.JSX.Element {
   const { query, filter, showInfo, protocol, loading, loaded, backendReady, backendError, editing, busy, pingBusy } =
@@ -137,7 +129,7 @@ export default function ConnectionsView(): React.JSX.Element {
           导入配置
         </Button>
         <Button size="sm" variant="primary" icon="plus" onClick={() => actions.openCreate(protocol)}>
-          新建连接
+          {createConnectionLabel(protocol)}
         </Button>
       </div>
 
@@ -165,11 +157,11 @@ export default function ConnectionsView(): React.JSX.Element {
           <EmptyState
             icon="server"
             title="还没有任何连接"
-            text="新建一条 SSH 连接。填好地址、端口与凭据后保存，双击列表项即可打开终端。"
+            text={`点「${createConnectionLabel(protocol)}」。填好地址、端口与凭据后保存，双击列表项即可打开终端。`}
             actions={
               <>
-                <Button variant="primary" icon="plus" onClick={() => actions.openCreate('ssh')}>
-                  新建 SSH 连接
+                <Button variant="primary" icon="plus" onClick={() => actions.openCreate(protocol)}>
+                  {createConnectionLabel(protocol)}
                 </Button>
                 {DEMO_ENABLED ? (
                   <Button variant="outline" icon="cloud" onClick={() => void loadDemoData()}>
@@ -188,7 +180,7 @@ export default function ConnectionsView(): React.JSX.Element {
             text={
               filtered
                 ? '当前的分组筛选或搜索条件下没有结果。'
-                : `${PROTOCOLS.find((p) => p.value === protocol)?.label ?? ''} 分类下还没有连接。`
+                : `${protocolLabel(protocol)} 分类下还没有连接。`
             }
             actions={
               <>
@@ -204,7 +196,7 @@ export default function ConnectionsView(): React.JSX.Element {
                   </Button>
                 ) : null}
                 <Button variant="primary" icon="plus" onClick={() => actions.openCreate(protocol)}>
-                  新建连接
+                  {createConnectionLabel(protocol)}
                 </Button>
               </>
             }
