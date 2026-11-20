@@ -44,15 +44,27 @@ export function Modal({
 }: ModalProps): React.JSX.Element | null {
   const panelRef = useRef<HTMLDivElement | null>(null)
   const restoreRef = useRef<HTMLElement | null>(null)
+  /**
+   * onClose 走 ref，不进焦点 effect 的依赖。
+   *
+   * 调用方普遍传内联箭头函数：弹窗内容的 draft 状态但凡在父组件，
+   * 每敲一个字符就会生成新 onClose → 焦点 effect 重跑 → cleanup 把焦点
+   * 还给打开前元素 + rAF 重新聚焦第一个输入框 —— 表现为"输入一个字焦点
+   * 就跳回开头"。经 ref 读最新引用后，effect 只在 open 翻转时运行。
+   */
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
 
   useEffect(() => {
     if (!open) return
     restoreRef.current = document.activeElement as HTMLElement | null
 
+    const requestClose = (): void => onCloseRef.current()
+
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         e.stopPropagation()
-        onClose()
+        requestClose()
         return
       }
       if (e.key !== 'Tab') return
@@ -91,7 +103,7 @@ export function Modal({
       cancelAnimationFrame(raf)
       restoreRef.current?.focus?.()
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
@@ -101,7 +113,7 @@ export function Modal({
     <div
       className="t-modal-overlay"
       onMouseDown={(e) => {
-        if (closeOnOverlay && e.target === e.currentTarget) onClose()
+        if (closeOnOverlay && e.target === e.currentTarget) onCloseRef.current()
       }}
     >
       <div
