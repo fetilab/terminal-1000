@@ -128,6 +128,18 @@ hotkey、broadcast、quickcmd、system、update、shellIntegration（OSC 133 命
 SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）、Monaco 编辑器（笔记 + 远端文件，懒加载）、
 监控面板、笔记、设置面板（含同步传输方式与指纹确认、外观：预设/背景图/透明度/缩放）、全局搜索、锁屏遮罩。
 
+### 2026-11-20 会话新增（用户实测反馈 7 项修复，提交 ba63fae..733fc8a）
+- ①新建连接表单焦点跳回：根因是 Modal 焦点 effect 依赖内联 onClose（每键重渲染触发重聚焦），
+  useCallback 稳定引用修复；⑥四处新建连接按钮随协议栏联动（protocolLabels.ts + 单测）
+- ②本地文件浏览：sftp 域 sftpFor 一处按会话 kind 分流到 local-backend（SftpLike→node:fs 适配器），
+  14 动作与传输引擎零改动复用；顺手修 mtime 秒/毫秒显示 1970 的既有 bug
+- ③zsh/oh-my-zsh 渲染错乱：unicode11 addon（**loadAddon 后必须显式 activeVersion='11'**）
+  + 字体栈 emoji 回退；⑤高亮改为文字色（xterm 6 layer:'top' 装饰的 foregroundColor 会
+  逐单元格涂到行 span 内联 color——装饰元素本身保持透明）
+- ④补全语料用户文件：设置 completion.corpusFile，合并/覆盖/降级三态（userCorpus.ts 15 例单测）
+- ⑦三栏布局：文件栏与终端并存（不再互换）、ssh 连接即自动 startMonitor 采集
+- 已发布 v0.1.1（六包安装件，见 GitHub Releases）；注意 AppImage 107MB 略超 100MiB 预算
+
 ### 2026-11-18 会话新增（4 项任务全绿，提交 8f3d2aa..86d1937）
 - **task-35 关闭**：`apps/desktop/test-fixtures/` 进程内 RFB 3.8 服务端 + 假 FreeRDP 客户端夹具；
   VNC 11 项 + RDP 10 项夹具测试默认运行（真机门控保留）。DES 期望值由 PyCryptodome 独立算出。
