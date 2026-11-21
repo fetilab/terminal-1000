@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Settings } from '@t1000/shared'
+import type { AppPaths, Settings } from '@t1000/shared'
 import { Button, IconButton, Section } from '../../components/Button'
 import { Badge, Banner, Loading } from '../../components/Feedback'
 import { Field, Select, Switch, TextInput } from '../../components/Form'
@@ -261,6 +261,64 @@ function ReadonlyRows({ rows }: { rows: Array<[string, React.ReactNode]> }): Rea
   )
 }
 
+/* ── 存储位置 ──────────────────────────────────── */
+
+/**
+ * 数据目录展示。
+ *
+ * 为什么要在设置里露出来：用户的库、笔记、备份、日志全在这个目录，
+ * 升级丢设置时第一件要确认的事就是「新旧版本是不是在写同一个目录」。
+ * 只读展示 + 一键打开，不做「自定义目录」—— 自定义路径是丢数据的第二大人为原因。
+ */
+function DataLocationPanel(): React.JSX.Element {
+  const [paths, setPaths] = useState<AppPaths | null>(null)
+  // 路径很长，窄窗口下必须允许任意位置换行，否则会把整行撑开
+  const pathStyle: React.CSSProperties = { wordBreak: 'break-all', userSelect: 'text' }
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const p = await invoke<'app', 'getPaths', Record<string, never>, AppPaths>('app', 'getPaths', {})
+        setPaths(p)
+      } catch {
+        /* 取不到就不显示，不打断设置页 */
+      }
+    })()
+  }, [])
+
+  return (
+    <>
+      <Section>存储位置</Section>
+      <ReadonlyRows
+        rows={[
+          ['数据目录', <code key="dir" style={pathStyle}>{paths?.userData ?? '读取中…'}</code>],
+          ['数据库', <code key="db" style={pathStyle}>{paths?.dbFile ?? '—'}</code>],
+          ['备份', <code key="bak" style={pathStyle}>{paths?.backupDir ?? '—'}</code>],
+        ]}
+      />
+      <div className="settings-actions">
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="folder"
+          disabled={!paths}
+          onClick={() => {
+            if (!paths) return
+            void invoke<'app', 'openPath', { path: string }, { opened: boolean }>('app', 'openPath', {
+              path: paths.userData,
+            }).catch(() => toast.error('无法打开数据目录'))
+          }}
+        >
+          打开数据目录
+        </Button>
+      </div>
+      <p className="t-field__hint">
+        升级只会替换程序文件，不会动这个目录；库、笔记与备份都在这里，卸载时也不会自动删除。
+      </p>
+    </>
+  )
+}
+
 /* ── 侧栏 ──────────────────────────────────────── */
 
 export function SettingsSidebar(): React.JSX.Element {
@@ -369,6 +427,8 @@ export default function SettingsView(): React.JSX.Element {
         ) : (
           <FieldsGrid defs={defs} settings={settings} update={(p, v) => void update(p, v)} />
         )}
+
+        {section === 'app' ? <DataLocationPanel /> : null}
 
         {section === 'ai' ? (
           <>
