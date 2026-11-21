@@ -24,46 +24,70 @@ export interface RenderTheme {
 }
 
 /** 与 xterm 主题对齐的默认暗色（与 TerminalPane 的 TERMINAL_THEME 同源） */
+
+/**
+ * Catppuccin Mocha —— 深色默认方案。
+ *
+ * 直接取自用户 kitty 配置（~/.config/kitty/current-theme.conf），
+ * 0–15 顺序同 ANSI（black,red,green,yellow,blue,magenta,cyan,white,bright×8）。
+ */
 export const SCHEME_DARK = [
-  '#1e222b',
-  '#e5484d',
-  '#46b17b',
-  '#d9a441',
-  '#6f8dff',
-  '#b48ce0',
-  '#3ec9d6',
-  '#c6ccd8',
-  '#4c5361',
-  '#ff6b6f',
-  '#63d29a',
-  '#f0c065',
-  '#8fa6ff',
-  '#cfa8f0',
-  '#63dde8',
-  '#f2f4f8',
+  '#45475A', //  black   (surface1)
+  '#F38BA8', //  red
+  '#A6E3A1', //  green
+  '#F9E2AF', //  yellow
+  '#89B4FA', //  blue
+  '#F5C2E7', //  magenta
+  '#94E2D5', //  cyan
+  '#BAC2DE', //  white   (subtext1)
+  '#585B70', //  bright black (surface2)
+  '#F38BA8',
+  '#A6E3A1',
+  '#F9E2AF',
+  '#89B4FA',
+  '#F5C2E7',
+  '#94E2D5',
+  '#A6ADC8', //  bright white (subtext0)
 ] as const
 
+/** Catppuccin Latte —— 浅色方案（与用户的 Mocha 同系列的白色主题） */
 export const SCHEME_LIGHT = [
-  '#1e222b',
-  '#c62f34',
-  '#1f8a52',
-  '#9a6b00',
-  '#3457d5',
-  '#8b4bb5',
-  '#0f7f8b',
-  '#4a5260',
-  '#6b7382',
-  '#e5484d',
-  '#2aa869',
-  '#b8860b',
-  '#5b7bff',
-  '#a86fd1',
-  '#1a9ba8',
-  '#20242c',
+  '#5C5F77', //  black   (subtext1)
+  '#D20F39', //  red
+  '#40A02B', //  green
+  '#DF8E1D', //  yellow
+  '#1E66F5', //  blue
+  '#EA76CB', //  magenta
+  '#179299', //  cyan
+  '#7C7F93', //  white   (overlay1)
+  '#9399B2', //  bright black (overlay0)
+  '#D20F39',
+  '#40A02B',
+  '#DF8E1D',
+  '#1E66F5',
+  '#EA76CB',
+  '#179299',
+  '#6C6F85', //  bright white (subtext0)
 ] as const
 
-export const BG_DARK = '#0d0f14'
-export const BG_LIGHT = '#fbfcfe'
+export const BG_DARK = '#1E1E2E' // Mocha base
+export const BG_LIGHT = '#EFF1F5' // Latte base
+
+/** 方案附属色（前景/光标/选区），与 kitty current-theme.conf 同源 */
+export const SCHEME_EXTRAS = {
+  dark: {
+    fg: '#CDD6F4', // text
+    cursor: '#F5E0DC', // rosewater
+    selectionBg: '#F5E0DC',
+    selectionFg: '#1E1E2E',
+  },
+  light: {
+    fg: '#4C4F69', // text
+    cursor: '#DC8A78', // rosewater
+    selectionBg: '#DC8A78',
+    selectionFg: '#EFF1F5',
+  },
+} as const
 
 export function parseHex(hex: string, alpha = 1): Rgba {
   const trimmed = hex.trim()
@@ -141,11 +165,12 @@ export function buildTheme(input: ThemeInput): RenderTheme {
   }
 
   const lightTheme = scheme === SCHEME_LIGHT
+  const extras = lightTheme ? SCHEME_EXTRAS.light : SCHEME_EXTRAS.dark
   const bgBase = parseHex(lightTheme ? BG_LIGHT : BG_DARK)
-  const fgBase = parseHex(lightTheme ? '#1b2029' : '#e4e7ee')
+  const fgBase = parseHex(extras.fg)
   const bg = core?.bg != null ? fromRgbInt(core.bg, settings.backgroundOpacity) : { ...bgBase, a: settings.backgroundOpacity }
   const fg = core?.fg != null ? fromRgbInt(core.fg) : fgBase
-  const cursor = core?.cursor != null ? fromRgbInt(core.cursor, settings.cursorOpacity) : { ...parseHex(lightTheme ? '#12909e' : '#3ec9d6'), a: settings.cursorOpacity }
+  const cursor = core?.cursor != null ? fromRgbInt(core.cursor, settings.cursorOpacity) : { ...parseHex(extras.cursor), a: settings.cursorOpacity }
 
   return {
     fg,

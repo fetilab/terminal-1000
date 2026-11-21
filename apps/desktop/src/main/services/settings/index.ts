@@ -74,15 +74,17 @@ export const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
 }
 
 export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
-  fontFamily: "'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace",
-  fontSize: 13,
+  // 对齐用户 kitty.conf：MesloLGS NF 12pt、beam 光标、背景透明 0.88、
+  // padding 12、scrollback 50000、Catppuccin 配色（theme.ts 同源）
+  fontFamily: "'MesloLGS NF', 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace",
+  fontSize: 12,
   lineHeight: 1.2,
   letterSpacing: 0,
-  cursorStyle: 'block',
+  cursorStyle: 'bar',
   cursorBlink: true,
-  copyOnSelect: false,
+  copyOnSelect: true,
   rightClickPaste: false,
-  scrollback: 10000,
+  scrollback: 50000,
   // 默认关闭：斑马纹是辅助，不该替用户改变默认观感
   zebraStripes: false,
   wrapLines: true,
@@ -97,15 +99,17 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   boldWeight: 700,
   fontFeatures: [],
   ligatures: true,
-  padding: 6,
-  backgroundOpacity: 1,
+  padding: 12,
+  backgroundOpacity: 0.88,
   cursorOpacity: 1,
   cursorInactiveStyle: 'outline',
   wheelMultiplier: 3,
-  selectionBackground: '#3ec9d6',
-  selectionForeground: '#0d0f14',
+  selectionBackground: '#F5E0DC',
+  selectionForeground: '#1E1E2E',
   underlineColor: '',
   kittyGraphics: true,
+  // 光标拖尾（kitty cursor_trail 3）：0 关闭
+  cursorTrail: 3,
   // 空数组 = 用配色方案自带的 16 色
   palette: [],
   termType: 'xterm-kitty',

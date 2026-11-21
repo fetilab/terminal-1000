@@ -156,6 +156,9 @@ export class KittyEngine {
   private composing = false
   private visible = true
   private lastCwd = ''
+  /** 光标最后一次移动的时间（用于「静止后停止闪烁」） */
+  private lastCursorMoveAt = Date.now()
+  private lastCursorKey = ''
   private customThemeBase: { fg: number | null; bg: number | null; cursor: number | null; palette: number[] } | null =
     null
 
@@ -272,6 +275,12 @@ export class KittyEngine {
           this.meta = frame.meta
           this.applyRows(frame.rows, frame.full)
           this.refreshThemeBase(frame.meta)
+          // 光标位置变化：重置「静止计时」（停止闪烁用）
+          const ck = `${frame.meta.cursor.x},${frame.meta.cursor.y}`
+          if (ck !== this.lastCursorKey) {
+            this.lastCursorKey = ck
+            this.lastCursorMoveAt = Date.now()
+          }
           this.scheduleRender()
           if (frame.meta.title && this.opts.onTitle) this.opts.onTitle(frame.meta.title)
         },
@@ -284,6 +293,11 @@ export class KittyEngine {
     this.session.onWrite = (data) => this.emitData(data)
     // 关掉自动换行（用户在设置里关了的话）；必须在任何输出前下发
     if (!this.options.wrapLines) this.session.write(new TextEncoder().encode('\x1b[?7l'))
+    // 光标观感（kitty cursor_trail / cursor_shape / cursor_inactive_style）
+    this.renderer.setCursorTrail(this.options.cursorTrail)
+    this.renderer.setCursorShapeOverride(this.options.cursorStyle)
+    this.renderer.setCursorInactiveStyle(this.options.cursorInactiveStyle)
+    this.renderer.setFocused(true)
     this.ready = true
     this.startBlink()
     this.scheduleRender()
@@ -394,6 +408,8 @@ export class KittyEngine {
     this.syncDecorations()
     this.renderer.render()
     this.updateScrollbar()
+    // 光标拖尾/滑动动画未收尾时持续排帧，直到光标贴合目标、残影烧完
+    if (this.renderer.animActive) this.scheduleRender()
     for (const cb of this.renderListeners) cb()
     this.opts.onWriteParsed?.()
   }
@@ -479,11 +495,18 @@ export class KittyEngine {
 
   private startBlink(): void {
     window.clearInterval(this.blinkTimer)
+    // kitty cursor_blink_interval 0.5
     this.blinkTimer = window.setInterval(() => {
       if (this.disposed) return
+      // kitty cursor_stop_blinking_after 15：光标静止 15s 后常亮，不再闪
+      if (Date.now() - this.lastCursorMoveAt > 15000) {
+        this.blinkOff = false
+        if (this.renderer.setBlinkOff(false)) this.scheduleRender()
+        return
+      }
       this.blinkOff = !this.blinkOff
       if (this.renderer.setBlinkOff(this.blinkOff)) this.scheduleRender()
-    }, 540)
+    }, 500)
   }
 
   /* ─────────────────────────── 尺寸 ─────────────────────────── */
@@ -564,9 +587,11 @@ export class KittyEngine {
       this.session?.paste(text)
     })
     this.ime.addEventListener('focus', () => {
+      this.renderer.setFocused(true)
       this.session?.focus(true)
     })
     this.ime.addEventListener('blur', () => {
+      this.renderer.setFocused(false)
       this.session?.focus(false)
     })
   }
@@ -896,6 +921,9 @@ export class KittyEngine {
     })
     this.renderer.setTheme(this.theme)
     this.renderer.setOptions({ ligatures: settings.ligatures, zebra: settings.zebraStripes })
+    this.renderer.setCursorTrail(settings.cursorTrail)
+    this.renderer.setCursorShapeOverride(settings.cursorStyle)
+    this.renderer.setCursorInactiveStyle(settings.cursorInactiveStyle)
     this.fit()
   }
 

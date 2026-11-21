@@ -50,6 +50,7 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'terminal.ligatures': 'kitty 渲染器 buildRow ligatureRun + GlyphAtlas.hasLigature',
   'terminal.cursorInactiveStyle': 'kitty 引擎失焦时切换光标形状（hollow/outline 等）',
   'terminal.cursorOpacity': 'kitty 渲染器 drawCursor 的 alpha；xterm 由主题 cursor 颜色承载',
+  'terminal.cursorTrail': 'kitty 渲染器光标平滑滑动 + 残影深度（kitty cursor_trail）；0 关闭',
   'terminal.padding': 'kitty 渲染器 fit()/CSS padding；xterm 后端由 .xterm 容器 padding 承载',
   'terminal.backgroundOpacity': 'kitty 渲染器 clear 颜色 alpha 与画布背景',
   'terminal.selectionBackground': 'kitty 渲染器 selectionAt → theme.selectionBg；xterm 后端消费于 theme.selectionBackground',

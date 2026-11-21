@@ -273,7 +273,39 @@ try {
   writeFileSync('/home/mosfet/dsh1/_shots/kitty-scroll.png', Buffer.from(shot2.data, 'base64'))
   const scrollOk = scrollOk1 && scrollOk2 && scrollOk3
   console.log(`SCROLL: ${scrollOk ? 'PASS' : 'FAIL'} (滚屏=${scrollOk1} 回看=${scrollOk2} 跳底=${scrollOk3})`)
-  process.exitCode = ok && scrollOk ? 0 : 1
+
+  /* ── 光标特效：拖尾参数下发 + 主题（Catppuccin Mocha） ── */
+  await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      // 触发一次跨格移动：把光标挪到别的行（写几行新内容）
+      eng.write('\\r\\n\\r\\n\\r\\ntrail-probe\\r\\n')
+    })()`,
+  })
+  await sleep(600)
+  const s4 = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      const r = eng.renderer
+      return {
+        trailDepth: r.trailDepth,
+        animIdle: r.animActive === false,
+        bg: [r.theme.bg.r, r.theme.bg.g, r.theme.bg.b].map(v => Math.round(v * 255)),
+        fg: [r.theme.fg.r, r.theme.fg.g, r.theme.fg.b].map(v => Math.round(v * 255)),
+        cursorStyleOverride: r.shapeOverride,
+      }
+    })()`,
+    returnByValue: true,
+  })
+  console.log('cursor-fx =', JSON.stringify(s4?.result?.value))
+  const f = s4?.result?.value ?? {}
+  // Catppuccin Mocha base #1E1E2E（30,30,46）、text #CDD6F4（205,214,244）
+  const fxOk = f.trailDepth === 3 && f.animIdle === true &&
+    f.bg?.[0] === 30 && f.bg?.[1] === 30 && f.bg?.[2] === 46 &&
+    f.fg?.[0] === 205 && f.fg?.[1] === 214 && f.fg?.[2] === 244 &&
+    f.cursorStyleOverride === 'bar'
+  console.log(`CURSOR-FX: ${fxOk ? 'PASS' : 'FAIL'}`)
+  process.exitCode = ok && scrollOk && fxOk ? 0 : 1
 } catch (err) {
   console.error('RESULT: ERROR', err.message)
   console.error(appLog.slice(-1500))

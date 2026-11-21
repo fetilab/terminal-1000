@@ -188,6 +188,20 @@ export class WebGLTerminalRenderer {
   private disposed = false
   private dpr: number
 
+  /* ── 光标动画（kitty cursor_trail 同款观感） ──
+   * 光标位置用指数插值滑向目标（快速启动、柔和停靠）；跨格移动（≥2 格）
+   * 时把当前展示位置压入拖尾队列，残影逐帧衰减。全部在格坐标系插值，
+   * 与 DPR/缩放无关。 */
+  private trailDepth = 3
+  private animInit = false
+  private animX = 0
+  private animY = 0
+  private lastTx = -1
+  private lastTy = -1
+  private trail: { x: number; y: number; a: number }[] = []
+  private focused = true
+  private shapeOverride: 'block' | 'underline' | 'bar' | null = null
+
   constructor(
     canvas: HTMLCanvasElement,
     atlas: GlyphAtlas,
@@ -297,6 +311,38 @@ export class WebGLTerminalRenderer {
     if (this.blinkOff === off) return false
     this.blinkOff = off
     return true
+  }
+
+  /** 拖尾深度（kitty cursor_trail；0 = 关闭，动画直接贴目标） */
+  setCursorTrail(depth: number): void {
+    this.trailDepth = Math.max(0, Math.min(8, Math.round(depth)))
+    if (this.trailDepth === 0) {
+      this.trail = []
+      this.animInit = false
+    }
+  }
+
+  /** 光标形状覆盖（设置项 cursorStyle；null = 跟随内核上报） */
+  setCursorShapeOverride(style: 'block' | 'underline' | 'bar' | null): void {
+    this.shapeOverride = style
+  }
+
+  setFocused(focused: boolean): void {
+    this.focused = focused
+  }
+
+  /** 动画是否还在跑（引擎据此决定要不要继续排下一帧） */
+  get animActive(): boolean {
+    const meta = this.meta
+    if (!meta || !meta.cursor.visible || meta.cursor.shape === 'none') return this.trail.length > 0
+    const t = this.animTarget()
+    const moving = Math.abs(t.x - this.animX) > 0.02 || Math.abs(t.y - this.animY) > 0.02
+    return moving || this.trail.length > 0
+  }
+
+  private animTarget(): { x: number; y: number } {
+    const meta = this.meta as KittyMeta
+    return { x: meta.cursor.x, y: meta.scrolledBy + meta.cursor.y }
   }
 
   /** 画布尺寸（CSS 像素）；返回是否需要重排 */
@@ -624,21 +670,47 @@ export class WebGLTerminalRenderer {
   private drawCursor(): void {
     const meta = this.meta
     if (!meta || !meta.cursor.visible || meta.cursor.shape === 'none') return
-    if (meta.modes.altScreen && !meta.cursor.visible) return
-    // 光标住在 live 区（绝对行 = scrollbackLength + cursor.y）。视口顶的绝对行
-    // 是 scrollbackLength - scrolledBy，所以回看 scrolledBy>0 时光标的视口行
-    // 是 scrolledBy + cursor.y —— 可能落到视口外（xterm 同样不画视口外的光标）。
-    // 直接拿 cursor.y 当视口行会让光标浮在历史内容上（回看时的「诡异光标」）。
-    const y = meta.scrolledBy + meta.cursor.y
-    if (y < 0 || y >= this.rows) return
+    const t = this.animTarget()
+    if (t.y < 0 || t.y >= this.rows) return
     const gl = this.gl
-    const { x, shape } = meta.cursor
+
+    // ── 动画推进（每帧一次，由引擎在 animActive 时持续排帧） ──
+    if (!this.animInit || this.trailDepth === 0) {
+      this.animX = t.x
+      this.animY = t.y
+      this.animInit = true
+    } else {
+      // 跨格移动（≥2 格）且开了拖尾：把当前展示位置留在原地渐隐
+      if (t.x !== this.lastTx || t.y !== this.lastTy) {
+        if (Math.abs(t.x - this.animX) + Math.abs(t.y - this.animY) >= 2) {
+          this.trail.push({ x: this.animX, y: this.animY, a: 0.8 })
+          while (this.trail.length > this.trailDepth) this.trail.shift()
+        }
+        this.animInit = true
+      }
+      this.animX += (t.x - this.animX) * 0.38
+      this.animY += (t.y - this.animY) * 0.38
+      if (Math.abs(t.x - this.animX) < 0.02) this.animX = t.x
+      if (Math.abs(t.y - this.animY) < 0.02) this.animY = t.y
+    }
+    this.lastTx = t.x
+    this.lastTy = t.y
+    // 残影衰减（kitty cursor_trail_decay 0.1–0.4 的观感：半衰约 3–4 帧）
+    for (const p of this.trail) p.a *= 0.62
+    this.trail = this.trail.filter((p) => p.a > 0.06)
+
     const color = this.theme.cursor
-    const build = (ox: number, oy: number, w: number, h: number, c: Rgba): void => {
+    // 形状：设置项覆盖 > 内核上报；失焦按 cursorInactiveStyle 降级（outline=空心）
+    let shape: string
+    if (!this.focused) shape = this.cursorInactiveShape()
+    else shape = this.shapeOverride ?? meta.cursor.shape
+    if (shape === 'none') return
+
+    const build = (px: number, py: number, ox: number, oy: number, w: number, h: number, c: Rgba): void => {
       const base = this.cursorCount * FLOATS
       const inst = this.cursorInstances
-      inst[base] = x + ox
-      inst[base + 1] = y + oy
+      inst[base] = px + ox
+      inst[base + 1] = py + oy
       inst[base + 2] = 0
       inst[base + 3] = 0
       inst[base + 4] = 0
@@ -656,23 +728,29 @@ export class WebGLTerminalRenderer {
     }
     this.cursorCount = 0
     const c = { ...color, a: this.blinkOff ? color.a * 0.35 : color.a }
-    if (shape === 'block') build(0, 0, 1, 1, c)
-    else if (shape === 'beam') build(0, 0, 0.14, 1, c)
-    else if (shape === 'underline') build(0, 0.88, 1, 0.12, c)
-    else if (shape === 'hollow') {
-      const t = 0.08
-      build(0, 0, 1, t, c)
-      build(0, 1 - t, 1, t, c)
-      build(0, 0, t, 1, c)
-      build(1 - t, 0, t, 1, c)
+    const drawShape = (px: number, py: number, alphaScale: number): void => {
+      const s = { ...color, a: c.a * alphaScale }
+      if (shape === 'block') build(px, py, 0, 0, 1, 1, s)
+      else if (shape === 'beam') build(px, py, 0, 0, 0.2, 1, s) // kitty cursor_beam_thickness 2px
+      else if (shape === 'underline') build(px, py, 0, 0.88, 1, 0.12, s)
+      else if (shape === 'hollow') {
+        const t2 = 0.08
+        build(px, py, 0, 0, 1, t2, s)
+        build(px, py, 0, 1 - t2, 1, t2, s)
+        build(px, py, 0, 0, t2, 1, s)
+        build(px, py, 1 - t2, 0, t2, 1, s)
+      }
     }
+    // 拖尾残影（在主光标下层）：位置 = 残影快照，形状与主光标一致
+    for (const p of this.trail) drawShape(p.x, p.y, p.a * 0.5)
+    drawShape(this.animX, this.animY, 1)
     if (this.cursorCount === 0) return
     gl.bindBuffer(gl.ARRAY_BUFFER, this.cursorBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, this.cursorInstances.subarray(0, this.cursorCount * FLOATS), gl.DYNAMIC_DRAW)
     gl.bindVertexArray(this.cursorVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.cursorBuffer)
     gl.uniform1f(gl.getUniformLocation(this.program, 'u_pass'), 0)
-    // 光标用独立缓冲，逐实例偏移指针后各画 1 个实例（块/竖线/下划线/空心共 1–4 个）
+    // 光标用独立缓冲，逐实例偏移指针后各画 1 个实例（残影/块/竖线/下划线/空心）
     for (let i = 0; i < this.cursorCount; i += 1) {
       const off = i * STRIDE
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, STRIDE, off)
@@ -682,6 +760,17 @@ export class WebGLTerminalRenderer {
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, 1)
     }
     gl.bindVertexArray(null)
+  }
+
+  private cursorInactiveShape(): string {
+    // cursorInactiveStyle 的 outline 映射成 hollow；none 直接不画
+    return this.inactiveStyle === 'none' ? 'none' : this.inactiveStyle === 'outline' ? 'hollow' : this.inactiveStyle
+  }
+
+  private inactiveStyle: 'outline' | 'block' | 'beam' | 'underline' | 'none' = 'outline'
+
+  setCursorInactiveStyle(style: 'outline' | 'block' | 'beam' | 'underline' | 'none'): void {
+    this.inactiveStyle = style
   }
 
   private cursorCount = 0

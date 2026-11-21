@@ -93,6 +93,16 @@ export class CanvasTerminalRenderer {
     return true
   }
 
+  /* 光标动画与形状覆盖：2D 回退路径不做拖尾动画（保持光标即点即到），
+     但接口保持同形，引擎无需区分后端。 */
+  setCursorTrail(_depth: number): void {}
+  setCursorShapeOverride(_style: 'block' | 'underline' | 'bar' | null): void {}
+  setCursorInactiveStyle(_style: 'outline' | 'block' | 'beam' | 'underline' | 'none'): void {}
+  setFocused(_focused: boolean): void {}
+  get animActive(): boolean {
+    return false
+  }
+
   setGrid(cols: number, rows: number): void {
     if (cols === this.cols && rows === this.rows) return
     this.cols = cols
