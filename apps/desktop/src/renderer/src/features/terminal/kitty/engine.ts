@@ -122,6 +122,11 @@ export class KittyEngine {
   private readonly screen: HTMLDivElement
   private readonly wrap: HTMLDivElement
   private readonly ime: HTMLTextAreaElement
+  private readonly scrollbar: HTMLDivElement
+  private readonly thumb: HTMLDivElement
+  private readonly review: HTMLDivElement
+  private dragScroll: { startY: number; startTopPx: number } | null = null
+  private readonly scrollbarAbort = new AbortController()
   private atlas: GlyphAtlas
   private renderer: WebGLTerminalRenderer | CanvasTerminalRenderer
   private session: KittySession | null = null
@@ -198,6 +203,23 @@ export class KittyEngine {
     this.ime.style.padding = '0'
     this.ime.style.resize = 'none'
     this.wrap.appendChild(this.ime)
+
+    // 回看滚动条：xterm 后端自带 .xterm-viewport 滚动条，kitty 后端自己补一个。
+    // 轨道铺满右缘，thumb 用百分比定位（免量容器尺寸），alt 屏/无历史时隐藏。
+    this.scrollbar = document.createElement('div')
+    this.scrollbar.className = 'kitty-scrollbar'
+    this.thumb = document.createElement('div')
+    this.thumb.className = 'kitty-scrollbar__thumb'
+    this.scrollbar.appendChild(this.thumb)
+    this.wrap.appendChild(this.scrollbar)
+
+    // 回看徽标：滚离底部时提示「回看了多少行」，点击回底（等价 xterm 的 scrollToBottom）
+    this.review = document.createElement('div')
+    this.review.className = 'kitty-review'
+    this.review.addEventListener('click', () => this.scrollToBottom())
+    this.wrap.appendChild(this.review)
+
+    this.bindScrollbar()
     this.element.appendChild(this.wrap)
 
     const dpr = Math.max(1, window.devicePixelRatio || 1)
@@ -371,8 +393,73 @@ export class KittyEngine {
     if (this.disposed) return
     this.syncDecorations()
     this.renderer.render()
+    this.updateScrollbar()
     for (const cb of this.renderListeners) cb()
     this.opts.onWriteParsed?.()
+  }
+
+  /* ─────────────────────────── 回看滚动条 ─────────────────────────── */
+
+  /** 每帧同步滚动条与回看徽标（渲染路径上，必须足够便宜） */
+  private updateScrollbar(): void {
+    const meta = this.meta
+    const history = meta?.scrollbackLength ?? 0
+    const scrolledBy = meta?.scrolledBy ?? 0
+    const total = history + this.rows
+    const scrollable = !meta?.modes.altScreen && total > this.rows && this.rows > 0
+    this.scrollbar.classList.toggle('kitty-scrollbar--on', scrollable)
+    if (scrollable) {
+      // 视口顶的绝对行号 = history - scrolledBy；thumb 顶部比例 = 该行 / 总行数
+      const frac = this.rows / total
+      const h = Math.min(1, frac) * 100
+      const top = Math.max(0, Math.min(1 - frac, (history - scrolledBy) / total)) * 100
+      this.thumb.style.height = `${h}%`
+      this.thumb.style.top = `${top}%`
+    }
+    if (scrolledBy > 0) {
+      this.review.textContent = `回看 ${scrolledBy} 行 · 点击回底`
+      this.review.classList.add('kitty-review--on')
+    } else {
+      this.review.classList.remove('kitty-review--on')
+    }
+  }
+
+  private bindScrollbar(): void {
+    const signal = this.scrollbarAbort.signal
+    const thumbDown = (e: MouseEvent): void => {
+      e.preventDefault()
+      e.stopPropagation()
+      this.dragScroll = { startY: e.clientY, startTopPx: this.thumb.offsetTop }
+      this.scrollbar.classList.add('kitty-scrollbar--dragging')
+    }
+    const thumbMove = (e: MouseEvent): void => {
+      if (!this.dragScroll || !this.meta) return
+      const meta = this.meta
+      const total = meta.scrollbackLength + this.rows
+      const trackH = Math.max(1, this.scrollbar.clientHeight - this.thumb.offsetHeight)
+      // thumb 每移动 1px，视口顶移动 (total - rows) / 可滑行程 行
+      const rowsPerPx = (total - this.rows) / trackH
+      const movedPx = e.clientY - this.dragScroll.startY
+      // startTopPx 对应视口顶绝对行，换算成期望的 scrolledBy
+      const startTopRows = (this.dragScroll.startTopPx / Math.max(1, this.scrollbar.clientHeight)) * total
+      const wantTop = Math.max(0, Math.min(meta.scrollbackLength, startTopRows + movedPx * rowsPerPx))
+      const wantScrolledBy = meta.scrollbackLength - wantTop
+      const delta = Math.round(meta.scrolledBy - wantScrolledBy)
+      if (delta !== 0) this.session?.scroll(delta)
+    }
+    const thumbUp = (): void => {
+      this.dragScroll = null
+      this.scrollbar.classList.remove('kitty-scrollbar--dragging')
+    }
+    this.thumb.addEventListener('mousedown', thumbDown)
+    window.addEventListener('mousemove', thumbMove, { signal })
+    window.addEventListener('mouseup', thumbUp, { signal })
+    // 点轨道空白 = 翻页（与 xterm/常见终端一致）
+    this.scrollbar.addEventListener('mousedown', (e) => {
+      if (e.target !== this.scrollbar) return
+      const rect = this.scrollbar.getBoundingClientRect()
+      this.session?.scroll(e.clientY < rect.top + rect.height / 2 ? 'page-up' : 'page-down')
+    })
   }
 
   private syncDecorations(): void {
@@ -857,6 +944,7 @@ export class KittyEngine {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.scrollbarAbort.abort()
     window.clearInterval(this.blinkTimer)
     if (this.raf !== 0) cancelAnimationFrame(this.raf)
     window.removeEventListener('mousemove', this.onMouseMove)

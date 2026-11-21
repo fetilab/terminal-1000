@@ -40,6 +40,13 @@
   gap: 10px;
 }
 
+/* 关键：滚动容器自己是 flex column，子项默认 flex-shrink:1 会在内容超高时
+   被等比压扁（卡片内容被裁剪），而不是溢出滚动。全部钉成不可收缩，
+   高度始终按内容自然展开，超出部分交给 body 的滚动条。 */
+.monitor__body > * {
+  flex-shrink: 0;
+}
+
 .mcard {
   border: 1px solid var(--t1000-border);
   border-radius: var(--t1000-radius);

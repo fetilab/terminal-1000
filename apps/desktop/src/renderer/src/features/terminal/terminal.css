@@ -701,3 +701,75 @@
   min-width: 0;
   border-left: none;
 }
+
+/* ── kitty 后端的回看滚动条 ─────────────────────────
+ * xterm 后端自带 .xterm-viewport 滚动条；kitty 后端用 WebGL 自绘，
+ * 滚动条自己补。默认隐藏，悬停窗格 / 拖动时浮现。 */
+.kitty-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--t1000-fast) var(--t1000-ease);
+  z-index: 3;
+}
+
+.kitty-scrollbar--on {
+  visibility: visible;
+}
+
+.kitty-surface:hover .kitty-scrollbar--on,
+.kitty-scrollbar--dragging.kitty-scrollbar--on {
+  opacity: 1;
+}
+
+.kitty-scrollbar__thumb {
+  position: absolute;
+  right: 3px;
+  width: 6px;
+  min-height: 24px;
+  border-radius: 3px;
+  background: var(--t1000-fg-muted);
+  opacity: 0.35;
+  cursor: pointer;
+}
+
+.kitty-scrollbar__thumb:hover,
+.kitty-scrollbar--dragging .kitty-scrollbar__thumb {
+  opacity: 0.65;
+}
+
+/* 回看徽标：滚离底部时右下角提示行数，点击回底 */
+.kitty-review {
+  position: absolute;
+  right: 16px;
+  bottom: 8px;
+  padding: 2px 10px;
+  border-radius: var(--t1000-radius-pill);
+  background: color-mix(in srgb, var(--t1000-bg-raised) 92%, transparent);
+  border: 1px solid var(--t1000-border);
+  color: var(--t1000-fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity var(--t1000-fast) var(--t1000-ease), transform var(--t1000-fast) var(--t1000-ease);
+  z-index: 3;
+  cursor: pointer;
+  user-select: none;
+}
+
+.kitty-review--on {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.kitty-review:hover {
+  color: var(--t1000-fg);
+  border-color: var(--t1000-accent);
+}

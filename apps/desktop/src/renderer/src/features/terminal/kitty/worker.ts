@@ -85,6 +85,14 @@ interface Session {
   seq: number
   /** 上一次下发的 scrolledBy；变化时强制整屏重发 */
   lastScrolledBy: number
+  /**
+   * 上一次的 scrollbackLength。内核滚动屏幕（新行把旧行顶进历史）时，
+   * 内容整体上移的行 **不会** 被 lineDirty 标脏（实测：写入 line11 后只有
+   * 光标行/新空行是 dirty，被挤上去的行全是 false），如果只按脏行增量发送，
+   * 视觉上就是「屏幕不滚动、提示符叠在原地」。scrollbackLength 变化即说明
+   * 发生了一次滚动，强制整屏重发。
+   */
+  lastScrollbackLength: number
   forceFull: boolean
   title: string
   /** OSC 7 报告的工作目录（内核不导出，自己从原始字节里嗅探） */
@@ -145,6 +153,7 @@ async function createSession(
     cols_words: cols * KITTY_CELL_WORDS,
     seq: 0,
     lastScrolledBy: 0,
+    lastScrollbackLength: 0,
     forceFull: true,
     title: '',
     cwd: '',
@@ -256,9 +265,11 @@ function flush(sessionId: string): void {
     s.forceFull = true
   }
   const scrolledBy = term.scrolledBy
-  const full = s.forceFull || scrolledBy !== s.lastScrolledBy
+  const history = term.scrollbackLength
+  const full = s.forceFull || scrolledBy !== s.lastScrolledBy || history !== s.lastScrollbackLength
   s.forceFull = false
   s.lastScrolledBy = scrolledBy
+  s.lastScrollbackLength = history
 
   const rowsOut: KittyRow[] = []
   const transfer: Transferable[] = []
@@ -480,6 +491,12 @@ async function handle(req: KittyRequest): Promise<void> {
     case 'key': {
       const s = sessions.get(req.sessionId)
       if (!s) throw new Error('会话不存在')
+      // kitty 行为：回看状态下按键（回车/输入）会先跳回底部，再把键发给 PTY。
+      // 否则用户滚在历史里打字，新输出全堆在视口下面，看起来像「卡死不滚动」。
+      if (s.term.scrolledBy > 0) {
+        s.term.scrollViewport('bottom')
+        scheduleFlush(req.sessionId, true)
+      }
       const key = FUNCTION_KEYS[req.key] ?? req.key
       const encoded = s.term.encodeKey(key as never, modsOf(req.mods), req.action)
       if (encoded) post({ t: 'write', sessionId: req.sessionId, data: encoded })
@@ -489,6 +506,10 @@ async function handle(req: KittyRequest): Promise<void> {
     case 'paste': {
       const s = sessions.get(req.sessionId)
       if (!s) throw new Error('会话不存在')
+      if (s.term.scrolledBy > 0) {
+        s.term.scrollViewport('bottom')
+        scheduleFlush(req.sessionId, true)
+      }
       const encoded = s.term.paste(req.text)
       if (encoded) post({ t: 'write', sessionId: req.sessionId, data: encoded })
       post({ t: 'reply', id: req.id, ok: true, value: encoded })

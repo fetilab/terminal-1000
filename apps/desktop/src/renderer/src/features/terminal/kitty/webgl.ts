@@ -625,8 +625,14 @@ export class WebGLTerminalRenderer {
     const meta = this.meta
     if (!meta || !meta.cursor.visible || meta.cursor.shape === 'none') return
     if (meta.modes.altScreen && !meta.cursor.visible) return
+    // 光标住在 live 区（绝对行 = scrollbackLength + cursor.y）。视口顶的绝对行
+    // 是 scrollbackLength - scrolledBy，所以回看 scrolledBy>0 时光标的视口行
+    // 是 scrolledBy + cursor.y —— 可能落到视口外（xterm 同样不画视口外的光标）。
+    // 直接拿 cursor.y 当视口行会让光标浮在历史内容上（回看时的「诡异光标」）。
+    const y = meta.scrolledBy + meta.cursor.y
+    if (y < 0 || y >= this.rows) return
     const gl = this.gl
-    const { x, y, shape } = meta.cursor
+    const { x, shape } = meta.cursor
     const color = this.theme.cursor
     const build = (ox: number, oy: number, w: number, h: number, c: Rgba): void => {
       const base = this.cursorCount * FLOATS

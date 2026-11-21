@@ -198,7 +198,82 @@ try {
   mkdirSync('/home/mosfet/dsh1/_shots', { recursive: true })
   writeFileSync('/home/mosfet/dsh1/_shots/kitty-demo.png', Buffer.from(shot.data, 'base64'))
   console.log(ok ? 'RESULT: PASS' : 'RESULT: FAIL')
-  process.exitCode = ok ? 0 : 1
+
+  /* ── 滚动回归：灌 60 行触发滚屏，验证滚动/回看/跳底 ── */
+  await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      // 结尾补 CR LF：光标停在新行行首，后面注入的 L61 才独立成行（模拟 shell 逐行输出）
+      eng.write(Array.from({length: 60}, (_, i) => 'L' + String(i + 1).padStart(2, '0')).join('\\r\\n') + '\\r\\n')
+    })()`,
+  })
+  await sleep(900)
+  const s1 = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      const m = eng.meta
+      const bar = document.querySelector('#kitty-demo .kitty-scrollbar')
+      const thumb = document.querySelector('#kitty-demo .kitty-scrollbar__thumb')
+      return {
+        firstRow: (eng.viewportText().split('\\n')[0] ?? '').trim(),
+        lastRow: (eng.viewportText().split('\\n').pop() ?? '').trim(),
+        scrollback: m?.scrollbackLength, scrolledBy: m?.scrolledBy,
+        barOn: bar?.classList.contains('kitty-scrollbar--on') ?? false,
+        thumbH: thumb?.style.height ?? '',
+        cursorY: m?.cursor?.y,
+      }
+    })()`,
+    returnByValue: true,
+  })
+  console.log('scroll-1 =', JSON.stringify(s1?.result?.value))
+  // 滚屏断言：视口首行必须是 L26（60 行、35 行视口），滚动条可见，thumb 明显小于轨道
+  const r1v = s1?.result?.value ?? {}
+  const scrollOk1 = r1v.firstRow === 'L27' && r1v.scrolledBy === 0 && (r1v.scrollback ?? 0) >= 25 && r1v.barOn && parseFloat(r1v.thumbH) < 80
+
+  // 回看：向上滚 5 行 → scrolledBy>0、首行回退、徽标出现
+  await cdp.send('Runtime.evaluate', { expression: `window.__kittyDemoEngine['session'].scroll(5)` })
+  await sleep(500)
+  const s2 = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      const m = eng.meta
+      const review = document.querySelector('#kitty-demo .kitty-review')
+      return {
+        firstRow: (eng.viewportText().split('\\n')[0] ?? '').trim(),
+        scrolledBy: m?.scrolledBy,
+        reviewOn: review?.classList.contains('kitty-review--on') ?? false,
+        reviewText: review?.textContent ?? '',
+      }
+    })()`,
+    returnByValue: true,
+  })
+  console.log('scroll-2 =', JSON.stringify(s2?.result?.value))
+  const r2v = s2?.result?.value ?? {}
+  const scrollOk2 = r2v.scrolledBy > 0 && r2v.firstRow === 'L22' && r2v.reviewOn
+
+  // 回看中再写新输出（scrolledBy 保持，符合 kitty 行为），随后按键应跳回底部
+  await cdp.send('Runtime.evaluate', { expression: `window.__kittyDemoEngine.write('L61\\r\\n')` })
+  await sleep(500)
+  await cdp.send('Runtime.evaluate', { expression: `window.__kittyDemoEngine['session'].key('Enter', 0, 'press')` })
+  await sleep(500)
+  const s3 = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      const m = eng.meta
+      const rows = eng.viewportText().split('\\n').map(s => s.trim())
+      return { scrolledBy: m?.scrolledBy, lastRows: rows.slice(-3) }
+    })()`,
+    returnByValue: true,
+  })
+  console.log('scroll-3 =', JSON.stringify(s3?.result?.value))
+  const r3v = s3?.result?.value ?? {}
+  const scrollOk3 = r3v.scrolledBy === 0 && (r3v.lastRows ?? []).includes('L61')
+
+  const shot2 = await cdp.send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync('/home/mosfet/dsh1/_shots/kitty-scroll.png', Buffer.from(shot2.data, 'base64'))
+  const scrollOk = scrollOk1 && scrollOk2 && scrollOk3
+  console.log(`SCROLL: ${scrollOk ? 'PASS' : 'FAIL'} (滚屏=${scrollOk1} 回看=${scrollOk2} 跳底=${scrollOk3})`)
+  process.exitCode = ok && scrollOk ? 0 : 1
 } catch (err) {
   console.error('RESULT: ERROR', err.message)
   console.error(appLog.slice(-1500))
