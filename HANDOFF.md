@@ -333,6 +333,11 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）
 34. **打包一条命令**：`scripts/pack-local.sh`。它自己生成全部五个垫片
     （rpm 4.18、flatpak 参数、copyFile 降级、NSIS 免 wine、futimens 空操作），
     所以不再依赖 `/tmp` 或上一轮遗留的文件。`--win` 只打 Windows，`SKIP_BUILD=1` 复用 `out/`。
+35. **发布一条命令**：`GITHUB_TOKEN=ghp_xxx scripts/release.sh`（`--dry-run` 只打印）。
+    token 只走环境变量、不落盘。两处容易看错的地方：GitHub **会把附件名里的空格换成点**
+    （`terminal-1000 Setup 0.1.4.exe` → `terminal-1000.Setup.0.1.4.exe`），所以拼
+    `releases/download/...` 直链时要用规范化后的名字；另外脚本对已存在的同名附件是**跳过**，
+    重跑不会重复上传、也**不会覆盖**已上传的坏包 —— 要替换得先在网页上删掉那个附件。
 
 ---
 
