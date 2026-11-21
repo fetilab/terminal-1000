@@ -39,10 +39,10 @@ export function Switch({
       aria-label={label}
       title={label}
       disabled={disabled}
-      className={`t-switch t-switch--${size}${checked ? ' t-switch--on' : ''}`}
+      className={`t-toggle t-toggle--${size}${checked ? ' t-toggle--on' : ''}`}
       onClick={() => onChange(!checked)}
     >
-      <span className="t-switch__thumb" aria-hidden />
+      <span className="t-toggle__thumb" aria-hidden />
     </button>
   )
 }

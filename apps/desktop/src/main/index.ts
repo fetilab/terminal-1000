@@ -7,7 +7,7 @@ import { IPC_CHANNEL } from '@t1000/shared'
 import { createIpcContext, dispatch, type IpcContext } from './ipc/router'
 import { registerAllHandlers } from './ipc'
 import { createLogger } from './logger'
-import { getAppPaths } from './paths'
+import { getAppPaths, prepareDataDir } from './paths'
 import { broadcast, createWindow, getMainWindow, setWindowBoundsFile } from './window'
 import { destroyTray, hasTray, markQuitting, syncTray } from './tray'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
@@ -31,6 +31,25 @@ import {
 import { subscribeSessionClosed } from './services/session-registry'
 
 const log = createLogger('bootstrap')
+
+// ⚠️ 数据目录必须在**一切**之前钉住：`userData` 一旦被 Electron/Chromium 用过就改不动了，
+// 而单实例锁、日志、设置、库全都依赖它。名字钉死 + 旧目录迁移见 dataDir.ts。
+const dataDir = prepareDataDir()
+log.info(`数据目录: ${dataDir.dir}`)
+if (dataDir.previous !== dataDir.dir) {
+  log.info(`已从 Electron 默认目录切换: ${dataDir.previous}`)
+}
+if (dataDir.relocatedFrom) {
+  // 数据原本落在安装目录里 —— 这正是「覆盖安装后设置全丢」的根因
+  log.warn(`数据目录不能位于安装目录内，已改到 ${dataDir.dir}（原 ${dataDir.relocatedFrom}）`)
+}
+if (dataDir.migration.from) {
+  const names = dataDir.migration.items.map((i) => i.name).join(', ')
+  log.info(`已迁移旧数据: ${dataDir.migration.from} → ${dataDir.dir}（${names || '无内容'}）`)
+  if (dataDir.migration.failed.length > 0) {
+    log.warn(`迁移中以下项失败（原目录保留）: ${dataDir.migration.failed.join(', ')}`)
+  }
+}
 
 // 硬件加速**只能在 ready 之前**设置（ready 之后再调是空操作，用户会以为设置没生效）。
 // 这里读过一次设置；读失败会退回默认（开启），绝不让一个显示设置阻止启动。
@@ -77,9 +96,8 @@ function isSettingsWrite(raw: unknown): boolean {
 }
 
 async function bootstrap(): Promise<void> {
-  // 数据目录要在任何服务初始化之前准备好
+  // 数据目录已在模块加载时钉住（见文件顶部的 prepareDataDir），这里只是取结果
   const paths = getAppPaths()
-  log.info(`数据目录: ${paths.userData}`)
 
   // 窗口位置记忆：用独立小文件，避免窗口创建期依赖设置服务与数据库
   setWindowBoundsFile(join(paths.userData, 'window-bounds.json'))

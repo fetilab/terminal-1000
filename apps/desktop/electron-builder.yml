@@ -107,3 +107,9 @@ win:
   target:
     - nsis
   signAndEditExecutable: false
+
+nsis:
+  # 卸载（以及升级时先跑的旧卸载器）**绝不删用户数据**。
+  # 数据本来就在 %APPDATA%\terminal-1000，不在安装目录里；这条是防止
+  # electron-builder 的默认值将来变化，把「升级即丢设置」重新引回来。
+  deleteAppDataOnUninstall: false

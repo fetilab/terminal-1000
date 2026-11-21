@@ -1177,13 +1177,37 @@
   }
 }
 
+/* ── 键值对 ─────────────────────────────────────── */
+/*
+ * 放在全局而不是某个 feature 里：设置页的只读信息、监控面板、工具面板都用它。
+ * （原先只定义在 monitor.css，未打开过监控面板时设置页的键值对会挤成一行）
+ */
+.kv {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+.kv__k {
+  color: var(--t1000-fg-faint);
+}
+
+.kv__v {
+  color: var(--t1000-fg);
+  overflow-wrap: anywhere;
+}
+
 /* ── 开关 ───────────────────────────────────────── */
 /*
- * 30×17 的轨道 + 13px 滑块。轨道用「已激活底色」而不是强调色：
+ * ⚠️ 类名必须与 Form 里的 `.t-switch`（带文字的 label 型开关）区分开。
+ * 曾经两者都叫 `.t-switch`，结果这里的 30px 定宽把设置页的
+ * 「开着/关闭 + 说明文字」压成一条 0 宽竖线，整个设置页错位。
+ * 视觉：30×17 的轨道 + 13px 滑块。轨道用「已激活底色」而不是强调色：
  * 一堆开关并排时，满屏青色会把注意力从文件列表抢走；这里只用
  * 「滑块位置 + 轨道变亮」表达态，符合设置类控件的克制语感。
  */
-.t-switch {
+.t-toggle {
   position: relative;
   flex: none;
   width: 30px;
@@ -1197,12 +1221,12 @@
     border-color var(--t1000-fast) var(--t1000-ease);
 }
 
-.t-switch--sm {
+.t-toggle--sm {
   width: 26px;
   height: 15px;
 }
 
-.t-switch__thumb {
+.t-toggle__thumb {
   position: absolute;
   top: 1px;
   left: 1px;
@@ -1214,26 +1238,26 @@
     background var(--t1000-fast) var(--t1000-ease);
 }
 
-.t-switch--sm .t-switch__thumb {
+.t-toggle--sm .t-toggle__thumb {
   width: 11px;
   height: 11px;
 }
 
-.t-switch--on {
+.t-toggle--on {
   border-color: var(--t1000-accent);
   background: var(--t1000-accent-soft);
 }
 
-.t-switch--on .t-switch__thumb {
+.t-toggle--on .t-toggle__thumb {
   background: var(--t1000-accent);
   transform: translateX(13px);
 }
 
-.t-switch--sm.t-switch--on .t-switch__thumb {
+.t-toggle--sm.t-toggle--on .t-toggle__thumb {
   transform: translateX(11px);
 }
 
-.t-switch:disabled {
+.t-toggle:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }

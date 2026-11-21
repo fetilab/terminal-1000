@@ -226,19 +226,5 @@
   letter-spacing: 0.5px;
 }
 
-/* 键值对 */
-.kv {
-  display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
-  gap: 4px 10px;
-  font-size: 12px;
-}
-
-.kv__k {
-  color: var(--t1000-fg-faint);
-}
-
-.kv__v {
-  color: var(--t1000-fg);
-  overflow-wrap: anywhere;
-}
+/* 键值对：定义已上移到全局 components.css（设置页也用它，
+ * 原来只写在这个按需加载的 feature 样式里，设置页那边等于没有样式） */
