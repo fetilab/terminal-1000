@@ -5,7 +5,7 @@
 **terminal-1000** 把终端、文件传输、端口转发、图形远程桌面和服务器监控整合到一个桌面应用，
 面向需要管理多台服务器的开发者与运维人员。
 
-**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.1.0**
+**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.1.3**
 
 ---
 
@@ -15,12 +15,16 @@
 
 | 格式 | 适用 | 说明 |
 |---|---|---|
-| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.1.0_amd64.deb` |
-| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.1.0.x86_64.rpm` |
-| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.1.0.pacman` |
+| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.1.3_amd64.deb` |
+| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.1.3.x86_64.rpm` |
+| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.1.3.pacman` |
 | `.AppImage` | 任意发行版 | 免安装，`chmod +x` 后直接运行 |
-| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.1.0-x86_64.flatpak` |
-| `.exe` | Windows | **实验性**，见下方说明 |
+| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.1.3-x86_64.flatpak` |
+| `.exe` | Windows 10+ | **实验性**，见下方说明 |
+
+> **升级不会丢数据**：设置、连接、凭据、笔记都存在系统配置目录里（见
+> [数据存放位置](#数据存放位置)），不在安装目录内。覆盖安装只替换程序文件；
+> 旧版本若把数据存在过别的位置，首次启动会自动**复制**过来，原目录保留不删。
 
 > **Windows 包现状**：安装器可构建，但应用的原生模块（node-pty / better-sqlite3）目前只在
 > Linux ABI 下重建，未做 win32 交叉编译。Windows 用户请先用 WSL 或等待正式的
@@ -187,11 +191,32 @@ docs                架构、性能目标、同步协议规范、部署
 
 ## 数据存放位置
 
+所有持久化数据都在**系统配置目录**，不在安装目录里 —— 升级 / 覆盖安装只替换程序文件，
+不会碰这些数据；卸载也不会自动删除。
+
 | 平台 | 路径 |
 |---|---|
-| Linux | `~/.config/terminal-1000/` |
-| macOS | `~/Library/Application Support/terminal-1000/` |
+| Linux | `~/.config/terminal-1000/`（Flatpak：`~/.var/app/io.github.terminal1000/config/terminal-1000/`） |
 | Windows | `%APPDATA%\terminal-1000\` |
+| macOS | `~/Library/Application Support/terminal-1000/` |
+
+目录内主要有：
+
+| 条目 | 内容 |
+|---|---|
+| `local-store.db` | 连接、分组、设置、笔记、快捷命令、布局（凭据字段加密） |
+| `notes/`、`session-log/`、`backups/`、`backgrounds/`、`logs/` | 笔记附件、会话录制、每日备份、背景图、运行日志 |
+| `known-hosts.json`、`window-bounds.json` | 主机指纹（TOFU）、窗口位置与大小 |
+| `migration.json` | 若发生过旧目录迁移，这里记录来源目录与迁移项 |
+
+几点约定：
+
+- 目录名**固定**为 `terminal-1000`，不随应用显示名变化 —— 改名不搬家，避免"设置凭空消失"。
+- 目录**不会**落在安装目录内；若运行环境让系统配置目录指向安装目录，启动时会强制改到
+  安全位置并写日志。
+- 备份与迁移都是**复制**语义：识别到旧位置的数据时复制到新位置，**原目录保留**，
+  确认无误后可自行删除。
+- 设置 → 应用 → **存储位置** 里可以直接看到当前实际使用的路径，并一键打开。
 
 ## 安全
 

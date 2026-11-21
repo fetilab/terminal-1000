@@ -277,6 +277,19 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）
       **写在同一条命令里** —— 每次工具调用是独立的 mount namespace，上一条命令里的 mount 不保留。
       判据：8MB 输入能出包，16/32/100MB 必 SIGBUS；同一份 32MB 输入若压缩后只有 68KB 则成功，
       说明卡的是输出/暂存量而不是输入大小。正常产物约 114MB。
+25. **数据目录曾经"跟着应用名走"**。`app.getPath('userData')` = 配置目录 + **应用名**，
+    而应用名取自 `package.json` 的 `name`/`productName`：开发态是 `@t1000/desktop`、
+    打包态是 `terminal-1000`，同名文件根本不是同一个库。只要打包元数据里的名字变一次，
+    新版本就开一个空库，用户看到的就是「升级后设置全丢」。
+    现在 `main/dataDir.ts` 把目录名**钉死**为 `terminal-1000`，并在首次启动时从旧位置
+    **复制**（不删除）数据过来，写 `migration.json` 留痕。
+    ⚠️ 不要在别处再调 `app.getPath('userData')` 拼路径；一律走 `getAppPaths()`。
+    ⚠️ 改 `APP_DIR_NAME` 等于让所有老用户丢数据，除非同时加迁移分支。
+26. **`.t-*` 类名是全局的，撞名会静默毁掉布局**。文件栏那次给新开关组件用了 `.t-switch`，
+    与 `Form.tsx` 里既有的 label 型开关同名，30px 定宽把设置页的开关文字压成 0 宽竖排，
+    整页错位且**没有任何构建/类型报错**。新组件请用不冲突的前缀（现在叫 `.t-toggle`）。
+    同类问题：`.kv` 原先只定义在按需加载的 `features/monitor/monitor.css`，
+    设置页用到时等于没样式 —— 跨 feature 复用的类一律放 `styles/components.css`。
 
 ---
 
