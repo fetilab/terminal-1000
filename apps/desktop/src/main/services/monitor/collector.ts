@@ -17,6 +17,7 @@
 import {
   MONITOR_TIER_INTERVALS,
   type MonitorCardConfig,
+  type MonitorCardKind,
   type MonitorSettings,
   type MonitorSnapshot,
   type MonitorTier,
@@ -53,6 +54,17 @@ export type MonitorStatus = 'starting' | 'running' | 'paused' | 'stopped'
 /** 采集通道：只依赖「在某个会话上跑一条命令」这一件事，便于单测注入 */
 export interface CollectorTransport {
   exec(sessionId: string, command: string, timeoutMs?: number): Promise<ExecResult>
+  /**
+   * 代理通道（可选）。
+   *
+   * 返回 null 表示这台服务器没有可用代理（没装 / 没 python3 / 用户拒绝），
+   * 采集器会**自动回退**到 exec 脚本模式 —— 代理是加速手段，不是前提条件。
+   */
+  agentSample?(
+    sessionId: string,
+    modules: readonly string[],
+    options: { processLimit: number },
+  ): Promise<{ json: string; version: string } | null>
 }
 
 /** 可注入时钟：单测用假定时器驱动分档调度 */
@@ -91,6 +103,17 @@ export const DEFAULT_CARDS: readonly MonitorCardConfig[] = [
   { kind: 'gpu', enabled: true, order: 6, tier: 'slow' },
 ]
 
+/** 卡片 → 快照字段名。process 卡片的数据在 `processes` 下（历史命名，不动它以免破坏契约）。 */
+const SNAPSHOT_KEY_BY_CARD: Record<MonitorCardKind, keyof MonitorSnapshot> = {
+  system: 'system',
+  cpu: 'cpu',
+  memory: 'memory',
+  network: 'network',
+  disk: 'disk',
+  process: 'processes',
+  gpu: 'gpu',
+}
+
 export function defaultSettings(): MonitorSettings {
   return {
     cards: DEFAULT_CARDS.map((c) => ({ ...c })),
@@ -114,6 +137,17 @@ interface SessionState {
   lastRun: Record<MonitorTier, number>
   lastSnapshot: MonitorSnapshot | null
   lastSnapshotAt: number
+  /**
+   * 合并后的快照。
+   *
+   * 分档采集下，一次只采一个档位（fast 只有 cpu、slow 只有 disk/gpu）。
+   * 如果直接把这一拍的快照推给 UI，面板上**没被采到的卡片会整体消失**，
+   * 3 秒后 CPU 闪一下、10 秒后内存闪一下 —— 这就是"卡片显示不稳定"的根因。
+   * 所以每拍都并到这份合并快照上，推给 UI 的永远是"已知的全部模块"。
+   */
+  merged: MonitorSnapshot | null
+  /** 当前走代理还是脚本（首次采集时判定，失败会自动回退） */
+  source: 'agent' | 'script'
 }
 
 export class MonitorCollector {
@@ -150,16 +184,38 @@ export class MonitorCollector {
   /**
    * 更新卡片配置。带 sessionId 时只作用于该会话；否则更新默认值
    * （已登记的会话保持自己的配置，新会话继承默认值）。
+   *
+   * 配置生效是**即时**的，不允许"改完开关要等下一次重连"：
+   * - 关掉的卡片立刻从合并快照里摘掉（否则会停在上一次的旧数据上）；
+   * - 正在采集的会话重排档位并立刻补采一次，新开的卡片不用等 30 秒。
    */
   setCards(cards: readonly MonitorCardConfig[], sessionId?: string): MonitorSettings {
     const normalized = cards.map((c) => ({ ...c }))
     const st = sessionId ? this.sessions.get(sessionId) : undefined
     if (st) {
       st.settings.cards = normalized
+      this.pruneDisabled(st)
+      if (st.status === 'running' || st.status === 'starting') {
+        st.lastRun = { fast: 0, medium: 0, slow: 0 }
+        this.schedule(st)
+        void this.collectOnce(st, TIER_ORDER).catch(() => undefined)
+      }
       return cloneSettings(st.settings)
     }
     this.baseSettings.cards = normalized
     return cloneSettings(this.baseSettings)
+  }
+
+  /** 关掉的卡片不该继续显示上一次的数据（那是"关不掉"的错觉） */
+  private pruneDisabled(st: SessionState): void {
+    const merged = st.merged
+    if (!merged) return
+    const snapshot = merged as unknown as Record<string, unknown>
+    for (const card of st.settings.cards) {
+      if (card.enabled) continue
+      delete snapshot[SNAPSHOT_KEY_BY_CARD[card.kind]]
+    }
+    st.lastSnapshot = merged
   }
 
   // ── 生命周期 ─────────────────────────────────────────────────────────────
@@ -258,6 +314,8 @@ export class MonitorCollector {
         lastRun: { fast: 0, medium: 0, slow: 0 },
         lastSnapshot: null,
         lastSnapshotAt: 0,
+        merged: null,
+        source: 'script',
       }
       this.sessions.set(sessionId, st)
     }
@@ -386,34 +444,110 @@ export class MonitorCollector {
         return emptySnapshot(st.sessionId, nowIso(this.clock), '没有启用的监控卡片，未执行采集')
       }
 
-      await this.ensureInstalled(st)
-
-      const result = await this.transport.exec(
-        st.sessionId,
-        collectCommand(modules, { processLimit: st.settings.processLimit }),
-        COLLECT_TIMEOUT_MS,
-      )
+      const collected = await this.collectPayload(st, modules, startedAt)
 
       const snapshot = parseCollectorOutput({
         sessionId: st.sessionId,
-        stdout: result.stdout,
+        stdout: collected.stdout,
         elapsedMs: this.clock.now() - startedAt,
         requestedModules: modules,
         at: nowIso(this.clock),
       })
+      snapshot.source = collected.source
+      if (collected.agentVersion) snapshot.agentVersion = collected.agentVersion
 
       // stderr 通常是权限/命令缺失类噪声，作为警告保留（不致命）
-      const stderrNote = firstLine(result.stderr)
+      const stderrNote = firstLine(collected.stderr ?? '')
       if (stderrNote) {
         snapshot.warnings = [...(snapshot.warnings ?? []), stderrNote]
       }
 
-      this.succeed(st, snapshot)
-      return snapshot
+      const merged = this.mergeSnapshot(st, snapshot)
+      this.succeed(st, merged)
+      return merged
     } catch (err) {
       this.fail(st, err)
       throw err
     }
+  }
+
+  /**
+   * 取一次原始输出：**优先代理，拿不到就回退脚本**。
+   *
+   * 代理失败不能变成"监控坏了"——服务器没 python3、用户拒绝安装、
+   * 代理被系统清理掉，都是正常情况，脚本模式一直可用。
+   */
+  private async collectPayload(
+    st: SessionState,
+    modules: readonly string[],
+    startedAt: number,
+  ): Promise<{ stdout: string; stderr?: string; source: 'agent' | 'script'; agentVersion?: string }> {
+    if (this.transport.agentSample) {
+      const sampled = await this.transport
+        .agentSample(st.sessionId, modules, { processLimit: st.settings.processLimit })
+        .catch(() => null)
+      if (sampled) {
+        st.source = 'agent'
+        this.lastSampleMs = this.clock.now() - startedAt
+        return {
+          stdout: sampled.json,
+          source: 'agent',
+          agentVersion: sampled.version,
+        }
+      }
+      st.source = 'script'
+    }
+
+    await this.ensureInstalled(st)
+    const result = await this.transport.exec(
+      st.sessionId,
+      collectCommand(modules, { processLimit: st.settings.processLimit }),
+      COLLECT_TIMEOUT_MS,
+    )
+    this.lastSampleMs = this.clock.now() - startedAt
+    return { stdout: result.stdout, stderr: result.stderr, source: 'script' }
+  }
+
+  /** 最近一次原始采集耗时（代理模式下它就是隧道的往返，用作健康度参考） */
+  private lastSampleMs = 0
+
+  getLastSampleMs(): number {
+    return this.lastSampleMs
+  }
+
+  /**
+   * 把本拍结果并到"已知的全部模块"上。
+   *
+   * 合并方向刻意是**本拍覆盖旧值**（而不是反过来）：磁盘用量、进程列表
+   * 可能会变小/变短，沿用旧值会给出错误信息。只有本拍没采的模块才保留旧值。
+   */
+  private mergeSnapshot(st: SessionState, incoming: MonitorSnapshot): MonitorSnapshot {
+    const prev = st.merged
+    const pick = <T>(next: T | undefined, old: T | undefined): T | undefined => next ?? old
+    const merged: MonitorSnapshot = {
+      sessionId: incoming.sessionId,
+      at: incoming.at,
+      ...(incoming.elapsedMs === undefined ? {} : { elapsedMs: incoming.elapsedMs }),
+      ...(incoming.source === undefined ? {} : { source: incoming.source }),
+      ...(incoming.agentVersion === undefined ? {} : { agentVersion: incoming.agentVersion }),
+    }
+    const system = pick(incoming.system, prev?.system)
+    const cpu = pick(incoming.cpu, prev?.cpu)
+    const memory = pick(incoming.memory, prev?.memory)
+    const network = pick(incoming.network, prev?.network)
+    const disk = pick(incoming.disk, prev?.disk)
+    const processes = pick(incoming.processes, prev?.processes)
+    const gpu = pick(incoming.gpu, prev?.gpu)
+    if (system) merged.system = system
+    if (cpu) merged.cpu = cpu
+    if (memory) merged.memory = memory
+    if (network) merged.network = network
+    if (disk) merged.disk = disk
+    if (processes) merged.processes = processes
+    if (gpu) merged.gpu = gpu
+    if (incoming.warnings && incoming.warnings.length > 0) merged.warnings = incoming.warnings
+    st.merged = merged
+    return merged
   }
 
   /**

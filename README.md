@@ -5,7 +5,7 @@
 **terminal-1000** 把终端、文件传输、端口转发、图形远程桌面和服务器监控整合到一个桌面应用，
 面向需要管理多台服务器的开发者与运维人员。
 
-**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.1.3**
+**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.1.4**
 
 ---
 
@@ -15,11 +15,11 @@
 
 | 格式 | 适用 | 说明 |
 |---|---|---|
-| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.1.3_amd64.deb` |
-| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.1.3.x86_64.rpm` |
-| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.1.3.pacman` |
+| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.1.4_amd64.deb` |
+| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.1.4.x86_64.rpm` |
+| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.1.4.pacman` |
 | `.AppImage` | 任意发行版 | 免安装，`chmod +x` 后直接运行 |
-| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.1.3-x86_64.flatpak` |
+| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.1.4-x86_64.flatpak` |
 | `.exe` | Windows 10+ | **实验性**，见下方说明 |
 
 > **升级不会丢数据**：设置、连接、凭据、笔记都存在系统配置目录里（见
@@ -91,9 +91,16 @@ terminal-1000 是一个**独立实现**的开源项目。它**不是**任何商�
 - 与 SSH 终端共享分屏、主题与命令块能力
 
 ### 服务器监控
-- CPU（逐核）、内存、磁盘（分区级读写）、网络、进程
-- 采集脚本随包分发，在远端执行，无需安装 agent
-- 卡片可开关，关闭即停止对应采集
+- CPU（逐核）、内存、磁盘（分区级读写）、网络、进程、GPU（NVIDIA / AMD）
+- **两种采集通道**，自动选择：
+  - **常驻代理**（推荐）：连接成功后询问是否安装一个单文件 Python 3 代理
+    （`~/.t1000-monitor/agent.py`，仅标准库）。它常驻远端、计数器留在内存里，
+    速率是真增量；桌面端经 **SSH 隧道**（`direct-tcpip`）访问它的 `127.0.0.1` 端口，
+    服务器**不用开任何入站端口**、不用改防火墙。请求带 token 校验，状态文件 `0600`；
+    空闲 15 分钟自动退出；面板里「卸载代理」一键停止并删文件。
+  - **脚本模式**（兼容）：服务器没有 python3、或你选择不装时自动回退，
+    每拍在远端执行一段随包分发的 shell 脚本。功能相同，只是刷新更粗、开销更大。
+- 卡片可开关，关闭即停止对应采集；采不到数据的卡片会说明原因（没有 GPU 驱动等），不会整块消失
 
 ### 安全与数据
 - 主密码派生密钥（argon2id）+ AES-256-GCM 加密存储凭证

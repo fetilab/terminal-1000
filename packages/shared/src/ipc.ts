@@ -203,7 +203,20 @@ export const Actions = {
 
   rdp: ['connect', 'disconnect', 'sendResize'] as const,
 
-  monitor: ['start', 'stop', 'getSnapshot', 'listCards', 'setCards', 'refresh'] as const,
+  monitor: [
+    'start',
+    'stop',
+    'getSnapshot',
+    'listCards',
+    'setCards',
+    'refresh',
+    /** 远端常驻代理（经 SSH 隧道采集）：探测 / 安装 / 停止 / 卸载 / 拒绝 */
+    'probeAgent',
+    'installAgent',
+    'stopAgent',
+    'uninstallAgent',
+    'declineAgent',
+  ] as const,
 
   notes: [
     'list',

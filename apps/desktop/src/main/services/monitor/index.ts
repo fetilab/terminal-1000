@@ -12,19 +12,25 @@
  */
 
 import { z } from 'zod'
-import { Events } from '@t1000/shared'
+import { join } from 'node:path'
+import { Events, type AgentProbeInfo } from '@t1000/shared'
 import { AppError } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
-import { requireSession } from '../session-registry'
+import { requireSession, subscribeSessionClosed } from '../session-registry'
+import { AgentPrefs, AgentService } from './agent'
+import { AGENT_VERSION } from './agent-source'
 import { MonitorCollector, type CollectorTransport } from './collector'
 
 let collector: MonitorCollector | null = null
+let agentService: AgentService | null = null
 let activeCtx: IpcContext | null = null
+let closedSubscribed = false
 
 /** 应用退出时清理所有定时器 */
 export function shutdownMonitor(): void {
   collector?.dispose()
   collector = null
+  agentService = null
 }
 
 function requireSessionOrThrow(sessionId: string): ReturnType<typeof requireSession> {
@@ -44,6 +50,8 @@ function getCollector(ctx: IpcContext): MonitorCollector {
       const session = requireSessionOrThrow(sessionId)
       return session.exec(command, timeoutMs === undefined ? undefined : { timeoutMs })
     },
+    // 代理优先；AgentService 自己负责"没装就返回 null"，采集器据此回退脚本
+    agentSample: (sessionId, modules, options) => getAgentService(ctx).sample(sessionId, modules, options),
   }
 
   collector = new MonitorCollector(transport, {
@@ -61,7 +69,26 @@ function getCollector(ctx: IpcContext): MonitorCollector {
       activeCtx?.emit(Events.MONITOR_ERROR, { sessionId, message })
     },
   })
+
+  // 会话断开 → 清掉采集状态与代理隧道（否则 Map 里会留下永远不用的通道）
+  if (!closedSubscribed) {
+    closedSubscribed = true
+    subscribeSessionClosed((sessionId) => {
+      collector?.forget(sessionId)
+      agentService?.forget(sessionId)
+    })
+  }
   return collector
+}
+
+function getAgentService(ctx: IpcContext): AgentService {
+  if (agentService) return agentService
+  agentService = new AgentService(
+    (sessionId, command, timeoutMs) =>
+      requireSessionOrThrow(sessionId).exec(command, timeoutMs === undefined ? undefined : { timeoutMs }),
+    new AgentPrefs(join(ctx.paths.userData, 'monitor-agents.json')),
+  )
+  return agentService
 }
 
 // ── 入参 schema（IPC 边界必须校验）────────────────────
@@ -92,6 +119,11 @@ const cardsQuerySchema = z.object({ sessionId: z.string().min(1).optional() })
 const setCardsSchema = z.object({
   sessionId: z.string().min(1).optional(),
   cards: z.array(cardSchema).max(32),
+})
+
+const declineSchema = z.object({
+  sessionId: z.string().min(1),
+  forever: z.boolean().optional(),
 })
 
 export const monitorHandlers: Record<string, IpcHandler> = {
@@ -148,6 +180,63 @@ export const monitorHandlers: Record<string, IpcHandler> = {
     const { sessionId } = sessionSchema.parse(payload)
     requireSessionOrThrow(sessionId)
     return getCollector(ctx).refresh(sessionId)
+  },
+
+  /**
+   * 探测远端监控代理。
+   *
+   * UI 在连接成功后调用：`installed=false && decision='ask'` 就弹窗问用户装不装。
+   * 只探测，不安装 —— 装软件这种事必须用户点头。
+   */
+  probeAgent: async (payload, ctx) => {
+    const { sessionId } = sessionSchema.parse(payload)
+    const session = requireSessionOrThrow(sessionId)
+    const probe = await getAgentService(ctx).probe(sessionId)
+    return {
+      ...probe,
+      /**
+       * sessionId 必须回传：渲染层拿到的是这一份，弹窗里的「安装 / 暂不 / 不再询问」
+       * 都要靠它去调后续 IPC。少这个字段，点安装就是 `sessionId: Required`。
+       */
+      sessionId,
+      host: session.host,
+      port: session.port ?? null,
+      username: session.username,
+      /** 代理版本落后时也算"需要升级"，UI 文案不同 */
+      needsUpgrade: probe.installed && probe.version !== null && probe.version !== AGENT_VERSION,
+      agentVersion: AGENT_VERSION,
+    } satisfies AgentProbeInfo
+  },
+
+  /** 安装并启动代理（用户点了"安装并启用"） */
+  installAgent: async (payload, ctx) => {
+    const { sessionId } = sessionSchema.parse(payload)
+    requireSessionOrThrow(sessionId)
+    const result = await getAgentService(ctx).install(sessionId)
+    return { ...result, tunnel: 'ssh-direct-tcpip' as const }
+  },
+
+  /** 停止代理（保留文件，下次连接会自动再启动） */
+  stopAgent: async (payload, ctx) => {
+    const { sessionId } = sessionSchema.parse(payload)
+    requireSessionOrThrow(sessionId)
+    await getAgentService(ctx).stop(sessionId, false)
+    return { stopped: true }
+  },
+
+  /** 卸载代理（删文件 + 停止 + 记住"不再安装"） */
+  uninstallAgent: async (payload, ctx) => {
+    const { sessionId } = sessionSchema.parse(payload)
+    requireSessionOrThrow(sessionId)
+    await getAgentService(ctx).stop(sessionId, true)
+    return { uninstalled: true }
+  },
+
+  /** 用户拒绝安装：forever=true 对应"不再询问这台服务器" */
+  declineAgent: (payload, ctx) => {
+    const { sessionId, forever } = declineSchema.parse(payload)
+    getAgentService(ctx).decline(sessionId, forever === true)
+    return { declined: true, forever }
   },
 }
 

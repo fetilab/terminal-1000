@@ -25,7 +25,7 @@ import type {
   SystemMetrics,
 } from '@t1000/shared'
 import { Icon, type IconName } from '../../components/Icon'
-import { IconButton } from '../../components/Button'
+import { Button, IconButton } from '../../components/Button'
 import { Badge, EmptyState } from '../../components/Feedback'
 import { VirtualList } from '../../components/VirtualList'
 import {
@@ -37,7 +37,13 @@ import {
   formatTemperature,
   formatUptime,
 } from '../../lib/format'
-import { actions, useStoreShallow } from '../../lib/store'
+import {
+  actions,
+  installAgent,
+  refreshMonitor,
+  uninstallAgent,
+  useStoreShallow,
+} from '../../lib/store'
 import './monitor.css'
 
 const CARD_ICON: Record<MonitorCardKind, IconName> = {
@@ -62,23 +68,35 @@ const CARD_TITLE: Record<MonitorCardKind, string> = {
 
 /* ── 通用件 ────────────────────────────────────── */
 
+/**
+ * 卡片外壳。
+ *
+ * `empty` 有值时渲染占位文案，而不是"整张卡片消失"：
+ * 用户明明开着 GPU 开关却什么都看不到，只会以为开关坏了。
+ * 有没有数据（驱动缺失、容器里没有 /proc 分区、权限不足）必须说出来。
+ */
 function Card({
   kind,
   extra,
+  empty,
   children,
 }: {
   kind: MonitorCardKind
   extra?: React.ReactNode
-  children: React.ReactNode
+  empty?: string
+  children?: React.ReactNode
 }): React.JSX.Element {
   return (
     <section className="mcard" aria-label={CARD_TITLE[kind]}>
       <header className="mcard__head">
         <Icon name={CARD_ICON[kind]} size={14} />
         <span className="mcard__head-title">{CARD_TITLE[kind]}</span>
+        {empty ? <Badge tone="outline">无数据</Badge> : null}
         {extra}
       </header>
-      <div className="mcard__body">{children}</div>
+      <div className="mcard__body">
+        {empty ? <div className="mcard__empty">{empty}</div> : children}
+      </div>
     </section>
   )
 }
@@ -369,8 +387,19 @@ export interface MonitorPanelProps {
   onClose: () => void
 }
 
+/** 卡片开着但这一拍没数据时的说明。不要留白，留白等于"坏了"。 */
+const MISSING_HINT: Record<MonitorCardKind, string> = {
+  system: '等待首次采集…',
+  cpu: '等待 CPU 采样…',
+  memory: '没有读到 /proc/meminfo（该环境可能不是 Linux）',
+  network: '没有读到可用网卡（/proc/net/dev 为空）',
+  disk: '没有采集到分区（容器 / 只读根文件系统常见）',
+  process: '没有采集到进程列表（ps 不可用或权限不足）',
+  gpu: '没有检测到 GPU（需要 nvidia-smi 或 AMD 驱动）',
+}
+
 export function MonitorPanel({ sessionId, title, onClose }: MonitorPanelProps): React.JSX.Element {
-  const { snapshot, status, cards, cpuHistory } = useStoreShallow((s) => {
+  const { snapshot, status, cards, cpuHistory, error, agentBusy } = useStoreShallow((s) => {
     const snap = sessionId ? s.snapshots[sessionId] : undefined
     const hist = sessionId ? s.cpuHistory[sessionId] : undefined
     return {
@@ -378,10 +407,13 @@ export function MonitorPanel({ sessionId, title, onClose }: MonitorPanelProps): 
       status: sessionId ? s.monitorStatus[sessionId] : undefined,
       cards: s.monitorCards,
       cpuHistory: hist,
+      error: sessionId ? s.monitorError[sessionId] : undefined,
+      agentBusy: s.agentBusy,
     }
   })
 
   const enabled = cards.filter((c) => c.enabled).sort((a, b) => a.order - b.order)
+  const useAgent = snapshot?.source === 'agent'
 
   return (
     <aside className="monitor" aria-label="服务器监控">
@@ -401,17 +433,32 @@ export function MonitorPanel({ sessionId, title, onClose }: MonitorPanelProps): 
                     : '已停止'}
           </Badge>
         ) : null}
+        {snapshot ? (
+          <Badge
+            tone={useAgent ? 'accent' : 'outline'}
+            title={
+              useAgent
+                ? '数据来自远端常驻代理，经 SSH 隧道直连远端 127.0.0.1（不开放任何入站端口）'
+                : '数据来自每次 exec 的采集脚本（服务器没装代理时的兼容模式）'
+            }
+          >
+            {useAgent ? '代理 · 隧道' : '脚本模式'}
+          </Badge>
+        ) : null}
+        {sessionId ? (
+          <IconButton icon="refresh" label="立即刷新" onClick={() => void refreshMonitor(sessionId)} />
+        ) : null}
         <IconButton icon="close" label="关闭监控面板" onClick={onClose} />
       </header>
 
       <div className="monitor__body">
         {!sessionId ? (
           <EmptyState icon="activity" title="没有活动会话" text="先连接一台服务器，再打开监控面板。" />
-        ) : status === 'unavailable' ? (
+        ) : status === 'unavailable' && !snapshot ? (
           <EmptyState
             icon="alert-triangle"
             title="监控采集不可用"
-            text="主进程的监控服务尚未就绪（或该会话不支持脚本采集）。面板会在服务上线后自动恢复。"
+            text="主进程的监控服务尚未就绪（或该会话不支持采集）。面板会在服务上线后自动恢复。"
           />
         ) : !snapshot ? (
           <EmptyState
@@ -421,37 +468,82 @@ export function MonitorPanel({ sessionId, title, onClose }: MonitorPanelProps): 
           />
         ) : (
           <>
+            {error ? (
+              <div className="monitor__warn" role="status">
+                <Icon name="alert-triangle" size={12} />
+                <span>最近一次采集失败：{error}（会自动重试）</span>
+              </div>
+            ) : null}
             <div className="metric__sub">
               采集于 {formatRelativeTime(snapshot.at)}
               {snapshot.elapsedMs === undefined ? '' : ` · 耗时 ${snapshot.elapsedMs} ms`}
-              {snapshot.warnings && snapshot.warnings.length > 0
-                ? ` · ${snapshot.warnings.length} 项告警`
-                : ''}
+              {snapshot.agentVersion ? ` · 代理 v${snapshot.agentVersion}` : ''}
             </div>
             {enabled.map((card) => {
               switch (card.kind) {
                 case 'system':
-                  return snapshot.system ? <SystemCard key={card.kind} data={snapshot.system} /> : null
+                  return snapshot.system ? (
+                    <SystemCard key={card.kind} data={snapshot.system} />
+                  ) : (
+                    <Card key={card.kind} kind="system" empty={MISSING_HINT.system} />
+                  )
                 case 'cpu':
                   return snapshot.cpu ? (
                     <CpuCard key={card.kind} data={snapshot.cpu} history={cpuHistory ?? []} />
-                  ) : null
+                  ) : (
+                    <Card key={card.kind} kind="cpu" empty={MISSING_HINT.cpu} />
+                  )
                 case 'memory':
-                  return snapshot.memory ? <MemoryCard key={card.kind} data={snapshot.memory} /> : null
+                  return snapshot.memory ? (
+                    <MemoryCard key={card.kind} data={snapshot.memory} />
+                  ) : (
+                    <Card key={card.kind} kind="memory" empty={MISSING_HINT.memory} />
+                  )
                 case 'network':
-                  return snapshot.network ? <NetworkCard key={card.kind} data={snapshot.network} /> : null
+                  return snapshot.network ? (
+                    <NetworkCard key={card.kind} data={snapshot.network} />
+                  ) : (
+                    <Card key={card.kind} kind="network" empty={MISSING_HINT.network} />
+                  )
                 case 'disk':
-                  return snapshot.disk ? <DiskCard key={card.kind} data={snapshot.disk} /> : null
+                  return snapshot.disk && snapshot.disk.partitions.length > 0 ? (
+                    <DiskCard key={card.kind} data={snapshot.disk} />
+                  ) : (
+                    <Card key={card.kind} kind="disk" empty={MISSING_HINT.disk} />
+                  )
                 case 'process':
-                  return snapshot.processes ? (
+                  return snapshot.processes && snapshot.processes.length > 0 ? (
                     <ProcessCard key={card.kind} data={snapshot.processes} />
-                  ) : null
+                  ) : (
+                    <Card key={card.kind} kind="process" empty={MISSING_HINT.process} />
+                  )
                 case 'gpu':
-                  return snapshot.gpu ? <GpuCard key={card.kind} data={snapshot.gpu} /> : null
+                  return snapshot.gpu && snapshot.gpu.length > 0 ? (
+                    <GpuCard key={card.kind} data={snapshot.gpu} />
+                  ) : (
+                    <Card key={card.kind} kind="gpu" empty={MISSING_HINT.gpu} />
+                  )
                 default:
                   return null
               }
             })}
+
+            {snapshot.warnings && snapshot.warnings.length > 0 ? (
+              <div className="mcard monitor__issues">
+                <header className="mcard__head">
+                  <Icon name="alert-triangle" size={14} />
+                  <span className="mcard__head-title">采集告警</span>
+                  <Badge tone="warn">{snapshot.warnings.length}</Badge>
+                </header>
+                <div className="mcard__body">
+                  {snapshot.warnings.slice(0, 4).map((w, i) => (
+                    <div className="metric__sub" key={`${w}-${i}`}>
+                      · {w}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             <div className="mcard">
               <header className="mcard__head">
@@ -476,7 +568,34 @@ export function MonitorPanel({ sessionId, title, onClose }: MonitorPanelProps): 
                       </button>
                     ))}
                 </div>
-                <div className="metric__sub">关闭的卡片不会产生对应的采集命令。</div>
+                <div className="metric__sub">关闭的卡片不会产生对应的采集命令，改完立即生效。</div>
+
+                <div className="monitor__channel">
+                  <span>
+                    采集通道：
+                    {useAgent ? '远端常驻代理，经 SSH 隧道取数（推荐）' : '每次 exec 采集脚本（兼容模式）'}
+                  </span>
+                  {useAgent ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={agentBusy}
+                      onClick={() => void uninstallAgent(sessionId)}
+                    >
+                      卸载代理
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      icon="download"
+                      loading={agentBusy}
+                      onClick={() => void installAgent(sessionId)}
+                    >
+                      安装代理（更快）
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           </>

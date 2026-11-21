@@ -18,6 +18,7 @@ import { Events } from '@t1000/shared'
 import { VaultGate } from './components/VaultGate'
 import { subscribe } from './lib/ipc'
 import { SshPrompts } from './features/terminal/SshPrompts'
+import { AgentInstallPrompt } from './features/monitor/AgentInstallPrompt'
 
 /** 全局搜索面板：独立 chunk，只有按 Ctrl/Cmd+K 才加载 */
 const GlobalSearch = lazy(() => import('./features/search/GlobalSearch'))
@@ -301,6 +302,8 @@ export function App(): React.JSX.Element {
       {/* SSH 主机指纹确认 / 交互式认证：主进程会挂起握手等这两个回答，
           没接就会出现"连接新主机一直转圈直到超时" */}
       <SshPrompts />
+      {/* 监控代理安装询问：连接上一台还没装代理的服务器时弹出 */}
+      <AgentInstallPrompt />
       {searchOpen ? (
         <Suspense fallback={null}>
           <GlobalSearch onClose={() => actions.closeGlobalSearch()} />

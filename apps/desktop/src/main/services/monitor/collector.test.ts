@@ -525,3 +525,128 @@ describe('生命周期', () => {
     expect(collector.peek('s1')).toBeNull()
   })
 })
+
+/* ── 分档快照合并 / 代理通道 ─────────────────────────────────────────────── */
+
+/**
+ * 只回"本次请求的模块"的通道，用来验证分档合并。
+ * 真实脚本就是这么干的：`collect.sh cpu` 只输出 `{"cpu":...}`。
+ */
+class PerModuleTransport implements CollectorTransport {
+  collects: string[] = []
+  versionChecks = 0
+
+  async exec(_sessionId: string, command: string): Promise<ExecResult> {
+    if (command.includes('VERSION')) {
+      this.versionChecks += 1
+      return { stdout: `${SCRIPT_VERSION}\n`, stderr: '', code: 0 }
+    }
+    this.collects.push(command)
+    // 采集命令形如 `T1000_PROC_LIMIT=8 ... sh "$HOME/.../collect.sh" cpu memory`
+    const modules = (command.split(/\.sh"?\s+/).at(-1) ?? '').trim().split(/\s+/)
+    const out: Record<string, unknown> = {}
+    for (const mod of modules) {
+      if (mod === 'cpu') out.cpu = { usage: 7, cores: [] }
+      if (mod === 'memory') out.memory = { totalBytes: 100, usedBytes: 40, freeBytes: 60 }
+      if (mod === 'disk')
+        out.disk = { partitions: [{ mount: '/', totalBytes: 10, usedBytes: 5, availableBytes: 5, usedPercent: 50 }] }
+    }
+    return { stdout: JSON.stringify(out), stderr: '', code: 0 }
+  }
+}
+
+describe('分档采集的快照合并', () => {
+  it('fast 拍只采了 cpu，但面板上其它卡片的数据仍在（不再闪烁/消失）', async () => {
+    const clock = new ManualClock()
+    const transport = new PerModuleTransport()
+    const rec = recorder()
+    const collector = new MonitorCollector(transport, rec.events, clock)
+    const cards: MonitorCardConfig[] = [
+      { kind: 'cpu', enabled: true, order: 0, tier: 'fast' },
+      { kind: 'memory', enabled: true, order: 1, tier: 'medium' },
+      { kind: 'disk', enabled: true, order: 2, tier: 'slow' },
+    ]
+    await collector.start('s1', { cards })
+
+    // 首拍覆盖所有档位
+    const first = collector.peek('s1')
+    expect(first?.cpu).toBeTruthy()
+    expect(first?.memory).toBeTruthy()
+    expect(first?.disk).toBeTruthy()
+
+    await clock.advance(MONITOR_TIER_INTERVALS.fast)
+    const afterFast = collector.peek('s1')
+    expect(afterFast?.cpu).toBeTruthy()
+    // 关键断言：本拍没采的模块沿用上一拍，而不是被抹掉
+    expect(afterFast?.memory).toBeTruthy()
+    expect(afterFast?.disk).toBeTruthy()
+    // 最后一条命令确实只有 cpu
+    expect(transport.collects.at(-1)?.trim().endsWith('cpu')).toBe(true)
+  })
+
+  it('关掉卡片后旧数据立即从快照里摘掉', async () => {
+    const clock = new ManualClock()
+    const transport = new PerModuleTransport()
+    const rec = recorder()
+    const collector = new MonitorCollector(transport, rec.events, clock)
+    await collector.start('s1', {
+      cards: [
+        { kind: 'cpu', enabled: true, order: 0, tier: 'fast' },
+        { kind: 'memory', enabled: true, order: 1, tier: 'medium' },
+      ],
+    })
+    expect(collector.peek('s1')?.memory).toBeTruthy()
+
+    collector.setCards(
+      [
+        { kind: 'cpu', enabled: true, order: 0, tier: 'fast' },
+        { kind: 'memory', enabled: false, order: 1, tier: 'medium' },
+      ],
+      's1',
+    )
+    expect(collector.peek('s1')?.memory).toBeUndefined()
+    // 新配置立即触发一次补采（不用等 10 秒的 medium 档）
+    await settle()
+    expect(transport.collects.length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('代理通道优先', () => {
+  const AGENT_JSON = JSON.stringify({
+    cpu: { usage: 42, cores: [] },
+    memory: { totalBytes: 100, usedBytes: 60, freeBytes: 40 },
+  })
+
+  it('代理可用时不跑任何采集脚本，快照标记 source=agent', async () => {
+    const clock = new ManualClock()
+    const transport: CollectorTransport = {
+      exec: async () => {
+        throw new Error('代理可用时不应该 exec 采集脚本')
+      },
+      agentSample: async () => ({ json: AGENT_JSON, version: '2' }),
+    }
+    const rec = recorder()
+    const collector = new MonitorCollector(transport, rec.events, clock)
+    const snap = await collector.start('s1')
+    expect(snap?.cpu?.usage).toBe(42)
+    expect(snap?.source).toBe('agent')
+    expect(snap?.agentVersion).toBe('2')
+  })
+
+  it('代理返回 null 时自动回退脚本模式（服务器没装代理不影响监控）', async () => {
+    const clock = new ManualClock()
+    const transport = new PerModuleTransport()
+    const withAgent: CollectorTransport = {
+      exec: (s, c, t) => transport.exec(s, c),
+      agentSample: async () => null,
+    }
+    const rec = recorder()
+    const collector = new MonitorCollector(withAgent, rec.events, clock)
+    const snap = await collector.start('s1', {
+      cards: [{ kind: 'cpu', enabled: true, order: 0, tier: 'fast' }],
+    })
+    expect(snap?.cpu?.usage).toBe(7)
+    expect(snap?.source).toBe('script')
+    expect(transport.collects.length).toBe(1)
+  })
+})

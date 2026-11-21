@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { EventName, EventPayloads } from '@t1000/shared'
+import { appIconPath } from './icon'
 import { createLogger } from './logger'
 
 const log = createLogger('window')
@@ -115,6 +116,8 @@ export function createWindow(options: CreateWindowOptions = {}): BrowserWindow {
     autoHideMenuBar: true,
     backgroundColor: '#1a1a1a',
     title: 'terminal-1000',
+    // Linux/Windows 的窗口与任务栏图标；取不到就不设（用可执行文件自带图标）
+    ...(appIconPath() ? { icon: appIconPath() as string } : {}),
     webPreferences: {
       preload: join(__dirname_, '../preload/index.mjs'),
       sandbox: false,

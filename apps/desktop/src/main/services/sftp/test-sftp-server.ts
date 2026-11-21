@@ -733,7 +733,23 @@ export async function startTestSftpServer(
           })
           log.push({ op: 'SHELL', status: SFTP_STATUS.OK, command: shellBin })
 
-          stream.pipe(child.stdin)
+          /**
+           * 用管道代替 pty，就得自己补上内核 tty 做的两件事，否则界面像"死"的：
+           * - **回显**：真实 pty 由 ECHO 标志回显输入。没有回显，客户端 xterm 的
+           *   光标永远停在 (0,0)，终端里看不到自己敲了什么。
+           * - **CR → NL**：终端回车发的是 `\r`，tty 的 ICRNL 会翻译成 `\n` 再交给 shell。
+           *   少了这一步，bash 会把整行当成没结束的输入，一条命令都不会执行。
+           * 这两点是**测试夹具**在补 tty 的课，产品代码不依赖它。
+           */
+          stream.on('data', (chunk: Buffer) => {
+            const text = chunk.toString('utf8')
+            try {
+              stream.write(text.replace(/\r\n?/g, '\r\n'))
+            } catch {
+              /* 通道已关 */
+            }
+            child.stdin.write(text.replace(/\r\n?/g, '\n'))
+          })
           // { end: false }：让孩子进程退出时的 stdout 结束**不要**顺手 end 掉通道，
           // 否则 exit-status 还没发出去通道就关了（exec 的退出码就是这么丢的）
           child.stdout.pipe(stream, { end: false })

@@ -15,6 +15,7 @@
  */
 
 import { Menu, Tray, nativeImage, type BrowserWindow } from 'electron'
+import { trayIcon } from './icon'
 import { createLogger } from './logger'
 
 const log = createLogger('tray')
@@ -22,12 +23,16 @@ const log = createLogger('tray')
 let tray: Tray | null = null
 
 /**
- * 生成一个极简的图标（16x16 实心方块）。
+ * 生成托盘图标。
  *
- * 不引入外部图片资源：一是打包时少一个文件、少一类"路径找不到"的失败，
- * 二是托盘图标本该由打包资源提供，这里先用代码生成的占位图保证功能可用。
+ * 优先用打包资源里的单色 `>_`（apps/desktop/build/tray.svg 渲染产物）：
+ * 托盘背景色不可控，深色底板图标在深色面板上会直接消失。
+ * 取不到资源时才退回下面这个代码绘制的方块占位图 —— 图标缺失不该让托盘功能失效。
  */
 function buildIcon(): Electron.NativeImage {
+  const real = trayIcon()
+  if (real) return real
+
   const size = 16
   const buf = Buffer.alloc(size * size * 4)
   for (let i = 0; i < size * size; i++) {

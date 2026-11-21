@@ -228,3 +228,48 @@
 
 /* 键值对：定义已上移到全局 components.css（设置页也用它，
  * 原来只写在这个按需加载的 feature 样式里，设置页那边等于没有样式） */
+
+/* 卡片"有开关但没数据"的占位：不留白，明确说出原因 */
+.mcard__empty {
+  padding: 8px 6px;
+  border: 1px dashed var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+  color: var(--t1000-fg-faint);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* 单拍失败的提示条（只提示，不把整块面板换成空态） */
+.monitor__warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--t1000-warn) 42%, transparent);
+  border-radius: var(--t1000-radius-sm);
+  background: color-mix(in srgb, var(--t1000-warn) 10%, transparent);
+  color: var(--t1000-fg-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+/* 采集通道 + 安装/卸载代理 */
+.monitor__channel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--t1000-border);
+  color: var(--t1000-fg-dim);
+  font-size: 11px;
+}
+
+.monitor__channel > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.monitor__issues .metric__sub {
+  padding: 1px 0;
+}

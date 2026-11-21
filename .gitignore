@@ -2,11 +2,18 @@
 node_modules/
 dist/
 out/
-build/
+# 只忽略根目录的构建缓存：apps/desktop/build/ 是 electron-builder 的**资源目录**
+# （图标 SVG/PNG 真身就在里面），用裸 `build/` 会把产品资源一起排除掉
+/build/
 release/
 coverage/
 *.tsbuildinfo
 *.log
+
+# 打包/测试用的本机暂存（scripts/pack-local.sh 会在这里生成垫片）
+/.pack-work/
+/.vitest-tmp/
+apps/desktop/.vitest-tmp/
 
 # ── 本地环境 ────────────────────────────────────
 .env

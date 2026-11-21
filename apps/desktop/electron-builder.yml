@@ -52,6 +52,16 @@ asarUnpack:
   - '**/node_modules/better-sqlite3/**'
   - '**/node_modules/node-pty/**'
 
+# 运行时图标：`build/` 是打包资源目录，里面的文件**不会**进 app.asar，
+# 而窗口图标与托盘图标要在运行时按路径读取，所以显式复制到 resources/。
+# 应用主图标（安装包/桌面项/任务栏）由 electron-builder 从 build/icon.png 自动生成
+# 各平台格式（deb/rpm/pacman 的 hicolor、flatpak 的 icons、Windows 的 .ico）。
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+  - from: build/tray.png
+    to: tray.png
+
 # 不做 npm rebuild：原生模块已由 scripts/rebuild-native.mjs 针对 Electron ABI 重建过，
 # 让 electron-builder 再跑一遍既慢又可能因为 pnpm 的符号链接布局失败
 npmRebuild: false

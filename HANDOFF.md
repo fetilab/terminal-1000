@@ -1,7 +1,7 @@
 # terminal-1000 会话交接
 
 面向接手本项目的下一个 agent 会话。读完这一份即可继续，不必回溯历史对话。
-最后更新：2026-11-19
+最后更新：2026-11-21
 
 ---
 
@@ -17,7 +17,7 @@ AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研�
 - 远端：`https://github.com/fetilab/terminal-1000`（public，GPL-3.0），分支 `master`
 - 本机推送走 `https://github.com:443/...`（绕开全局 insteadOf 的只读代理重写）或
   `ssh.github.com:443`（公钥已注册到 fetilab 账号）；fastgithub/gh-proxy 只能克隆不能推送
-- Release：`v0.1.2`（当前，六附件：AppImage/deb/rpm/pacman/flatpak/setup.exe）与 `v0.1.1`、`v0.1.0`。
+- Release：`v0.1.4`（当前，六附件：AppImage/deb/rpm/pacman/flatpak/setup.exe）、`v0.1.3`、`v0.1.2`、`v0.1.1`、`v0.1.0`。
   flatpak 与 Windows 安装器都能在本容器构建，但各有前置条件，见「已知陷阱」23–24
 - 推送凭据**没有落盘**：本机无 `credential.helper`、无 `~/.git-credentials`、无 `gh` CLI。
   需要时用 `GIT_ASKPASS` 临时脚本 + 环境变量传 token，推完即弃
@@ -37,11 +37,12 @@ AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研�
 |---|---|
 | 提交 | 见 `git log --oneline \| wc -l` |
 | 源码规模 | 约 8.5 万行 TS/TSX |
-| 单元测试 | `pnpm test` 全绿（约 1702 项，83 文件） |
+| 单元测试 | 1794 通过 / 3 失败 / 5 跳过（1802 项，89 文件）。3 项失败是容器限制（无 PTY、以 root 跑权限用例），不是回归；跑法见陷阱 33 |
 | typecheck | node 与 web 均 **0 错误** |
 | 整机验收 | `node scripts/acceptance.mjs` → **32 通过 / 0 失败 / 4 跳过**（S21 为新增身份变化端到端） |
+| 代理验收 | `node _verify-agent.mjs` → **29 通过 / 0 失败**（代理安装/隧道取数/卡片稳定/补全弹窗） |
 | IPC 域 | **23 个** |
-| 打包 | deb / AppImage / **rpm / pacman** 四目标；deb 93.4 MiB、rpm 91.6 MiB、pacman 93.5 MiB（预算 ≤100 MiB） |
+| 打包 | **六格式全量**：AppImage 102.2 / deb 91.9 / rpm 91.9 / pacman 91.9 / flatpak 93.4 / setup.exe 114.1（MiB）。一条命令 `scripts/pack-local.sh`，见陷阱 34 |
 
 ### 复现验证（三条命令）
 ```bash
@@ -290,6 +291,48 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）
     整页错位且**没有任何构建/类型报错**。新组件请用不冲突的前缀（现在叫 `.t-toggle`）。
     同类问题：`.kv` 原先只定义在按需加载的 `features/monitor/monitor.css`，
     设置页用到时等于没样式 —— 跨 feature 复用的类一律放 `styles/components.css`。
+
+27. **远端监控代理与脚本模式共用 `~/.t1000-monitor` 目录**。版本文件**不能**同名：
+    脚本模式用 `VERSION`，代理用 `agent.version`。撞名时脚本模式会看到代理写的 `2`，
+    判定自己过期 → 每次采集都重装一遍并写回 `1` → 代理永远"版本落后"，
+    于是弹窗反复提示升级、升级完还是提示。`agent.test.ts` 里有一条断言守住这两个路径。
+28. **`probeAgent` 的返回体必须带 `sessionId`**。渲染层的安装询问弹窗拿到的就是它，
+    弹窗里「安装 / 暂不安装 / 不再询问」三个按钮都靠这个 id 继续调 IPC。
+    少字段时的报错是 `sessionId: Required`（zod 在 handler 边界拦下来的），
+    界面表现是"点了安装没反应"。现在由主进程回填，并且 `AgentProbeInfo` 只在
+    `packages/shared/src/monitor.ts` 定义一份，两边引用同一个类型。
+29. **`AgentService.probeRemote()` 会写探测缓存**（`probe()` 读它，TTL 30s）。
+    任何"改完远端文件就立刻要看结果"的操作，都必须在改完之后再清一次缓存 ——
+    `stop()` 里就踩过：为了拿 pid 探了一次，把刚删掉文件的 `installed=true` 又写回去了，
+    面板 30 秒内一直说"已安装"，而采集器已经悄悄回退脚本模式。
+30. **`scripts/ssh-test-host.mjs` 的 shell 是管道，得自己补 tty 的两个行为**：
+    回显（否则 xterm 光标永远停在 (0,0)，看不出敲了什么）与 CR→NL
+    （xterm 回车发 `\r`，没有 tty 的 ICRNL 翻译，bash 会一直等换行，一条命令都不执行）。
+    这两条已在 `test-sftp-server.ts` 的 shell 处理器里补上（**测试夹具**，产品不依赖）。
+    没有它们，任何"在终端里打字 → 看补全弹窗"的验收都是假绿。
+31. **`VAR=x cmd` 这种前缀会把 `PATH` 弄丢**。本机的命令包装层在转交时会重建环境，
+    实测：`PATH=/tmp/shim:$PATH bash -c 'which rpmbuild'` 依然找到 `/usr/bin/rpmbuild`，
+    而 `bash -c 'export PATH=/tmp/shim:$PATH; which rpmbuild'` 才命中垫片。
+    后果是 rpm 与 flatpak 的垫片"看起来挂了却没生效"：fpm 报 `rpmbuild failed`（日志里
+    全是 `File not found: …/BUILDROOT/…`），flatpak 报 `Failure spawning rofiles-fuse`。
+    所以 `scripts/pack-local.sh` 里所有环境变量都是**脚本内 export**，不要改回前缀写法。
+32. **flatpak 的两个入场参数只能靠 PATH 垫片补**。`@malept/flatpak-bundler` 支持
+    `extra-flatpak-builder-args`，但 electron-builder 的 `FlatpakTarget` 不透传它，
+    `electron-builder.yml` 里没有合法入口。`scripts/pack-local.sh` 生成一个
+    `flatpak-builder` 包装脚本，把 `--user --disable-rofiles-fuse` 塞在参数最前面。
+33. **跑单测时 `TMPDIR` 只能指 `/tmp`（并把它换成大 tmpfs）或留在默认值**。
+    把 `TMPDIR` 指到工作区里（`_tmp/`、仓库内任意目录）会让 `importOpenSsh` 那 21 项
+    集体 EPERM —— 本机的 fs 代理层对 `/tmp` 之外的写路径判定不同，属于环境限制而非产品缺陷。
+    干净的跑法（`/tmp` 只有 10MB，必须先扩容，mount 与测试要在同一条命令里）：
+    ```bash
+    mount -t tmpfs -o size=4g,mode=1777 tmpfs /tmp
+    cd apps/desktop && ./node_modules/.bin/vitest run   # 1794 通过 / 3 失败 / 5 跳过
+    ```
+    那 3 项失败都是**容器限制**、不是回归：`snapshot` 的真实 PTY 录制（无 `/dev/pts`）；
+    `sftp` 的两项"只读目录应回 PERMISSION_DENIED"（以 root 跑，`chmod 0555` 拦不住 root）。
+34. **打包一条命令**：`scripts/pack-local.sh`。它自己生成全部五个垫片
+    （rpm 4.18、flatpak 参数、copyFile 降级、NSIS 免 wine、futimens 空操作），
+    所以不再依赖 `/tmp` 或上一轮遗留的文件。`--win` 只打 Windows，`SKIP_BUILD=1` 复用 `out/`。
 
 ---
 

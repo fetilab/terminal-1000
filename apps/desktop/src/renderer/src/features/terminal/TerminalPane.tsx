@@ -56,6 +56,7 @@ import {
   type CompletionResult,
 } from './completion'
 import { CompletionPopup } from './CompletionPopup'
+import { computeCompletionAnchor, type CompletionAnchor } from './completionAnchor'
 import { cellsFor, normalizeHexColor, segmentHighlightStyle, segmentText } from './highlights'
 import './terminal.css'
 import './completion.css'
@@ -255,6 +256,7 @@ export interface TerminalPaneProps {
 }
 
 export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Element {
+  const paneRef = useRef<HTMLDivElement | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -277,6 +279,8 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const historyRef = useRef<string[]>([])
   const [completion, setCompletion] = useState<CompletionResult | null>(null)
   const [selected, setSelected] = useState(0)
+  /** 补全弹窗的位置（跟随光标；由 xterm 的光标单元格坐标换算成像素） */
+  const [anchor, setAnchor] = useState<CompletionAnchor | null>(null)
   const completionSeq = useRef(0)
   /** 写入失败只提示一次 */
   const writeWarnedRef = useRef(false)
@@ -372,6 +376,60 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     window.clearTimeout(debounceTimer.current)
     debounceTimer.current = window.setTimeout(() => void requestCompletion(), debounceMsRef.current)
   }, [requestCompletion])
+
+  /**
+   * 量一次光标位置。
+   *
+   * 只用 xterm 的**公开 API**：`buffer.active.cursorX/cursorY` 是单元格坐标，
+   * `.xterm-screen` 的实际像素尺寸 ÷ cols/rows 就是单元格尺寸。
+   * 不碰 `_core._renderService` 之类的私有字段 —— 那些一升级就换个名字，
+   * 表现是"弹窗偶尔飘到墙角"，很难定位。
+   */
+  const refreshAnchor = useCallback(() => {
+    const term = termRef.current
+    const pane = paneRef.current
+    if (!term || !pane) return
+    const screen = term.element?.querySelector<HTMLElement>('.xterm-screen')
+    if (!screen || term.cols <= 0 || term.rows <= 0) return
+    const s = screen.getBoundingClientRect()
+    const p = pane.getBoundingClientRect()
+    if (s.width <= 0 || s.height <= 0 || p.width <= 0 || p.height <= 0) return
+    const buf = term.buffer.active
+    setAnchor(
+      computeCompletionAnchor({
+        cursor: { x: buf.cursorX, y: buf.cursorY },
+        cell: { width: s.width / term.cols, height: s.height / term.rows },
+        screen: { left: s.left - p.left, top: s.top - p.top, width: s.width, height: s.height },
+        pane: { width: p.width, height: p.height },
+        preferred: { width: 400, height: 300 },
+      }),
+    )
+  }, [])
+
+  // 弹窗打开期间贴着光标走：输出/滚动/改窗口大小都会触发 onRender，按帧合并重算
+  useEffect(() => {
+    if (!completion) return
+    refreshAnchor()
+    const term = termRef.current
+    if (!term) return
+    let raf = 0
+    const tick = (): void => {
+      if (raf !== 0) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        refreshAnchor()
+      })
+    }
+    const sub = term.onRender(tick)
+    const pane = paneRef.current
+    const ro = pane ? new ResizeObserver(tick) : null
+    if (pane && ro) ro.observe(pane)
+    return () => {
+      sub.dispose()
+      ro?.disconnect()
+      if (raf !== 0) cancelAnimationFrame(raf)
+    }
+  }, [completion, refreshAnchor])
 
   const acceptCandidate = useCallback(
     (index: number) => {
@@ -1078,6 +1136,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
 
   return (
     <div
+      ref={paneRef}
       className="term-pane"
       onKeyDown={onKeyDown}
       onKeyDownCapture={onKeyDownCapture}
@@ -1109,6 +1168,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
           elapsedMs={completion.elapsedMs}
           specName={completion.specName}
           aiRequested={completion.aiRequested}
+          anchor={anchor}
           onHover={setSelected}
           onAccept={acceptCandidate}
         />

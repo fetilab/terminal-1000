@@ -34,6 +34,7 @@ import {
   type Settings,
   type TerminalSettings,
   type ThemeMode,
+  type AgentProbeInfo,
   type MonitorCardConfig,
   type MonitorSnapshot,
   type SshConnection,
@@ -203,6 +204,15 @@ export interface EditingTarget {
   kind?: ConnectionKind
 }
 
+/** 监控代理探测结果（主进程 probeAgent 的返回 + 会话标识） */
+/**
+ * 安装询问弹窗的数据。
+ *
+ * 直接用主进程 `probeAgent` 的返回体（`AgentProbeInfo`）：两边各写一份 interface
+ * 就会漂移 —— 之前就是漏了 `sessionId`，点「安装」报 `sessionId: Required`。
+ */
+export type AgentAsk = AgentProbeInfo
+
 export interface AppState {
   view: ViewId
   protocol: ConnectionKind
@@ -334,6 +344,15 @@ export interface AppState {
   /** 每会话的 CPU 走势采样（最近 N 个点），走势图直接读它 */
   cpuHistory: Record<string, number[]>
   monitorStatus: Record<string, 'starting' | 'running' | 'paused' | 'stopped' | 'unavailable'>
+  /**
+   * 监控代理安装询问。连接上一台**没装代理**的服务器时弹一次；
+   * 用户的选择记在主进程（按 host:port:user），下次连接不再问。
+   */
+  agentAsk: AgentAsk | null
+  /** 安装/卸载代理进行中（按钮 loading 用） */
+  agentBusy: boolean
+  /** 每会话最近一次采集错误；只提示，不把面板判成"不可用" */
+  monitorError: Record<string, string>
 
   /** 批量操作进行中 */
   busy: null | { label: string; done: number; total: number }
@@ -440,6 +459,9 @@ const initialState: AppState = {
   snapshots: {},
   cpuHistory: {},
   monitorStatus: {},
+  agentAsk: null,
+  agentBusy: false,
+  monitorError: {},
   busy: null,
 }
 
@@ -817,9 +839,7 @@ export const actions = {
   },
 
   toggleMonitorCard(kind: MonitorCardConfig['kind']) {
-    setState((s) => ({
-      monitorCards: s.monitorCards.map((c) => (c.kind === kind ? { ...c, enabled: !c.enabled } : c)),
-    }))
+    toggleMonitorCard(kind)
   },
 
   setBusy(busy: AppState['busy']) {
@@ -1852,10 +1872,10 @@ export async function connectTo(connection: UiConnection): Promise<void> {
       { sessionId: string }
     >(connection.kind === 'telnet' ? 'telnet' : 'ssh', 'connect', { connection })
     if (res?.sessionId) {
-      // 连接即开监控：采集脚本自动上传（collector 做版本比对，只传一次）并开始拉数据，
-      // 右栏只是它的展示面 —— 不因面板开着与否决定采不采集
+      // 连接即开监控：先探测远端代理（可装则弹窗询问），再按代理/脚本采集。
+      // 右栏只是展示面 —— 不因面板开着与否决定采不采集
       updateTab(tab.tabId, { sessionId: res.sessionId, state: 'ready', monitorOpen: true })
-      void startMonitor(res.sessionId)
+      void beginSessionMonitoring(res.sessionId)
       touchConnection(connection.id)
     }
   } catch (err) {
@@ -1955,13 +1975,145 @@ export async function startMonitor(sessionId: string): Promise<void> {
     await invoke<'monitor', 'start', { sessionId: string; cards: MonitorCardConfig[] }, unknown>(
       'monitor',
       'start',
-      { sessionId, cards: state.monitorCards.filter((c) => c.enabled) },
+      // 传**全部**卡片（含关闭的）：主进程要知道每张卡片的档位，
+      // 之后切换开关才不用重新建立整份配置
+      { sessionId, cards: state.monitorCards },
     )
-    setState((s) => ({ monitorStatus: { ...s.monitorStatus, [sessionId]: 'running' } }))
+    setState((s) => ({
+      monitorStatus: { ...s.monitorStatus, [sessionId]: 'running' },
+      monitorError: omitKey(s.monitorError, sessionId),
+    }))
   } catch (err) {
     setState((s) => ({ monitorStatus: { ...s.monitorStatus, [sessionId]: 'unavailable' } }))
     toast.warn(`监控采集不可用：${errorText(err)}`)
   }
+}
+
+/**
+ * 连接成功后的监控入口：先探测远端代理，再开始采集。
+ *
+ * 探测放在采集**之前**：已经装过代理的服务器第一拍就走隧道；
+ * 没装的先按脚本模式采集（用户拒绝安装也不至于没数据），同时弹窗询问。
+ */
+export async function beginSessionMonitoring(sessionId: string): Promise<void> {
+  try {
+    const probe = await invoke<'monitor', 'probeAgent', { sessionId: string }, AgentAsk>(
+      'monitor',
+      'probeAgent',
+      { sessionId },
+    )
+    if (probe && (!probe.installed || probe.needsUpgrade)) {
+      // 没有 python3 就没得选，不打扰用户；直接脚本模式
+      if (probe.pythonPath && (probe.decision === 'ask' || probe.needsUpgrade)) {
+        // sessionId 以本次调用为准：主进程已经回传，这里再兜一层，
+        // 免得哪天字段丢了，用户点「安装」只看到 `sessionId: Required`
+        setState({ agentAsk: { ...probe, sessionId } })
+      }
+    }
+  } catch {
+    // 探测失败（老服务器 / 权限受限）不该影响监控本身
+  }
+  await startMonitor(sessionId)
+}
+
+/** 安装代理并立刻切到隧道采集 */
+export async function installAgent(sessionId: string): Promise<void> {
+  setState({ agentBusy: true })
+  try {
+    const res = await invoke<
+      'monitor',
+      'installAgent',
+      { sessionId: string },
+      { version: string; port: number }
+    >('monitor', 'installAgent', { sessionId })
+    setState({ agentAsk: null, agentBusy: false })
+    toast.ok(`监控代理已安装并启动（v${res?.version ?? '?'} · 端口 ${res?.port ?? '?'} · 仅经 SSH 隧道访问）`)
+    // 立刻用代理重采一次，用户不用等下一拍
+    await startMonitor(sessionId)
+    await refreshMonitor(sessionId)
+  } catch (err) {
+    setState({ agentBusy: false })
+    toast.error(`代理安装失败：${errorText(err)}`)
+  }
+}
+
+/** 拒绝安装：forever=true 表示"这台服务器不再问" */
+export async function declineAgent(sessionId: string, forever: boolean): Promise<void> {
+  setState({ agentAsk: null })
+  try {
+    await invoke<'monitor', 'declineAgent', { sessionId: string; forever: boolean }, unknown>(
+      'monitor',
+      'declineAgent',
+      { sessionId, forever },
+    )
+  } catch {
+    /* 记不住偏好不影响继续用脚本模式 */
+  }
+  toast.info(forever ? '已记住：这台服务器不再询问（仍可用脚本模式监控）' : '本次跳过安装，继续用脚本模式监控')
+}
+
+export function dismissAgentAsk(): void {
+  setState({ agentAsk: null })
+}
+
+/** 卸载代理（停止 + 删文件），之后回退脚本模式 */
+export async function uninstallAgent(sessionId: string): Promise<void> {
+  setState({ agentBusy: true })
+  try {
+    await invoke<'monitor', 'uninstallAgent', { sessionId: string }, unknown>('monitor', 'uninstallAgent', {
+      sessionId,
+    })
+    setState({ agentBusy: false })
+    toast.ok('已停止并删除远端监控代理，回退到脚本模式')
+    await refreshMonitor(sessionId)
+  } catch (err) {
+    setState({ agentBusy: false })
+    toast.error(`卸载代理失败：${errorText(err)}`)
+  }
+}
+
+/** 手动刷新一次（代理模式下就是一次隧道往返） */
+export async function refreshMonitor(sessionId: string): Promise<void> {
+  try {
+    await invoke<'monitor', 'refresh', { sessionId: string }, unknown>('monitor', 'refresh', { sessionId })
+  } catch (err) {
+    toast.warn(`刷新失败：${errorText(err)}`)
+  }
+}
+
+/**
+ * 切换卡片开关。
+ *
+ * 必须**推到主进程**：只改界面状态的话，采集命令还是老的一组，
+ * 表现就是"开关拨了没反应 / 关掉的卡片还在刷新"。
+ *
+ * 第二个参数（会话列表）从 store 现取，避免调用方重复传。
+ */
+export function toggleMonitorCard(kind: MonitorCardConfig['kind']): void {
+  const next = state.monitorCards.map((c) => (c.kind === kind ? { ...c, enabled: !c.enabled } : c))
+  setState({ monitorCards: next })
+  for (const sessionId of monitoredSessionIds()) {
+    void invoke<'monitor', 'setCards', { sessionId: string; cards: MonitorCardConfig[] }, unknown>(
+      'monitor',
+      'setCards',
+      { sessionId, cards: next },
+    ).catch(() => undefined)
+  }
+}
+
+/** 当前所有可能有监控的会话（ssh / telnet） */
+export function monitoredSessionIds(): string[] {
+  const ids = state.tabs
+    .filter((t) => t.sessionId && (t.kind === 'ssh' || t.kind === 'telnet'))
+    .map((t) => t.sessionId as string)
+  return [...new Set(ids)]
+}
+
+function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in record)) return record
+  const next = { ...record }
+  delete next[key]
+  return next
 }
 
 export async function stopMonitor(sessionId: string): Promise<void> {
@@ -1984,6 +2136,8 @@ export function applySnapshot(sessionId: string, snapshot: MonitorSnapshot): voi
     return {
       snapshots: { ...s.snapshots, [sessionId]: snapshot },
       cpuHistory: { ...s.cpuHistory, [sessionId]: history },
+      // 有一拍成功就说明采集恢复了，清掉上一次的错误提示
+      monitorError: omitKey(s.monitorError, sessionId),
     }
   })
 }
@@ -2148,7 +2302,11 @@ export function wireEvents(): void {
   })
 
   subscribe(Events.MONITOR_ERROR, (p) => {
-    setState((s) => ({ monitorStatus: { ...s.monitorStatus, [p.sessionId]: 'unavailable' } }))
+    // 单拍失败很常见（远端繁忙、某个模块命令缺失、代理刚重启）。
+    // 早先这里直接把状态改成 unavailable，面板瞬间换成"不可用"空态，
+    // 下一拍成功又变回来 —— 看起来就是"监控时好时坏"。
+    // 正确做法：记住错误、提示一次，状态交给主进程（连续失败会发 paused）。
+    setState((s) => ({ monitorError: { ...s.monitorError, [p.sessionId]: p.message } }))
     toast.warn(`监控采集失败：${p.message}`)
   })
 }

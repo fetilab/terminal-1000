@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!--
+    托盘图标：与应用图标同源的 `>_`，但去掉底板、加粗笔画。
+    托盘背景色不可控（浅色面板 / 深色面板 / 彩色），所以只留单色字形；
+    圆角深色方块在深色面板上会直接消失。
+  -->
+  <g fill="none" stroke="#3ec9d6" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 17 L33 32 L18 47"/>
+    <path d="M38 47 L50 47"/>
+  </g>
+</svg>

@@ -7,13 +7,14 @@
  * 纯展示 + 受控选中：键盘事件由 TerminalPane 在捕获阶段处理
  * （必须抢在 xterm 之前拿到 ↑↓/Tab/Esc，否则按键会被送进远端 shell）。
  *
- * 位置固定在终端左下角而不是跟着光标：
- * xterm 没有公开「光标像素坐标」的 API，私有 API 一旦变动就会错位；
- * 左下角锚点在任何 DPI / 字号下都稳。
+ * 位置来自 `computeCompletionAnchor()`：**贴着光标行上方**，上方放不下才翻到下方。
+ * 早期版本把弹窗钉在终端左下角（`left:10px; bottom:34px`），长命令行一多就直接
+ * 盖住正在输入的那一行 —— 那是实打实的可用性 bug，不是审美问题。
  */
 
 import type { CompletionCandidate, CompletionKind } from './completion'
 import { KIND_LABEL } from './completion'
+import type { CompletionAnchor } from './completionAnchor'
 import { Icon, type IconName } from '../../components/Icon'
 import { Badge } from '../../components/Feedback'
 
@@ -27,6 +28,9 @@ const KIND_ICON: Record<CompletionKind, IconName> = {
   ai: 'zap',
 }
 
+/** 一屏最多展示多少条：再多用户也看不过来，纯属撑大弹窗 */
+const MAX_ROWS = 8
+
 export interface CompletionPopupProps {
   candidates: CompletionCandidate[]
   selected: number
@@ -36,6 +40,8 @@ export interface CompletionPopupProps {
   elapsedMs?: number
   specName?: string | null
   aiRequested?: boolean
+  /** 光标锚点；缺省时退化为容器内居中（仅测试/降级路径会走到） */
+  anchor?: CompletionAnchor | null
 }
 
 export function CompletionPopup({
@@ -46,22 +52,37 @@ export function CompletionPopup({
   elapsedMs,
   specName,
   aiRequested,
+  anchor,
 }: CompletionPopupProps): React.JSX.Element | null {
   if (candidates.length === 0) return null
 
   const current = candidates[Math.min(selected, candidates.length - 1)]
-  const list = candidates.slice(0, 12)
+  const list = candidates.slice(0, MAX_ROWS)
+  const style: React.CSSProperties = anchor
+    ? {
+        left: anchor.left,
+        width: anchor.width,
+        maxHeight: anchor.maxHeight,
+        ...(anchor.placement === 'above' ? { bottom: anchor.bottom } : { top: anchor.top }),
+      }
+    : {}
 
   return (
-    <div className="completion" role="listbox" aria-label="命令补全候选">
+    <div
+      className="completion"
+      role="listbox"
+      aria-label="命令补全候选"
+      data-placement={anchor?.placement ?? 'float'}
+      style={style}
+    >
       <div className="completion__head">
         <Icon name="zap" size={12} />
         <span>补全</span>
         {specName ? <Badge tone="outline">{specName}</Badge> : null}
-        {aiRequested ? <Badge tone="accent">AI 通道</Badge> : null}
+        {aiRequested ? <Badge tone="accent">AI</Badge> : null}
         <span className="completion__count">
           {candidates.length} 项
-          {elapsedMs === undefined ? '' : ` · ${elapsedMs} ms`}
+          {elapsedMs === undefined ? '' : ` · ${Math.round(elapsedMs)}ms`}
         </span>
       </div>
 
@@ -80,7 +101,7 @@ export function CompletionPopup({
               onAccept(i)
             }}
           >
-            <Icon name={KIND_ICON[c.kind]} size={13} />
+            <Icon name={KIND_ICON[c.kind]} size={12} />
             <span className="completion__label">{c.label ?? c.value}</span>
             <span className="completion__kind">{KIND_LABEL[c.kind]}</span>
             {c.description ? <span className="completion__desc">{c.description}</span> : null}
@@ -91,24 +112,19 @@ export function CompletionPopup({
         ) : null}
       </div>
 
-      <div className="completion__preview">
-        {current?.description ? (
-          <>
-            <div className="completion__preview-title">{current.label ?? current.value}</div>
-            <div className="completion__preview-body">{current.description}</div>
-          </>
-        ) : (
-          <div className="completion__preview-body completion__preview-body--muted">
-            {current ? `${current.label ?? current.value}（无说明）` : ''}
-          </div>
-        )}
-      </div>
+      {current?.description ? (
+        <div className="completion__preview">
+          <div className="completion__preview-title">{current.label ?? current.value}</div>
+          <div className="completion__preview-body">{current.description}</div>
+        </div>
+      ) : null}
 
       <div className="completion__foot">
         <kbd className="t-kbd">↑</kbd>
-        <kbd className="t-kbd">↓</kbd> 选择
-        <kbd className="t-kbd">Tab</kbd> 接受
-        <kbd className="t-kbd">Esc</kbd> 关闭
+        <kbd className="t-kbd">↓</kbd>
+        <kbd className="t-kbd">Tab</kbd>
+        <kbd className="t-kbd">Esc</kbd>
+        <span>选择 / 接受 / 关闭</span>
       </div>
     </div>
   )
