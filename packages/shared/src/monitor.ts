@@ -194,8 +194,12 @@ export interface AgentProbeInfo {
   host: string
   port: number | null
   username: string
-  /** 远端 python3 路径；null 表示装不了 */
-  pythonPath: string | null
+  /** 远端 `uname -m` 原样（x86_64 / aarch64 / armv7l …） */
+  machine: string | null
+  /** 映射到随包提供的静态二进制架构；null = 这个架构没有产物，只能走脚本模式 */
+  arch: 'amd64' | 'arm64' | 'arm' | null
+  /** 远端 $HOME：上传与启动都用它拼路径 */
+  home: string | null
   installed: boolean
   version: string | null
   state: { port: number; pid: number; token: string; version: string; startedAt?: number } | null

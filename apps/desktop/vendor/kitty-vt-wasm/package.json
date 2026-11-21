@@ -1,0 +1,56 @@
+{
+  "name": "kitty-vt-wasm",
+  "version": "0.2.0",
+  "description": "kitty's real terminal core (screen.c + vt-parser.c) compiled to WebAssembly, wrapped as a typed library with all I/O abstracted",
+  "author": "Can Bölük <me@can.ac>",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/can1357/libkitty-vt.git"
+  },
+  "homepage": "https://github.com/can1357/libkitty-vt#readme",
+  "bugs": "https://github.com/can1357/libkitty-vt/issues",
+  "keywords": [
+    "terminal",
+    "vt100",
+    "kitty",
+    "webassembly",
+    "wasm",
+    "terminal-emulator",
+    "ansi",
+    "escape-codes"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./kitty-vt.wasm": "./dist/kitty-vt.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepack": "bun run build",
+    "build": "bun run build:wasm && bun run build:ts",
+    "build:wasm": "./build.sh",
+    "build:ts": "tsgo -p tsconfig.json",
+    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "lint": "biome check src test examples",
+    "format": "biome check --write src test examples && prettier --write package.json",
+    "test": "bun test",
+    "screenshot": "bun examples/screenshot.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.9",
+    "@napi-rs/canvas": "^0.1.89",
+    "@types/bun": "^1.3.4",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "prettier": "^3.9.6"
+  }
+}

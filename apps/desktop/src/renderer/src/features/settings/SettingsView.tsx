@@ -46,6 +46,7 @@ import './settings.css'
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   'app',
   'terminal',
+  'termStyle',
   'highlights',
   'hotkeys',
   'completion',

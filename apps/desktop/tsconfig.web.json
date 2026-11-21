@@ -10,12 +10,14 @@
     "baseUrl": ".",
     "paths": {
       "@renderer/*": ["src/renderer/src/*"],
+      "kitty-vt-wasm": ["vendor/kitty-vt-wasm/dist/index.d.ts"],
       "@t1000/shared": ["../../packages/shared/src/index.ts"],
       "@t1000/shared/*": ["../../packages/shared/src/*"]
     }
   },
   "include": [
     "src/renderer/**/*",
-    "src/preload/index.d.ts"
+    "src/preload/index.d.ts",
+    "vendor/kitty-vt-wasm/dist/index.d.ts"
   ]
 }

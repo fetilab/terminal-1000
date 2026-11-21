@@ -17,22 +17,18 @@ import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  AGENT_BIN_PATH,
   AgentHttp,
   AgentPrefs,
   AgentService,
-  agentInstallCommand,
+  agentActivateCommand,
   agentProbeCommand,
   agentStartCommand,
   parseProbe,
   parseState,
 } from './agent'
-import {
-  AGENT_DIR,
-  AGENT_HEREDOC,
-  AGENT_SOURCE,
-  AGENT_VERSION,
-  AGENT_VERSION_PATH,
-} from './agent-source'
+import { AGENT_ARCHES, hasAgentBinary, readAgentBinary, resolveArch } from './agent-binary'
+import { AGENT_DIR, AGENT_VERSION, AGENT_VERSION_PATH } from './agent-source'
 import { REMOTE_VERSION_PATH } from './scripts'
 
 const dirs: string[] = []
@@ -93,46 +89,67 @@ const openDirect = (port: number): Promise<Duplex> =>
     socket.once('error', reject)
   })
 
-describe('代理源码', () => {
-  it('不含 heredoc 终止符（否则远端写入会被截断）', () => {
-    expect(AGENT_SOURCE.includes(AGENT_HEREDOC)).toBe(false)
+describe('内置代理产物', () => {
+  it('uname -m → 内置架构的映射', () => {
+    expect(resolveArch('x86_64')).toBe('amd64')
+    expect(resolveArch('AMD64')).toBe('amd64')
+    expect(resolveArch('aarch64')).toBe('arm64')
+    expect(resolveArch('arm64')).toBe('arm64')
+    expect(resolveArch('armv7l')).toBe('arm')
+    expect(resolveArch('armv6l')).toBe('arm')
+    // 没有内置产物的架构必须返回 null（调用方据此回退脚本模式）
+    expect(resolveArch('riscv64')).toBeNull()
+    expect(resolveArch('s390x')).toBeNull()
+    expect(resolveArch(null)).toBeNull()
   })
 
-  it('版本常量与源码里的 VERSION 一致', () => {
-    expect(AGENT_SOURCE).toContain(`VERSION = "${AGENT_VERSION}"`)
+  it('三个架构的二进制都在安装包里，且解压后是 ELF', () => {
+    for (const arch of AGENT_ARCHES) {
+      expect(hasAgentBinary(arch), `${arch} 缺少产物（先跑 agent/build.sh）`).toBe(true)
+      const buf = readAgentBinary(arch)
+      expect(buf.subarray(0, 4).toString('latin1')).toBe('\x7fELF')
+      // 真二进制，不可能只有几 KB
+      expect(buf.length).toBeGreaterThan(1_000_000)
+    }
   })
+})
 
+describe('远端命令', () => {
   /**
    * 代理与脚本模式装在同一个远端目录里。版本文件一旦撞名，
-   * 两边会互相覆写：脚本模式看到 `2` 判定自己过期 → 每次采集重装并写回 `1`
+   * 两边会互相覆写：脚本模式看到 `3.0.0` 判定自己过期 → 每次采集重装并写回
    * → 代理永远"版本落后" → 弹窗提示升级、升级完又提示。这条断言守住文件名。
    */
   it('版本文件与脚本模式的 VERSION 不是同一个文件', () => {
     expect(AGENT_VERSION_PATH).not.toBe(REMOTE_VERSION_PATH)
     expect(AGENT_VERSION_PATH.startsWith(AGENT_DIR)).toBe(true)
-    expect(agentInstallCommand()).toContain(AGENT_VERSION_PATH)
+    expect(agentActivateCommand()).toContain(AGENT_VERSION_PATH)
     expect(agentProbeCommand()).toContain(AGENT_VERSION_PATH)
   })
 
-  it('安装命令用带引号的 heredoc，并在结尾给出成功哨兵', () => {
-    const cmd = agentInstallCommand()
-    expect(cmd).toContain(`<<'${AGENT_HEREDOC}'`)
+  it('激活命令：先 chmod 再原子改名，成功哨兵与版本号都写对', () => {
+    const cmd = agentActivateCommand()
+    expect(cmd).toContain('chmod 700')
+    expect(cmd).toContain('mv -f')
+    expect(cmd).toContain(`${AGENT_BIN_PATH}.upload`)
     expect(cmd).toContain('T1000_AGENT_OK')
     expect(cmd).toContain(`printf '%s' '${AGENT_VERSION}'`)
   })
 
-  it('启动命令：随机端口、本地生成 token、脱离会话', () => {
-    const cmd = agentStartCommand('/usr/bin/python3')
-    expect(cmd).toContain('--port 0')
+  it('启动命令：跑内置二进制、随机端口、本地 token、脱离会话', () => {
+    const cmd = agentStartCommand()
+    expect(cmd).toContain('./t1000-agent -port 0')
     expect(cmd).toContain('/dev/urandom')
     expect(cmd).toContain('setsid nohup')
-    // 单引号包裹，路径里有空格也不会被拆开
-    expect(cmd).toContain(`PY='/usr/bin/python3'`)
+    // 不再依赖任何解释器
+    expect(cmd).not.toContain('python')
   })
 
-  it('探测命令一次拿齐 python / 版本 / 状态', () => {
+  it('探测命令一次拿齐架构 / HOME / 版本 / 状态', () => {
     const cmd = agentProbeCommand()
-    expect(cmd).toContain('T1000_PY:')
+    expect(cmd).toContain('uname -m')
+    expect(cmd).toContain('T1000_MACHINE:')
+    expect(cmd).toContain('T1000_HOME:')
     expect(cmd).toContain('T1000_VER:')
     expect(cmd).toContain('T1000_STATE:')
     expect(cmd.split('\n').length).toBeLessThan(10)
@@ -143,32 +160,41 @@ describe('探测输出解析', () => {
   it('完整输出', () => {
     const probe = parseProbe(
       [
-        'T1000_PY:/usr/bin/python3',
-        'T1000_VER:2',
-        'T1000_STATE:{"port":41234,"pid":99,"token":"abc","version":"2"}',
+        'T1000_MACHINE:x86_64',
+        'T1000_HOME:/home/deploy',
+        `T1000_VER:${AGENT_VERSION}`,
+        `T1000_STATE:{"port":41234,"pid":99,"token":"abc","version":"${AGENT_VERSION}"}`,
         'T1000_END',
       ].join('\r\n'),
     )
-    expect(probe.pythonPath).toBe('/usr/bin/python3')
+    expect(probe.machine).toBe('x86_64')
+    expect(probe.arch).toBe('amd64')
+    expect(probe.home).toBe('/home/deploy')
     expect(probe.installed).toBe(true)
     expect(probe.state).toMatchObject({ port: 41234, pid: 99, token: 'abc' })
   })
 
-  it('没有 python3', () => {
-    const probe = parseProbe('T1000_PY:\nT1000_VER:none\nT1000_STATE:{}\nT1000_END')
-    expect(probe.pythonPath).toBeNull()
+  it('没装过：版本是 none，架构仍然能认出来', () => {
+    const probe = parseProbe('T1000_MACHINE:aarch64\nT1000_HOME:/root\nT1000_VER:none\nT1000_STATE:{}\nT1000_END')
+    expect(probe.arch).toBe('arm64')
     expect(probe.installed).toBe(false)
     expect(probe.state).toBeNull()
   })
 
+  it('不支持的架构：arch 为 null，但其它字段照常解析', () => {
+    const probe = parseProbe('T1000_MACHINE:riscv64\nT1000_HOME:/root\nT1000_VER:none\nT1000_STATE:{}\nT1000_END')
+    expect(probe.machine).toBe('riscv64')
+    expect(probe.arch).toBeNull()
+  })
+
   it('状态文件损坏时不抛异常，按"没在跑"处理', () => {
-    const probe = parseProbe('T1000_PY:/usr/bin/python3\nT1000_VER:2\nT1000_STATE:{oops\nT1000_END')
+    const probe = parseProbe('T1000_MACHINE:x86_64\nT1000_HOME:/root\nT1000_VER:3.0.0\nT1000_STATE:{oops\nT1000_END')
     expect(probe.installed).toBe(true)
     expect(probe.state).toBeNull()
   })
 
   it('启动输出里夹带日志也能抠出状态 JSON', () => {
-    const state = parseState('bash: warning: setlocale\n{"port":1024,"pid":7,"token":"t","version":"2"}\n')
+    const state = parseState('bash: warning: setlocale\n{"port":1024,"pid":7,"token":"t","version":"3.0.0"}\n')
     expect(state).toMatchObject({ port: 1024, pid: 7, token: 't' })
   })
 })
@@ -210,146 +236,123 @@ describe('隧道 HTTP 客户端', () => {
 })
 
 describe('AgentService 生命周期', () => {
-  it('服务器没有 python3：ensure 返回 null，且短时间内不再 exec 探测', async () => {
+  it('不支持的架构：ensure 返回 null，且静默期内不再探测', async () => {
     let execs = 0
     const svc = new AgentService(
       async () => {
         execs += 1
-        return { stdout: 'T1000_PY:\nT1000_VER:none\nT1000_STATE:{}\nT1000_END', stderr: '', code: 0 }
+        return {
+          stdout: 'T1000_MACHINE:riscv64\nT1000_HOME:/root\nT1000_VER:none\nT1000_STATE:{}\nT1000_END',
+          stderr: '',
+          code: 0,
+        }
       },
       new AgentPrefs(tmpFile('prefs.json')),
     )
     expect(await svc.ensure('s1')).toBeNull()
-    expect(await svc.sample('s1', ['cpu'], { processLimit: 8 })).toBeNull()
-    expect(execs).toBe(1)
+    const first = execs
+    expect(await svc.ensure('s1')).toBeNull()
+    expect(execs).toBe(first)
   })
 
-  it('已装且正在跑：直接复用，不再启动', async () => {
-    const agent = await fakeAgent()
+  it('安装：SFTP 传到 .upload，chmod+mv 激活，再启动并记录偏好', async () => {
+    const commands: string[] = []
+    const uploads: Array<{ path: string; size: number; mode: number }> = []
+    const svc = new AgentService(
+      async (_sid, command) => {
+        commands.push(command)
+        if (command.includes('-version')) {
+          return {
+            stdout: 'T1000_MACHINE:x86_64\nT1000_HOME:/home/deploy\nT1000_VER:none\nT1000_STATE:{}\nT1000_END',
+            stderr: '',
+            code: 0,
+          }
+        }
+        if (command.includes('mkdir -p')) return { stdout: '', stderr: '', code: 0 }
+        if (command.includes('T1000_AGENT_OK')) return { stdout: 'T1000_AGENT_OK\n', stderr: '', code: 0 }
+        if (command.includes('./t1000-agent -port 0')) {
+          return {
+            stdout: JSON.stringify({ port: 5555, pid: 42, token: 'tok', version: AGENT_VERSION }),
+            stderr: '',
+            code: 0,
+          }
+        }
+        return { stdout: '', stderr: '', code: 1 }
+      },
+      new AgentPrefs(tmpFile('prefs.json')),
+      async (_sid, path, data, mode) => {
+        uploads.push({ path, size: data.length, mode })
+      },
+      Date.now,
+      () => openDirect(1),
+    )
+
+    const result = await svc.install('s1')
+    expect(result).toMatchObject({ port: 5555, pid: 42 })
+    // 必须传到 .upload（原子改名之前的临时名），不能直接覆盖正在跑的二进制
+    expect(uploads).toHaveLength(1)
+    expect(uploads[0]!.path).toBe('/home/deploy/.t1000-monitor/t1000-agent.upload')
+    expect(uploads[0]!.size).toBeGreaterThan(1_000_000)
+    expect(uploads[0]!.mode).toBe(0o700)
+    expect(commands.some((c) => c.includes('chmod 700') && c.includes('mv -f'))).toBe(true)
+    expect(commands.some((c) => c.includes('./t1000-agent -port 0'))).toBe(true)
+    expect((await svc.probe('s1')).decision).toBe('installed')
+  })
+
+  it('卸载：kill 掉 pid 并删除二进制与版本文件', async () => {
     const commands: string[] = []
     const svc = new AgentService(
       async (_sid, command) => {
         commands.push(command)
         return {
           stdout:
-            'T1000_PY:/usr/bin/python3\n' +
+            'T1000_MACHINE:x86_64\nT1000_HOME:/root\n' +
             `T1000_VER:${AGENT_VERSION}\n` +
-            `T1000_STATE:${JSON.stringify({ port: agent.port, pid: 11, token: agent.token, version: AGENT_VERSION })}\n` +
-            'T1000_END',
+            `T1000_STATE:{"port":1,"pid":77,"token":"t","version":"${AGENT_VERSION}"}\nT1000_END`,
           stderr: '',
           code: 0,
         }
       },
       new AgentPrefs(tmpFile('prefs.json')),
-      Date.now,
-      (_sid, port) => openDirect(port),
     )
-    const sample = await svc.sample('s1', ['cpu', 'memory'], { processLimit: 8 })
-    expect(sample?.json).toContain('12.5')
-    expect(commands.every((c) => c.includes('T1000_STATE') || c.includes('T1000_PY'))).toBe(true)
-    expect(commands.some((c) => c.includes('agent.py --port 0'))).toBe(false)
-    expect(agent.hits()).toBeGreaterThanOrEqual(2) // health + metrics
-  })
-
-  it('已装但没在跑：自动启动（连接时启动监控软件）', async () => {
-    const agent = await fakeAgent()
-    const commands: string[] = []
-    const svc = new AgentService(
-      async (_sid, command) => {
-        commands.push(command)
-        if (command.includes('agent.py --port 0')) {
-          return {
-            stdout: JSON.stringify({ port: agent.port, pid: 12, token: agent.token, version: AGENT_VERSION }),
-            stderr: '',
-            code: 0,
-          }
-        }
-        return {
-          stdout: `T1000_PY:/usr/bin/python3\nT1000_VER:${AGENT_VERSION}\nT1000_STATE:{}\nT1000_END`,
-          stderr: '',
-          code: 0,
-        }
-      },
-      new AgentPrefs(tmpFile('prefs.json')),
-      Date.now,
-      (_sid, port) => openDirect(port),
-    )
-    const sample = await svc.sample('s1', ['cpu'], { processLimit: 8 })
-    expect(sample).not.toBeNull()
-    expect(commands.some((c) => c.includes('agent.py --port 0'))).toBe(true)
-  })
-
-  it('安装：写文件 + 启动 + 记住选择；卸载：杀进程并删文件', async () => {
-    const agent = await fakeAgent()
-    const commands: string[] = []
-    const prefsFile = tmpFile('prefs.json')
-    const svc = new AgentService(
-      async (_sid, command) => {
-        commands.push(command)
-        if (command.includes('T1000_AGENT_PY_EOF')) {
-          return { stdout: 'T1000_AGENT_OK\n', stderr: '', code: 0 }
-        }
-        if (command.includes('agent.py --port 0')) {
-          return {
-            stdout: JSON.stringify({ port: agent.port, pid: 77, token: agent.token, version: AGENT_VERSION }),
-            stderr: '',
-            code: 0,
-          }
-        }
-        if (command.includes('kill 77')) {
-          return { stdout: 'T1000_AGENT_STOPPED\n', stderr: '', code: 0 }
-        }
-        return {
-          stdout: 'T1000_PY:/usr/bin/python3\nT1000_VER:none\nT1000_STATE:{}\nT1000_END',
-          stderr: '',
-          code: 0,
-        }
-      },
-      new AgentPrefs(prefsFile),
-      Date.now,
-      (_sid, port) => openDirect(port),
-    )
-
-    const result = await svc.install('s1')
-    expect(result.version).toBe(AGENT_VERSION)
-    expect(result.pid).toBe(77)
-    const prefs = JSON.parse(readFileSync(prefsFile, 'utf8')) as Record<string, { decision: string }>
-    expect(Object.values(prefs)[0]?.decision).toBe('installed')
-
     await svc.stop('s1', true)
     expect(commands.some((c) => c.includes('kill 77'))).toBe(true)
-    expect(commands.some((c) => c.includes('rm -f') && c.includes('agent.py'))).toBe(true)
+    expect(commands.some((c) => c.includes('rm -f') && c.includes('t1000-agent'))).toBe(true)
   })
 
-  /**
-   * 卸载走的是"没有 runtime 记录"的分支（应用重启过、或别的实例装的）：
-   * 这时 stop 内部要探一次拿 pid，而 probeRemote 会顺手写探测缓存。
-   * 如果停完不清缓存，面板会在 PROBE_TTL_MS 内一直说"已安装"，
-   * 而采集器其实早已回退脚本模式 —— 用户看到的就是"卸载按钮按了没用"。
-   */
-  it('卸载后 probe 立刻反映"没装"（stop 不能把旧探测结果写回缓存）', async () => {
-    let installed = true
+  it('已装但没在跑：ensure 会自动启动而不是重装', async () => {
+    const commands: string[] = []
     const svc = new AgentService(
       async (_sid, command) => {
-        if (command.includes('kill 77')) {
-          installed = false
-          return { stdout: 'T1000_AGENT_STOPPED\n', stderr: '', code: 0 }
+        commands.push(command)
+        if (command.includes('-version')) {
+          return {
+            stdout:
+              'T1000_MACHINE:x86_64\nT1000_HOME:/root\n' +
+              `T1000_VER:${AGENT_VERSION}\nT1000_STATE:{}\nT1000_END`,
+            stderr: '',
+            code: 0,
+          }
         }
-        const ver = installed ? AGENT_VERSION : 'none'
-        const state = installed ? JSON.stringify({ port: 1, pid: 77, token: 'tk', version: AGENT_VERSION }) : '{}'
-        return {
-          stdout: `T1000_PY:/usr/bin/python3\nT1000_VER:${ver}\nT1000_STATE:${state}\nT1000_END`,
-          stderr: '',
-          code: 0,
+        if (command.includes('./t1000-agent -port 0')) {
+          return {
+            stdout: JSON.stringify({ port: 6000, pid: 8, token: 'k', version: AGENT_VERSION }),
+            stderr: '',
+            code: 0,
+          }
         }
+        return { stdout: '', stderr: '', code: 1 }
       },
       new AgentPrefs(tmpFile('prefs.json')),
+      async () => {
+        throw new Error('不该上传：已经装好了')
+      },
       Date.now,
       () => openDirect(1),
     )
-    expect((await svc.probe('s1')).installed).toBe(true)
-    await svc.stop('s1', true)
-    expect((await svc.probe('s1')).installed).toBe(false)
+    const runtime = await svc.ensure('s1')
+    expect(runtime?.port).toBe(6000)
+    expect(commands.some((c) => c.includes('./t1000-agent -port 0'))).toBe(true)
   })
 })
 

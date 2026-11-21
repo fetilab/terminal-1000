@@ -228,13 +228,11 @@ a {
   width: 34px;
   height: 34px;
   margin-bottom: 10px;
-  border-radius: 10px;
-  background: linear-gradient(150deg, var(--t1000-accent) 0%, var(--t1000-accent-strong) 100%);
-  color: var(--t1000-accent-fg);
-  font-weight: 800;
-  font-size: 14px;
-  letter-spacing: -0.5px;
+  /* 图形自带深色圆角底与青色字形（与安装包图标同一份 SVG），
+     所以这里**不再**给背景色/字号 —— 否则会出现"方块套方块"的双层圆角 */
+  background: none;
   user-select: none;
+  flex: none;
 }
 
 .rail-item {

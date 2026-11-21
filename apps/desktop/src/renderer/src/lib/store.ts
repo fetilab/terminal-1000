@@ -155,6 +155,7 @@ export interface NegotiationEntry {
 export type SettingsSectionId =
   | 'app'
   | 'terminal'
+  | 'termStyle'
   | 'highlights'
   | 'hotkeys'
   | 'completion'
@@ -404,6 +405,22 @@ const initialState: AppState = {
     // 与主进程默认值保持一致（这个对象是"设置还没加载出来"时的兜底，
     // 少一个字段就会让类型不完整 —— 补契约字段时必须一起补这里）
     zebraStripes: false,
+    renderer: 'kitty',
+    fontWeight: 450,
+    boldWeight: 700,
+    fontFeatures: [],
+    ligatures: true,
+    padding: 6,
+    backgroundOpacity: 1,
+    cursorOpacity: 1,
+    cursorInactiveStyle: 'outline',
+    wheelMultiplier: 3,
+    selectionBackground: '#3ec9d6',
+    selectionForeground: '#0d0f14',
+    underlineColor: '',
+    kittyGraphics: true,
+    palette: [],
+    termType: 'xterm-kitty',
   },
   highlightRules: [],
   servicesSection: 'sync',
@@ -2004,7 +2021,7 @@ export async function beginSessionMonitoring(sessionId: string): Promise<void> {
     )
     if (probe && (!probe.installed || probe.needsUpgrade)) {
       // 没有 python3 就没得选，不打扰用户；直接脚本模式
-      if (probe.pythonPath && (probe.decision === 'ask' || probe.needsUpgrade)) {
+      if (probe.arch && (probe.decision === 'ask' || probe.needsUpgrade)) {
         // sessionId 以本次调用为准：主进程已经回传，这里再兜一层，
         // 免得哪天字段丢了，用户点「安装」只看到 `sessionId: Required`
         setState({ agentAsk: { ...probe, sessionId } })

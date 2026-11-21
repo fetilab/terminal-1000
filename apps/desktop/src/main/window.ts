@@ -121,6 +121,9 @@ export function createWindow(options: CreateWindowOptions = {}): BrowserWindow {
     webPreferences: {
       preload: join(__dirname_, '../preload/index.mjs'),
       sandbox: false,
+      // 自动化验收钩子的开关通道：主进程命令行带 --t1000-testhook 时，
+      // preload 会把它暴露给渲染层。默认不带，生产入口零暴露。
+      ...(process.argv.includes('--t1000-testhook') ? { additionalArguments: ['--t1000-testhook'] } : {}),
       contextIsolation: true,
       nodeIntegration: false,
       // 终端需要持续的定时器精度，后台节流交给应用自己判断

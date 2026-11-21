@@ -7,7 +7,10 @@ import { IPC_CHANNEL } from '@t1000/shared'
 import { createIpcContext, dispatch, type IpcContext } from './ipc/router'
 import { registerAllHandlers } from './ipc'
 import { createLogger } from './logger'
+import { dirname } from 'node:path'
 import { getAppPaths, prepareDataDir } from './paths'
+import { getStoreService } from './services/store'
+import { importLegacyReferenceStores } from './services/store/legacy-import'
 import { broadcast, createWindow, getMainWindow, setWindowBoundsFile } from './window'
 import { destroyTray, hasTray, markQuitting, syncTray } from './tray'
 import { registerFromSettings, shutdownHotkeys } from './services/hotkey'
@@ -50,6 +53,13 @@ if (dataDir.migration.from) {
     log.warn(`迁移中以下项失败（原目录保留）: ${dataDir.migration.failed.join(', ')}`)
   }
 }
+
+// ── store 单例必须在**任何 IPC 触发前**注入 ──
+// settings / notes 服务用无参 getStoreService() 拿单例；如果不在这里显式注入，
+// 单例会以 ':memory:' 被抢先创建，之后所有连接/设置读写全部落到内存库上 ——
+// 重启即丢，用户看到的就是「配置全部丢失」。这是真实发生过的线上故障。
+const paths0 = getAppPaths()
+importLegacyReferenceStores(getStoreService(paths0.dbFile).db, dirname(paths0.userData))
 
 // 硬件加速**只能在 ready 之前**设置（ready 之后再调是空操作，用户会以为设置没生效）。
 // 这里读过一次设置；读失败会退回默认（开启），绝不让一个显示设置阻止启动。

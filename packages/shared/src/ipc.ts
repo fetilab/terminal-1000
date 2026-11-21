@@ -111,6 +111,8 @@ export const Actions = {
     // 本机文件对话框与默认程序打开（Electron 32+ 渲染层拿不到 File.path，必须主进程做）
     'pickLocalPath',
     'openPath',
+    // kitty 内核的 wasm 字节（渲染层 Worker 需要它才能实例化；打包后不在 node_modules 里）
+    'kittyWasm',
   ] as const,
 
   store: [

@@ -47,7 +47,8 @@ const THEME_OPTIONS: readonly SelectOption[] = [
 
 export const SECTION_META: Record<SettingsSection, { label: string; icon: string; blurb: string }> = {
   app: { label: '外观与通用', icon: 'eye', blurb: '主题、语言与启动行为' },
-  terminal: { label: '终端行为', icon: 'terminal', blurb: '字体、光标、回看与编码' },
+  terminal: { label: '终端行为', icon: 'terminal', blurb: '复制粘贴、回看、响铃与链接' },
+  termStyle: { label: '终端美化', icon: 'palette', blurb: '渲染内核、字体、光标、配色与内边距' },
   highlights: { label: '高亮规则', icon: 'zap', blurb: '正则规则，命中的文本按规则着色' },
   hotkeys: { label: '快捷键', icon: 'sliders', blurb: '应用内与全局快捷键绑定' },
   completion: { label: '命令补全', icon: 'list', blurb: '补全来源、防抖与候选上限' },
@@ -170,33 +171,6 @@ export const SETTINGS_FIELDS: Record<
   ],
 
   terminal: [
-    {
-      path: 'terminal.zebraStripes',
-      label: '行间斑马纹',
-      kind: 'switch',
-      hint: '交替行浅底色，便于横向读数；**仅 DOM 渲染器可用**（不支持时终端状态栏会说明）',
-    },
-    {
-      path: 'terminal.fontFamily',
-      label: '字体',
-      kind: 'text',
-      wide: true,
-      hint: 'CSS font-family 列表，按顺序回退',
-    },
-    { path: 'terminal.fontSize', label: '字号 (px)', kind: 'number', min: 8, max: 32, step: 1 },
-    { path: 'terminal.lineHeight', label: '行高倍数', kind: 'number', min: 1, max: 2, step: 0.05 },
-    { path: 'terminal.letterSpacing', label: '字距 (px)', kind: 'number', min: -2, max: 4, step: 0.5 },
-    {
-      path: 'terminal.cursorStyle',
-      label: '光标形状',
-      kind: 'select',
-      options: [
-        { value: 'block', label: '方块' },
-        { value: 'underline', label: '下划线' },
-        { value: 'bar', label: '竖线' },
-      ],
-    },
-    { path: 'terminal.cursorBlink', label: '光标闪烁', kind: 'switch' },
     { path: 'terminal.copyOnSelect', label: '选中即复制', kind: 'switch' },
     { path: 'terminal.rightClickPaste', label: '右键粘贴', kind: 'switch' },
     { path: 'terminal.scrollback', label: '回看行数', kind: 'number', min: 100, max: 200000, step: 1000, hint: '越大越占内存' },
@@ -210,6 +184,54 @@ export const SETTINGS_FIELDS: Record<
         { value: 'visual', label: '视觉闪烁' },
       ],
     },
+    { path: 'terminal.linkDetection', label: '识别终端内链接', kind: 'switch' },
+  ],
+
+  // 0.2.0 新增：终端美化独立分区。视觉相关的所有项都收拢在这里，
+  // 改任何一项都会热更新到已打开的终端，无需重连。
+  termStyle: [
+    {
+      path: 'terminal.renderer',
+      label: '渲染内核',
+      kind: 'select',
+      caution: true,
+      options: [
+        { value: 'kitty', label: 'kitty 内核 + WebGL2（默认）' },
+        { value: 'xterm', label: '传统 xterm' },
+      ],
+      hint: 'kitty 内核支持 Kitty 键盘/图形协议与五种下划线样式；个别环境渲染异常时自动回落 xterm，也可在此手动切回',
+    },
+    { path: 'terminal.fontFamily', label: '字体', kind: 'text', wide: true, hint: 'CSS font-family 列表，按顺序回退；emoji/Nerd Font 由系统自动补齐' },
+    { path: 'terminal.fontSize', label: '字号 (px)', kind: 'number', min: 8, max: 32, step: 1 },
+    { path: 'terminal.lineHeight', label: '行高倍数', kind: 'number', min: 1, max: 2, step: 0.05 },
+    { path: 'terminal.letterSpacing', label: '字距 (px)', kind: 'number', min: -2, max: 4, step: 0.5 },
+    { path: 'terminal.fontWeight', label: '常规字重', kind: 'number', min: 100, max: 900, step: 50, hint: '可变字体生效；静态字体只有 400/700 两档' },
+    { path: 'terminal.boldWeight', label: '粗体字重', kind: 'number', min: 100, max: 900, step: 50 },
+    { path: 'terminal.ligatures', label: '连字', kind: 'switch', hint: '-> => != === 等自动成形；仅 kitty 内核' },
+    {
+      path: 'terminal.cursorStyle',
+      label: '光标形状',
+      kind: 'select',
+      options: [
+        { value: 'block', label: '方块' },
+        { value: 'underline', label: '下划线' },
+        { value: 'bar', label: '竖线' },
+      ],
+    },
+    {
+      path: 'terminal.cursorInactiveStyle',
+      label: '失焦光标形状',
+      kind: 'select',
+      options: [
+        { value: 'outline', label: '空心' },
+        { value: 'block', label: '方块' },
+        { value: 'underline', label: '下划线' },
+        { value: 'bar', label: '竖线' },
+        { value: 'none', label: '隐藏' },
+      ],
+    },
+    { path: 'terminal.cursorBlink', label: '光标闪烁', kind: 'switch' },
+    { path: 'terminal.cursorOpacity', label: '光标不透明度', kind: 'number', min: 0.1, max: 1, step: 0.05 },
     {
       path: 'terminal.colorScheme',
       label: '配色主题',
@@ -221,7 +243,14 @@ export const SETTINGS_FIELDS: Record<
         { value: 'high-contrast', label: '高对比' },
       ],
     },
-    { path: 'terminal.linkDetection', label: '识别终端内链接', kind: 'switch' },
+    { path: 'terminal.padding', label: '内边距 (px)', kind: 'number', min: 0, max: 32, step: 1 },
+    { path: 'terminal.backgroundOpacity', label: '终端背景不透明度', kind: 'number', min: 0.1, max: 1, step: 0.05, hint: '调低可透出窗口背景/背景图' },
+    { path: 'terminal.selectionBackground', label: '选区底色', kind: 'text', hint: '十六进制颜色，如 #3ec9d6；留空用配色方案默认' },
+    { path: 'terminal.selectionForeground', label: '选区文字色', kind: 'text', hint: '留空保持文字原色' },
+    { path: 'terminal.underlineColor', label: '下划线颜色', kind: 'text', hint: '留空跟随文字色' },
+    { path: 'terminal.wheelMultiplier', label: '滚轮速度', kind: 'number', min: 1, max: 10, step: 1, hint: '每次滚动的行数' },
+    { path: 'terminal.zebraStripes', label: '行间斑马纹', kind: 'switch', hint: '交替行浅底色，便于横向读数' },
+    { path: 'terminal.kittyGraphics', label: 'Kitty 图形协议', kind: 'switch', hint: '允许远端在终端里显示图片；仅 kitty 内核' },
   ],
 
   completion: [

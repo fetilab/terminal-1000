@@ -1,0 +1,289 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 terminal-1000 contributors */
+
+.qc {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.qc__search {
+  flex: 0 0 auto;
+  padding: 8px;
+  border-bottom: 1px solid var(--t1000-border);
+}
+
+.qc__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 6px 10px;
+}
+
+/* 树行 */
+.qc-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--t1000-radius-sm);
+  background: transparent;
+  color: var(--t1000-fg-muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.qc-row:hover {
+  background: var(--t1000-bg-hover);
+  color: var(--t1000-fg);
+}
+
+.qc-row--active {
+  background: var(--t1000-accent-softer);
+  border-color: var(--t1000-border-accent);
+  color: var(--t1000-fg);
+}
+
+/* 拖拽落点提示：明确插到哪一行的位置上 */
+.qc-row--drop-before {
+  box-shadow: inset 0 2px 0 0 var(--t1000-accent);
+}
+
+.qc-row--drop-into {
+  background: var(--t1000-accent-soft);
+  border-color: var(--t1000-accent);
+}
+
+.qc-row__twisty {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--t1000-fg-faint);
+}
+
+.qc-row__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qc-row__count {
+  flex: 0 0 auto;
+  color: var(--t1000-fg-faint);
+  font-size: 10.5px;
+}
+
+/* 多行命令的标记：让别人一眼看出"这条会发多行" */
+.qc-row__multi {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-info);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.qc-row__param {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-accent-soft);
+  color: var(--t1000-accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 14px;
+}
+
+.qc__empty {
+  padding: 22px 14px;
+  color: var(--t1000-fg-faint);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+/* ── 编辑器 ───────────────────────────────────────── */
+
+.qc-edit__param-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 24px;
+  padding: 6px 8px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-sunken);
+}
+
+.qc-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--t1000-radius-pill);
+  font-size: 11px;
+  font-family: var(--t1000-font-mono);
+}
+
+.qc-tag--param {
+  background: var(--t1000-accent-soft);
+  color: var(--t1000-accent);
+}
+
+.qc-tag--var {
+  background: var(--t1000-ok-soft);
+  color: var(--t1000-ok);
+}
+
+.qc-tag--bad {
+  background: var(--t1000-danger-soft);
+  color: var(--t1000-danger);
+}
+
+/* 变量辅助面板 */
+.qc-vars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.qc-var {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-raised);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.qc-var:hover {
+  border-color: var(--t1000-accent);
+}
+
+.qc-var__name {
+  flex: 0 0 auto;
+  font-family: var(--t1000-font-mono);
+  font-size: 11.5px;
+  color: var(--t1000-ok);
+}
+
+.qc-var__desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--t1000-fg-muted);
+  font-size: 11.5px;
+}
+
+.qc-var__value {
+  flex: 0 0 auto;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--t1000-font-mono);
+  font-size: 11px;
+  color: var(--t1000-fg-dim);
+}
+
+.qc-var__value--none {
+  color: var(--t1000-fg-faint);
+}
+
+/* 渲染预览 */
+.qc-preview {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-sunken);
+  font-family: var(--t1000-font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow: auto;
+}
+
+/* ── 参数填写窗 ───────────────────────────────────── */
+
+.qc-param-row {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.qc-param-row__name {
+  font-family: var(--t1000-font-mono);
+  font-size: 12px;
+  color: var(--t1000-accent);
+}
+
+.qc-param-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.qc-param-history button {
+  padding: 1px 7px;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-bg-raised);
+  color: var(--t1000-fg-muted);
+  font-family: var(--t1000-font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.qc-param-history button:hover {
+  border-color: var(--t1000-accent);
+  color: var(--t1000-accent);
+}
+
+/* ── OpenSSH 导入 ─────────────────────────────────── */
+
+.sshimp__list {
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+}
+
+.sshimp__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 64px;
+  gap: 10px;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  border-bottom: 1px solid color-mix(in srgb, var(--t1000-border) 45%, transparent);
+}
+
+.sshimp__row:nth-child(odd) {
+  background: color-mix(in srgb, var(--t1000-bg-hover) 40%, transparent);
+}
+
+.sshimp__row--bad {
+  color: var(--t1000-danger);
+}

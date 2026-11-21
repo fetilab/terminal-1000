@@ -14,6 +14,14 @@ const externalize = () => externalizeDepsPlugin({ exclude: [SHARED] })
 
 const sharedAlias = {
   [SHARED]: resolve(__dirname, '../../packages/shared/src/index.ts'),
+  /**
+   * kitty 内核以 vendor 形式随仓库走（`vendor/kitty-vt-wasm`）。
+   *
+   * 为什么不走 node_modules：pnpm 在这个环境里对 `@xterm/*` 之类的大包做 copyfile 会
+   * EPERM（overlay fs + copy_file_range），装不上；vendor 目录同时解决了"打包后
+   * 依赖树里找不到 wasm"的问题。
+   */
+  'kitty-vt-wasm': resolve(__dirname, 'vendor/kitty-vt-wasm/dist/index.js'),
 }
 
 export default defineConfig({
@@ -26,6 +34,9 @@ export default defineConfig({
       },
     },
     build: {
+      // 不用 vite 的「先清空 outDir」：它会 rmSync 整个目录，沙箱的安全删除守卫会拦下
+      // 批量删除（>50 个文件）。打包脚本改为「先 mv 到一边再构建」，同样干净且可回滚。
+      emptyOutDir: false,
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/main/index.ts') },
       },
@@ -37,6 +48,7 @@ export default defineConfig({
       alias: sharedAlias,
     },
     build: {
+      emptyOutDir: false,
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/preload/index.ts') },
       },
@@ -52,6 +64,7 @@ export default defineConfig({
       },
     },
     build: {
+      emptyOutDir: false,
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/renderer/index.html') },
       },

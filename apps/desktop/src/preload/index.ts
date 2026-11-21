@@ -18,6 +18,8 @@ export interface T1000Bridge {
   on(event: string, listener: (payload: never) => void): Unsubscribe
   /** 平台信息（同步可得，避免首屏闪烁） */
   platform: NodeJS.Platform
+  /** 仅当主进程带 --t1000-testhook 启动时为 true（自动化验收用） */
+  readonly testHook?: boolean
 }
 
 const bridge: T1000Bridge = {
@@ -36,6 +38,8 @@ const bridge: T1000Bridge = {
   },
 
   platform: process.platform,
+  /** 仅当主进程带 --t1000-testhook 启动时为 true（自动化验收用） */
+  testHook: process.argv.includes('--t1000-testhook'),
 }
 
 contextBridge.exposeInMainWorld('t1000', bridge)

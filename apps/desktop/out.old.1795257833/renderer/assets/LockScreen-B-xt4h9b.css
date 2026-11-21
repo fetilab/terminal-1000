@@ -1,0 +1,85 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 terminal-1000 contributors */
+
+/* 锁定后：底层应用整体不可见（不绘制、不可聚焦、不泄露数据） */
+.app-shell--locked {
+  visibility: hidden;
+}
+
+/*
+ * 遮罩：完全不透明。
+ * 刻意**不用**半透明 + 模糊 —— 那只是"看不清"，不是"看不到"，
+ * 而锁屏的威胁模型正是"旁边有人看一眼屏幕"。
+ */
+.lockscreen {
+  position: fixed;
+  inset: 0;
+  z-index: var(--t1000-z-toast);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--t1000-bg);
+}
+
+.lockscreen__card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 26px 20px;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius-lg);
+  background: var(--t1000-bg-panel);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 34%);
+}
+
+.lockscreen__brand {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.lockscreen__logo {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: var(--t1000-radius-md);
+  background: var(--t1000-accent-softer);
+  color: var(--t1000-accent);
+}
+
+.lockscreen__title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--t1000-fg);
+}
+
+.lockscreen__sub {
+  margin-top: 2px;
+  color: var(--t1000-fg-dim);
+  font-size: 12px;
+}
+
+.lockscreen__hint {
+  color: var(--t1000-fg-muted);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+
+.lockscreen__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lockscreen__foot {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--t1000-border);
+  color: var(--t1000-fg-faint);
+  font-size: 11px;
+}

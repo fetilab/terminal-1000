@@ -17,7 +17,14 @@
 
 import type { ConnectionKind, MonitorSnapshot } from '@t1000/shared'
 import { seedDemo } from './demo-seed'
-import { actions, applySnapshot, getState, setState, type ViewId } from './store'
+import {
+  actions,
+  applySnapshot,
+  getState,
+  setState,
+  loadConnections,
+  type ViewId,
+} from './store'
 
 const DEMO_SESSION_ID = 'demo-session-0001'
 
@@ -130,6 +137,21 @@ function demoSnapshot(processCount = 300): MonitorSnapshot {
 }
 
 export interface T1000TestHook {
+  /**
+   * 挂一个独立的 kitty 引擎画演示内容（真实内核 + 真实渲染器）。
+   *
+   * 用途：在没有 PTY / 没有 SSH 主机的环境里验证渲染链路本身 ——
+   * 颜色、宽字符、emoji、下划线样式、选区、光标，全都能用同一份 ANSI 复现。
+   */
+  kittyDemo(options?: { width?: number; height?: number; ansi?: string }): Promise<{ backend: string }>
+  /** 用真实 IPC 存一条连接并连上去（返回 tabId），用于端到端验收 */
+  connectTest(conn: {
+    name: string
+    host: string
+    port: number
+    username: string
+    password: string
+  }): Promise<string>
   version: string
   getState(): ReturnType<typeof getState>
   setView(view: ViewId): void
@@ -144,7 +166,62 @@ export interface T1000TestHook {
 
 function install(): void {
   const hook: T1000TestHook = {
-    version: '1.0.0',
+    version: '2.0.0',
+    kittyDemo: async (options) => {
+      const { KittyEngine } = await import('../features/terminal/kitty/engine')
+      const host = document.createElement('div')
+      host.id = 'kitty-demo'
+      host.style.position = 'fixed'
+      host.style.left = '0'
+      host.style.top = '0'
+      host.style.width = `${options?.width ?? 900}px`
+      host.style.height = `${options?.height ?? 560}px`
+      host.style.zIndex = '99999'
+      host.style.background = '#0d0f14'
+      document.body.appendChild(host)
+      const st = getState().terminalSettings
+      const engine = new KittyEngine({
+        host,
+        sessionId: `demo-${Date.now()}`,
+        kind: 'local',
+        settings: st,
+        resolvedTheme: 'dark',
+        onWrite: () => undefined,
+      })
+      await engine.open()
+      const demo =
+        options?.ansi ??
+        [
+          '\x1b[1;38;2;62;201;214mterminal-1000\x1b[0m \x1b[2m· kitty VT 内核 + 自绘 WebGL2\x1b[0m',
+          '',
+          '\x1b[1m粗体\x1b[0m  \x1b[3m斜体\x1b[0m  \x1b[4m下划线\x1b[0m  \x1b[4:2m双线\x1b[0m  \x1b[4:3m波浪\x1b[0m  \x1b[4:5m虚线\x1b[0m  \x1b[9m删除\x1b[0m',
+          '\x1b[31m红\x1b[0m \x1b[32m绿\x1b[0m \x1b[33m黄\x1b[0m \x1b[34m蓝\x1b[0m \x1b[35m品红\x1b[0m \x1b[36m青\x1b[0m \x1b[38;2;255;140;0m真彩橙\x1b[0m',
+          '宽字符：中文对齐测试｜ＡＢＣ｜emoji 👍🚀 与半角混排 abc',
+          '连字：-> => != === >= :: | 对齐',
+          '256 色：\x1b[38;5;196m红\x1b[0m\x1b[38;5;46m绿\x1b[0m\x1b[38;5;21m蓝\x1b[0m\x1b[38;5;226m黄\x1b[0m \x1b[48;5;238m 背景 \x1b[0m',
+          '',
+          '\x1b[32m➜\x1b[0m \x1b[36m~/project\x1b[0m git:(\x1b[31mmain\x1b[0m) \x1b[33mnpm run build\x1b[0m',
+          'vite v5.4.21 building for production...',
+          '\x1b[32m✓\x1b[0m 993 modules transformed.',
+          '\x1b[32m✓\x1b[0m built in 9.49s',
+          '',
+          '$ █',
+        ].join('\r\n')
+      engine.write(demo)
+      ;(window as unknown as { __kittyDemoEngine?: unknown }).__kittyDemoEngine = engine
+      return { backend: engine.backendLabel }
+    },
+    connectTest: async (conn) => {
+      const { invoke } = await import('./ipc')
+      const full = { ...conn, id: `test-${Date.now()}`, kind: 'ssh' as const, groupId: null }
+      await invoke('store', 'saveConnection', full as never)
+      await loadConnections(true)
+      const { connectTo, getConnection } = await import('./store')
+      const saved = getConnection(full.id)
+      if (!saved) throw new Error('保存连接失败')
+      const tab = await connectTo(saved)
+      return (tab as unknown as { tabId: string }).tabId
+    },
     getState,
     setView: (view) => actions.setView(view),
     setProtocol: (protocol) => actions.setProtocol(protocol),

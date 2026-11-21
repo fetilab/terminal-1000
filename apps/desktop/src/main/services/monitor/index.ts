@@ -13,6 +13,7 @@
 
 import { z } from 'zod'
 import { join } from 'node:path'
+import type { SFTPWrapper } from 'ssh2'
 import { Events, type AgentProbeInfo } from '@t1000/shared'
 import { AppError } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
@@ -31,6 +32,35 @@ export function shutdownMonitor(): void {
   collector?.dispose()
   collector = null
   agentService = null
+}
+
+/**
+ * 把一段字节写到远端文件（SFTP）。
+ *
+ * 监控代理是 5MB 级的静态二进制，没法用 base64 + heredoc 过命令行（ARG_MAX 约 2MB），
+ * 所以走 SFTP 写文件流。写完由远端 `chmod + mv` 原子激活 —— 中途断开也不会
+ * 留下一个"看起来存在、其实是半个文件"的可执行文件。
+ */
+async function putRemoteFile(
+  sessionId: string,
+  remotePath: string,
+  data: Buffer,
+  mode: number,
+): Promise<void> {
+  const { client } = requireSessionOrThrow(sessionId)
+  const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
+    client.sftp((err, handle) => (err ? reject(err) : resolve(handle)))
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const stream = sftp.createWriteStream(remotePath, { mode, autoClose: true })
+      stream.on('close', () => resolve())
+      stream.on('error', reject)
+      stream.end(data)
+    })
+  } finally {
+    sftp.end()
+  }
 }
 
 function requireSessionOrThrow(sessionId: string): ReturnType<typeof requireSession> {
@@ -87,6 +117,7 @@ function getAgentService(ctx: IpcContext): AgentService {
     (sessionId, command, timeoutMs) =>
       requireSessionOrThrow(sessionId).exec(command, timeoutMs === undefined ? undefined : { timeoutMs }),
     new AgentPrefs(join(ctx.paths.userData, 'monitor-agents.json')),
+    (sessionId, remotePath, data, mode) => putRemoteFile(sessionId, remotePath, data, mode),
   )
   return agentService
 }

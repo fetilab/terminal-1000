@@ -40,8 +40,23 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'terminal.scrollback': '同上（term.options.scrollback）',
   'terminal.bell': 'TerminalPane onBell + VNC 查看器 BELL → sound 时发声、visual 时提示',
   'terminal.colorScheme': 'TerminalPane themeFor() → 三套内置配色，热切换',
-  'terminal.zebraStripes': 'TerminalPane → .term-zebra 交替行底色；**运行时检测渲染器**，非 DOM 时在状态栏如实说明不可用',
-  'terminal.linkDetection': 'TerminalPane 挂/卸 WebLinksAddon（热开关）',
+  'terminal.zebraStripes': 'TerminalPane → .term-zebra 交替行底色；kitty 渲染器 GPU 侧支持，xterm 仅 DOM 渲染器支持，运行时检测',
+  'terminal.linkDetection': 'TerminalPane 挂/卸 WebLinksAddon（热开关）；kitty 后端由引擎自行识别链接',
+
+  // ── 终端美化（0.2.0 新分区；消费点在 kitty 引擎与 TerminalPane） ──
+  'terminal.renderer': 'TerminalPane 创建终端时选择后端：kitty（kitty-vt 内核 + WebGL2/Canvas 自绘）或 xterm；运行异常自动回落',
+  'terminal.fontWeight': 'kitty 渲染器 GlyphAtlas fontOf() 常规字重；xterm 后端消费于 term.options（由 fontFamily 权重语法承载）',
+  'terminal.boldWeight': 'kitty 渲染器 GlyphAtlas 粗体字重',
+  'terminal.ligatures': 'kitty 渲染器 buildRow ligatureRun + GlyphAtlas.hasLigature',
+  'terminal.cursorInactiveStyle': 'kitty 引擎失焦时切换光标形状（hollow/outline 等）',
+  'terminal.cursorOpacity': 'kitty 渲染器 drawCursor 的 alpha；xterm 由主题 cursor 颜色承载',
+  'terminal.padding': 'kitty 渲染器 fit()/CSS padding；xterm 后端由 .xterm 容器 padding 承载',
+  'terminal.backgroundOpacity': 'kitty 渲染器 clear 颜色 alpha 与画布背景',
+  'terminal.selectionBackground': 'kitty 渲染器 selectionAt → theme.selectionBg；xterm 后端消费于 theme.selectionBackground',
+  'terminal.selectionForeground': 'kitty 渲染器选中行文字色；xterm 后端 theme.selectionForeground',
+  'terminal.underlineColor': 'kitty 渲染器 buildRow 装饰线 decoColor',
+  'terminal.wheelMultiplier': 'kitty 渲染器滚轮 → viewport 滚动行数',
+  'terminal.kittyGraphics': 'kitty 引擎 onEvent 图形命令开关（关闭时忽略 _G 载荷）',
 
   // ── 命令补全（消费点在主进程引擎） ──
   'completion.enabled': 'main services/completion/engine.ts（开关）',

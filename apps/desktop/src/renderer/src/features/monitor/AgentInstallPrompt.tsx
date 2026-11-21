@@ -68,7 +68,8 @@ export function AgentInstallPrompt(): React.JSX.Element | null {
           <li>
             <Icon name="folder" size={13} />
             <span>
-              位置：<code>~/.t1000-monitor/agent.py</code>（单文件 Python 3 脚本，只用标准库，约 500 行）
+              位置：<code>~/.t1000-monitor/t1000-agent</code>（单文件<strong>静态二进制</strong>，约 5 MiB，
+              不依赖 python、glibc 或任何运行时）
             </span>
           </li>
           <li>
@@ -95,14 +96,17 @@ export function AgentInstallPrompt(): React.JSX.Element | null {
           </span>
         </div>
 
-        {ask.pythonPath === null ? (
+        {ask.arch === null ? (
           <div className="agent-ask__note agent-ask__note--warn">
             <Icon name="alert-triangle" size={13} />
-            <span>这台服务器上没有找到 python3，暂时只能继续用脚本模式。</span>
+            <span>
+              服务器架构 <code>{ask.machine ?? '未知'}</code> 暂时没有随包提供的代理，只能继续用脚本模式。
+            </span>
           </div>
         ) : (
           <div className="agent-ask__path">
-            将使用 <code>{ask.pythonPath}</code> · 代理版本 v{ask.agentVersion}
+            将上传内置的 <code>linux/{ask.arch}</code> 静态二进制（约 5 MiB，无需 python / glibc）· 代理版本 v
+            {ask.agentVersion}
           </div>
         )}
       </div>

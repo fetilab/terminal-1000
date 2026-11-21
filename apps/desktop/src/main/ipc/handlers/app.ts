@@ -2,6 +2,8 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 import { app, BrowserWindow, dialog, shell } from 'electron'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { AppError, parseInput } from '../../errors'
 import type { IpcHandler } from '../router'
@@ -54,10 +56,49 @@ const pingManySchema = z.object({
   concurrency: z.number().int().positive().max(256).optional(),
 })
 
+/**
+ * 定位 kitty 内核的 wasm。
+ *
+ * 两种运行形态：
+ * - 开发：`apps/desktop/vendor/kitty-vt-wasm/dist/kitty-vt.wasm`（仓库内，随源码走）；
+ * - 打包：`<resources>/kitty-vt.wasm`（electron-builder 的 extraResources 拷进去）。
+ *
+ * 用「逐个候选探测」而不是写死路径：asar 内的 `__dirname` 层级在 dev/prod 不一致，
+ * 任何一处写死都会在另一种形态下变成"内核加载失败"。
+ */
+function kittyWasmPath(): string | null {
+  const candidates: string[] = []
+  if (process.resourcesPath) candidates.push(join(process.resourcesPath, 'kitty-vt.wasm'))
+  candidates.push(join(app.getAppPath(), 'vendor', 'kitty-vt-wasm', 'dist', 'kitty-vt.wasm'))
+  let dir = __dirname
+  for (let i = 0; i < 6; i += 1) {
+    candidates.push(join(dir, 'vendor', 'kitty-vt-wasm', 'dist', 'kitty-vt.wasm'))
+    candidates.push(join(dir, 'apps', 'desktop', 'vendor', 'kitty-vt-wasm', 'dist', 'kitty-vt.wasm'))
+    dir = dirname(dir)
+  }
+  for (const c of candidates) {
+    if (existsSync(c)) return resolve(c)
+  }
+  return null
+}
+
 /** 只允许打开 http/https/mailto，避免被当作任意协议处理器 */
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
 
 export const appHandlers: Record<string, IpcHandler> = {
+  /**
+   * 返回 kitty 内核的 wasm 字节（base64）。
+   *
+   * 为什么不让 Worker 自己 `fetch()`：打包后页面是 `file://`，`fetch` 会被同源策略挡掉；
+   * 走主进程读盘再交给 Worker，是在两种形态下都稳定的一条路。
+   */
+  kittyWasm: () => {
+    const file = kittyWasmPath()
+    if (!file) throw new AppError('NOT_FOUND', '找不到 kitty 内核（kitty-vt.wasm），安装包可能不完整')
+    const buf = readFileSync(file)
+    return { base64: buf.toString('base64'), bytes: buf.byteLength, path: file }
+  },
+
   getInfo: () => ({
     name: app.getName(),
     version: app.getVersion(),

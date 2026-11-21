@@ -79,6 +79,51 @@ export interface TerminalSettings {
   colorScheme: string
   /** 终端内超链接可点击 */
   linkDetection: boolean
+
+  // ── 渲染与美化（0.2.0 起） ─────────────────────────────
+
+  /**
+   * 渲染后端。
+   *
+   * - `kitty`：kitty 的 VT 内核（kitty-vt-wasm，在 Worker 里跑）+ 自绘 WebGL2 渲染器；
+   * - `xterm`：旧的 xterm.js 引擎，作为兜底保留（WebGL 不可用/内核加载失败时自动回落）。
+   */
+  renderer: 'kitty' | 'xterm'
+  /** 常规字重（100–900，实际效果取决于字体是否有对应字面） */
+  fontWeight: number
+  /** 粗体字重 */
+  boldWeight: number
+  /** OpenType 特性，例如 `ss01`、`calt`、`zero` */
+  fontFeatures: string[]
+  /** 连字（`liga`/`calt`）。仅 kitty 渲染器生效，按「整行同一样式」成段成形 */
+  ligatures: boolean
+  /** 终端内边距（CSS px，四边相同） */
+  padding: number
+  /** 背景不透明度（0–1，1 = 不透明） */
+  backgroundOpacity: number
+  /** 光标不透明度（0–1） */
+  cursorOpacity: number
+  /** 失焦时的光标形状 */
+  cursorInactiveStyle: 'outline' | 'block' | 'beam' | 'underline' | 'none'
+  /** 滚轮倍率（一格滚几行） */
+  wheelMultiplier: number
+  /** 选区背景色 `#RRGGBB` */
+  selectionBackground: string
+  /** 选区前景色 `#RRGGBB` */
+  selectionForeground: string
+  /** 下划线颜色 `#RRGGBB`；空串表示跟随前景色 */
+  underlineColor: string
+  /** kitty 图形协议（在终端里显示图片） */
+  kittyGraphics: boolean
+  /** 16 色调色板，`#RRGGBB` × 16（顺序同 ANSI：black,red,green,yellow,blue,magenta,cyan,white, bright×8） */
+  palette: string[]
+  /**
+   * 向 PTY 申请的 `TERM`。
+   *
+   * `xterm-kitty` 才会让远端启用 kitty 键盘协议（CSI u）与图形协议；
+   * 兼容性优先时可退回 `xterm-256color`。
+   */
+  termType: string
 }
 
 /** 补全系统设置 */

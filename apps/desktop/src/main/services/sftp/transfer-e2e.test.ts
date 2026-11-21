@@ -132,7 +132,8 @@ describe('★ 大文件上传（跨多个 chunk，真实字节比对）', () => 
     })
     await waitDone(engine, task.id)
 
-    expect(engine.getTask(task.id)?.state).toBe('succeeded')
+    const st = engine.getTask(task.id)
+    expect(st?.state, `download failed: ${st && 'error' in st ? String((st as { error?: unknown }).error) : 'no error field'}`).toBe('succeeded')
     expect(statSync(target).size).toBe(payload.length)
     expect(hashOfFile(target)).toBe(sha256(payload))
   })

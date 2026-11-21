@@ -61,6 +61,14 @@ extraResources:
     to: icon.png
   - from: build/tray.png
     to: tray.png
+  # 监控代理：三架构静态二进制（已 gzip）。连接时按远端 uname -m 选一份上传，
+  # 服务器上不需要 python / Go / glibc。未压缩约 5 MiB，压缩后约 2 MiB/份。
+  - from: build/agent
+    to: agent
+  # kitty VT 内核（WASM）。渲染层从主进程读它再交给 Worker：
+  # 打包后页面是 file://，Worker 里的 fetch 会被同源策略挡掉。
+  - from: vendor/kitty-vt-wasm/dist/kitty-vt.wasm
+    to: kitty-vt.wasm
 
 # 不做 npm rebuild：原生模块已由 scripts/rebuild-native.mjs 针对 Electron ABI 重建过，
 # 让 electron-builder 再跑一遍既慢又可能因为 pnpm 的符号链接布局失败
@@ -76,12 +84,23 @@ compression: maximum
 
 
 linux:
+  # **必须给目录而不是单张 PNG**：只给一张 1024x1024 时，桌面环境按自己的偏好
+  # 去找 48/64/128 尺寸，找不到就回退到缓存里旧版本留下的路径 —— 表现就是
+  # 「装了新版本，图标还是老的」。build/icons/ 里的 9 个尺寸由 scripts/gen-icons.sh
+  # 从 icon.svg 渲染，electron-builder 会把它们铺成完整的 hicolor 树。
+  icon: build/icons
   target:
     - deb
     - AppImage
     - rpm
     - pacman
     - flatpak
+# rpm / pacman 也补上安装后刷新图标缓存（与 deb 同样的原因）
+rpm:
+  afterInstall: build/after-install.sh
+pacman:
+  afterInstall: build/after-install.sh
+
 # Electron 45 需要 24.08 运行时（默认 20.08 的 glibc 跑不起来），BaseApp 提供 Electron 运行环境
 flatpak:
   runtime: org.freedesktop.Platform
@@ -100,6 +119,8 @@ flatpak:
       Categories: Network;Utility;Development;
 
 deb:
+  # 安装/升级后刷新图标缓存，否则桌面仍显示旧图标（或空白方块）
+  afterInstall: build/after-install.sh
   # 依赖由 Electron 自带，不额外引入系统库
   depends:
     - libgtk-3-0

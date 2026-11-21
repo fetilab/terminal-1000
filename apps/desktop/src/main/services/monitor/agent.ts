@@ -23,15 +23,18 @@ import { dirname } from 'node:path'
 import { getSession, requireSession } from '../session-registry'
 import {
   AGENT_DIR,
-  AGENT_HEREDOC,
   AGENT_IDLE_SECONDS,
   AGENT_LOG_PATH,
-  AGENT_SCRIPT_PATH,
-  AGENT_SOURCE,
   AGENT_STATE_PATH,
   AGENT_VERSION,
   AGENT_VERSION_PATH,
 } from './agent-source'
+import { readAgentBinary, resolveArch, type AgentArch } from './agent-binary'
+
+/** 远端可执行文件（静态二进制，不依赖 python / glibc） */
+export const AGENT_BIN_PATH = `${AGENT_DIR}/t1000-agent`
+/** 上传中的临时名：写完再原子改名，避免远端跑到半个文件 */
+const AGENT_UPLOAD_PATH = `${AGENT_BIN_PATH}.upload`
 
 /** 探测/安装的超时 */
 const PROBE_TIMEOUT_MS = 8_000
@@ -59,9 +62,13 @@ export interface AgentState {
 }
 
 export interface AgentProbe {
-  /** 远端 python3 的路径；null 表示服务器没有 python3 */
-  pythonPath: string | null
-  /** 代理文件与 VERSION 都在 */
+  /** 远端 `uname -m` 原样（amd64 / aarch64 / armv7l …） */
+  machine: string | null
+  /** 映射到内置产物后的架构；null = 这个架构没有随包提供 */
+  arch: AgentArch | null
+  /** 远端 $HOME：上传与启动都用它拼绝对路径 */
+  home: string | null
+  /** 二进制与 VERSION 都在 */
   installed: boolean
   version: string | null
   /** 代理自己写的状态文件（端口 / token / pid） */
@@ -78,21 +85,18 @@ export interface AgentProbe {
  */
 export function agentProbeCommand(): string {
   return [
-    `P=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)`,
-    `printf 'T1000_PY:%s\\n' "$P"`,
-    `printf 'T1000_VER:'; cat "${AGENT_VERSION_PATH}" 2>/dev/null || printf 'none'; printf '\\n'`,
+    `printf 'T1000_MACHINE:'; uname -m 2>/dev/null || printf 'unknown'; printf '\\n'`,
+    `printf 'T1000_HOME:%s\\n' "$HOME"`,
+    `printf 'T1000_VER:'; "${AGENT_BIN_PATH}" -version 2>/dev/null || cat "${AGENT_VERSION_PATH}" 2>/dev/null || printf 'none'; printf '\\n'`,
     `printf 'T1000_STATE:'; cat "${AGENT_STATE_PATH}" 2>/dev/null || printf '{}'; printf '\\n'`,
     `printf 'T1000_END\\n'`,
   ].join('\n')
 }
 
-/** 安装命令：heredoc 写文件，不依赖 SFTP 子系统，也不需要 sudo */
-export function agentInstallCommand(): string {
+/** 上传完成后的激活：加执行位 → 原子改名 → 写版本号 */
+export function agentActivateCommand(): string {
   return [
-    `mkdir -p "${AGENT_DIR}" && cat > "${AGENT_SCRIPT_PATH}" <<'${AGENT_HEREDOC}'`,
-    AGENT_SOURCE,
-    AGENT_HEREDOC,
-    `chmod 700 "${AGENT_SCRIPT_PATH}" 2>/dev/null || true`,
+    `chmod 700 "${AGENT_UPLOAD_PATH}" && mv -f "${AGENT_UPLOAD_PATH}" "${AGENT_BIN_PATH}"`,
     `printf '%s' '${AGENT_VERSION}' > "${AGENT_VERSION_PATH}"`,
     `printf 'T1000_AGENT_OK\\n'`,
   ].join('\n')
@@ -109,17 +113,16 @@ export function agentInstallCommand(): string {
  *   否则 SSH 通道一关，代理会被 SIGHUP 带走。
  * - 起来后轮询状态文件（最多 ~5s），把 JSON 直接带回来，省掉一次读文件往返。
  */
-export function agentStartCommand(pythonPath: string): string {
+export function agentStartCommand(): string {
   return [
     `cd "${AGENT_DIR}" || { printf 'T1000_AGENT_ERR:no-dir\\n'; exit 0; }`,
-    `PY=${shellQuote(pythonPath)}`,
+    `rm -f agent-state.json`,
     `TOKEN=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]')`,
     `[ -n "$TOKEN" ] || TOKEN=$(date +%s 2>/dev/null)$RANDOM`,
-    `rm -f agent-state.json`,
     `if command -v setsid >/dev/null 2>&1; then`,
-    `  setsid nohup "$PY" agent.py --port 0 --state agent-state.json --token "$TOKEN" --idle ${AGENT_IDLE_SECONDS} > agent.log 2>&1 < /dev/null &`,
+    `  setsid nohup ./t1000-agent -port 0 -state agent-state.json -token "$TOKEN" -idle ${AGENT_IDLE_SECONDS} > agent.log 2>&1 < /dev/null &`,
     `else`,
-    `  nohup "$PY" agent.py --port 0 --state agent-state.json --token "$TOKEN" --idle ${AGENT_IDLE_SECONDS} > agent.log 2>&1 < /dev/null &`,
+    `  nohup ./t1000-agent -port 0 -state agent-state.json -token "$TOKEN" -idle ${AGENT_IDLE_SECONDS} > agent.log 2>&1 < /dev/null &`,
     `fi`,
     `i=0`,
     `while [ $i -lt 25 ]; do [ -s agent-state.json ] && break; sleep 0.2 2>/dev/null || sleep 1; i=$((i+1)); done`,
@@ -134,7 +137,7 @@ export function agentStopCommand(pid: number, uninstall = false): string {
     `rm -f "${AGENT_STATE_PATH}"`,
   ]
   if (uninstall) {
-    lines.push(`rm -f "${AGENT_SCRIPT_PATH}" "${AGENT_VERSION_PATH}" "${AGENT_LOG_PATH}"`)
+    lines.push(`rm -f "${AGENT_BIN_PATH}" "${AGENT_UPLOAD_PATH}" "${AGENT_VERSION_PATH}" "${AGENT_LOG_PATH}"`)
     lines.push(`rmdir "${AGENT_DIR}" 2>/dev/null || true`)
   }
   lines.push(`printf 'T1000_AGENT_STOPPED\\n'`)
@@ -147,16 +150,16 @@ function shellQuote(value: string): string {
 }
 
 export function parseProbe(stdout: string): Omit<AgentProbe, 'decision'> {
-  const pyLine = stdout.split(/\r?\n/).find((l) => l.startsWith('T1000_PY:'))
-  const verLine = stdout.split(/\r?\n/).find((l) => l.startsWith('T1000_VER:'))
-  const stateLine = stdout.split(/\r?\n/).find((l) => l.startsWith('T1000_STATE:'))
+  const field = (prefix: string): string =>
+    (stdout.split(/\r?\n/).find((l) => l.startsWith(prefix)) ?? '').slice(prefix.length).trim()
 
-  const pythonPath = pyLine?.slice('T1000_PY:'.length).trim() || null
-  const versionRaw = verLine?.slice('T1000_VER:'.length).trim() ?? ''
+  const machine = field('T1000_MACHINE:') || null
+  const home = field('T1000_HOME:') || null
+  const versionRaw = field('T1000_VER:')
   const version = versionRaw && versionRaw !== 'none' ? versionRaw : null
 
   let state: AgentState | null = null
-  const rawState = stateLine?.slice('T1000_STATE:'.length).trim() ?? ''
+  const rawState = field('T1000_STATE:')
   if (rawState && rawState !== '{}') {
     try {
       const parsed = JSON.parse(rawState) as Partial<AgentState>
@@ -179,7 +182,9 @@ export function parseProbe(stdout: string): Omit<AgentProbe, 'decision'> {
   }
 
   return {
-    pythonPath,
+    machine,
+    arch: resolveArch(machine),
+    home,
     installed: version !== null,
     version,
     state,
@@ -356,6 +361,19 @@ export class AgentService {
       timeoutMs?: number,
     ) => Promise<{ stdout: string; stderr: string; code: number }>,
     private readonly prefs: AgentPrefs,
+    /**
+     * 把一段字节写到远端文件（实现走 SFTP）。
+     * 为什么不用 base64 + heredoc：二进制 5MB，base64 后 7MB，
+     * 远超命令行的 ARG_MAX（通常 2MB），根本传不过去。
+     */
+    private readonly putFile: (
+      sessionId: string,
+      remotePath: string,
+      data: Buffer,
+      mode: number,
+    ) => Promise<void> = async () => {
+      throw new Error('未提供文件上传通道')
+    },
     private readonly now: () => number = Date.now,
     /** 建立隧道通道；单测注入直连（生产走 SSH direct-tcpip） */
     private readonly openChannel: (sessionId: string, port: number) => Promise<Duplex> = (sessionId, port) =>
@@ -385,26 +403,45 @@ export class AgentService {
     }
   }
 
-  /** 安装（写入 + 启动）。返回启动后的状态；失败抛错，由 IPC 层转成可读文案。 */
+  /** 安装（上传二进制 + 启动）。返回启动后的状态；失败抛错，由 IPC 层转成可读文案。 */
   async install(sessionId: string): Promise<{ version: string; port: number; pid: number }> {
     const probe = await this.probeRemote(sessionId)
-    if (!probe.pythonPath) {
-      throw new Error('服务器上没有 python3，无法安装监控代理')
+    if (!probe.arch) {
+      throw new Error(
+        `服务器架构 ${probe.machine ?? '未知'} 没有随包提供的代理，将使用脚本模式（功能相同，刷新更粗）`,
+      )
     }
-    const res = await this.exec(sessionId, agentInstallCommand(), INSTALL_TIMEOUT_MS)
+    if (!probe.home) {
+      throw new Error('拿不到远端 $HOME，无法上传代理')
+    }
+
+    const dir = `${probe.home}/.t1000-monitor`
+    const prep = await this.exec(
+      sessionId,
+      `mkdir -p ${shellQuote(dir)} && chmod 700 ${shellQuote(dir)}`,
+      PROBE_TIMEOUT_MS,
+    )
+    if (prep.code !== 0) {
+      throw new Error(`创建目录失败：${firstLine(prep.stderr) ?? `退出码 ${prep.code}`}`)
+    }
+
+    // 先传到 .upload，再 chmod + 原子改名：远端永远不会执行到半个文件
+    await this.putFile(sessionId, `${dir}/t1000-agent.upload`, readAgentBinary(probe.arch), 0o700)
+
+    const res = await this.exec(sessionId, agentActivateCommand(), INSTALL_TIMEOUT_MS)
     if (!res.stdout.includes('T1000_AGENT_OK')) {
-      throw new Error(`代理写入失败（退出码 ${res.code}）：${firstLine(res.stderr) ?? '未知原因'}`)
+      throw new Error(`代理激活失败（退出码 ${res.code}）：${firstLine(res.stderr) ?? '未知原因'}`)
     }
     this.probeCache.delete(sessionId)
-    const runtime = await this.start(sessionId, probe.pythonPath)
+    const runtime = await this.start(sessionId)
     this.prefs.set(this.prefKey(sessionId), 'installed')
     this.blockedUntil.delete(sessionId)
     return { version: runtime.version, port: runtime.port, pid: runtime.pid }
   }
 
   /** 启动（已装但没在跑时）。 */
-  private async start(sessionId: string, pythonPath: string): Promise<Runtime> {
-    const res = await this.exec(sessionId, agentStartCommand(pythonPath), INSTALL_TIMEOUT_MS)
+  private async start(sessionId: string): Promise<Runtime> {
+    const res = await this.exec(sessionId, agentStartCommand(), INSTALL_TIMEOUT_MS)
     const state = parseState(res.stdout)
     if (!state) {
       throw new Error(
@@ -446,7 +483,7 @@ export class AgentService {
     } catch {
       return null
     }
-    if (!probe.pythonPath || !probe.installed || probe.version !== AGENT_VERSION) {
+    if (!probe.arch || !probe.installed || probe.version !== AGENT_VERSION) {
       this.blockedUntil.set(sessionId, this.now() + UNAVAILABLE_TTL_MS)
       return null
     }
@@ -468,7 +505,7 @@ export class AgentService {
       candidate.client.close()
     }
     try {
-      return await this.start(sessionId, probe.pythonPath)
+      return await this.start(sessionId)
     } catch {
       this.blockedUntil.set(sessionId, this.now() + UNAVAILABLE_TTL_MS)
       return null

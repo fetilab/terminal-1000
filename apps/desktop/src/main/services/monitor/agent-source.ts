@@ -22,10 +22,10 @@
  */
 
 /**
- * 代理版本。**改动 AGENT_SOURCE 时必须递增**：
+ * 代理版本。**改动远端代理行为时必须递增**：
  * 版本号写在远端 `agent.version` 里，桌面端据此判断要不要重新上传。
  */
-export const AGENT_VERSION = '2'
+export const AGENT_VERSION = '3.0.0'
 
 /** 远端目录（用 $HOME 而不是 ~：命令可能被非交互 shell 执行） */
 export const AGENT_DIR = '$HOME/.t1000-monitor'

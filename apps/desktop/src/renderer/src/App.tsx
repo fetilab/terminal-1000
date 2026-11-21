@@ -16,6 +16,7 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { Events } from '@t1000/shared'
 import { VaultGate } from './components/VaultGate'
+import { BrandMark } from './components/BrandMark'
 import { subscribe } from './lib/ipc'
 import { SshPrompts } from './features/terminal/SshPrompts'
 import { AgentInstallPrompt } from './features/monitor/AgentInstallPrompt'
@@ -112,7 +113,7 @@ function Rail(): React.JSX.Element {
   return (
     <nav className="rail" aria-label="功能入口">
       <div className="rail-brand" title="terminal-1000">
-        T1
+        <BrandMark size={34} />
       </div>
       {RAIL.map((entry) => item(entry, entry.view === 'console' ? sessionCount : undefined))}
       <div className="rail-spacer" />
@@ -197,11 +198,15 @@ export function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    // 自动化验证钩子只在开发构建里安装。
-    // import.meta.env.DEV 在 production 下被替换为 false，配合动态 import，
-    // 死代码消除会把整条分支连同 testhook chunk 一起删掉——
-    // 生产包里不存在能被控制台调用、往真实库里灌数据的入口。
-    if (!import.meta.env.DEV) return
+    // 自动化验证钩子的安装条件：开发构建，或主进程显式带 --t1000-testhook 启动。
+    // 生产包里没有这个启动参数时整条分支连同 testhook chunk 一起被死代码消除——
+    // 不存在能被控制台调用、往真实库里灌数据的入口。
+    const hookEnabled =
+      import.meta.env.DEV ||
+      Boolean(
+        (window as unknown as { t1000?: { testHook?: boolean } }).t1000?.testHook,
+      )
+    if (!hookEnabled) return
     let cancelled = false
     void import('./lib/testhook').then((m) => {
       if (!cancelled) m.installTestHook()

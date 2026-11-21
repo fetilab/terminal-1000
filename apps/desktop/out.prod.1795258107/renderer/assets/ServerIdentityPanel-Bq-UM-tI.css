@@ -1,0 +1,247 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 terminal-1000 contributors */
+
+.settings-body {
+  padding: 18px;
+  max-width: 940px;
+}
+
+.settings-grid {
+  gap: 16px 20px;
+}
+
+/* 开关类设置：开关在上、说明在下，成对出现才读得懂 */
+.settings-switch-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-raised);
+}
+
+/* ── 高亮规则 ─────────────────────────────────────── */
+
+.hl-preview {
+  padding: 12px 14px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-sunken);
+  margin-bottom: 18px;
+}
+
+.hl-preview__label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+  color: var(--t1000-fg-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.hl-preview__text {
+  margin: 0 0 9px;
+  font-family: var(--t1000-font-mono);
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--t1000-fg-muted);
+}
+
+.hl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hl-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-raised);
+}
+
+.hl-rule__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hl-rule__name {
+  flex: 1;
+  min-width: 0;
+}
+
+.hl-rule__flags {
+  flex: 0 0 62px;
+}
+
+.hl-rule__priority {
+  flex: 0 0 64px;
+}
+
+.hl-rule__color {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.hl-rule__color input[type='color'] {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* ── 快捷键 ───────────────────────────────────────── */
+
+.hk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-raised);
+}
+
+.hk-row__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.hk-row__name {
+  font-size: 12.5px;
+  font-weight: 550;
+}
+
+.hk-row__cmd {
+  color: var(--t1000-fg-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hk-caps {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  min-width: 120px;
+  justify-content: flex-end;
+}
+
+.hk-row__global {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  color: var(--t1000-fg-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ── 同步：传输方式摘要与服务端指纹 ─────────────────── */
+
+.synctransport-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.synctransport-summary__label {
+  color: var(--t1000-fg-dim);
+  font-size: 12px;
+}
+
+/*
+ * 指纹按 4 字符一组展示，等宽 + 加大字距：
+ * 用户要拿着它去服务器日志逐组核对，字符粘连会直接导致核对失败。
+ */
+.syncfingerprint {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--t1000-border-accent);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-accent-softer);
+}
+
+.syncfingerprint__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: var(--t1000-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.syncfingerprint__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.syncfingerprint__group {
+  padding: 3px 8px;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-raised);
+  color: var(--t1000-fg);
+  font-family: var(--t1000-font-mono);
+  font-size: 13.5px;
+  letter-spacing: 1px;
+}
+
+.synckey {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.synckey__label {
+  color: var(--t1000-fg-dim);
+  font-size: 12px;
+}
+
+.synckey__value {
+  font-family: var(--t1000-font-mono);
+  font-size: 12.5px;
+  letter-spacing: 1px;
+  color: var(--t1000-ok);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}

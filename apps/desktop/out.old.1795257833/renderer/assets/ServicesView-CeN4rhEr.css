@@ -1,0 +1,141 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 terminal-1000 contributors */
+
+.svc-body {
+  padding: 18px;
+  max-width: 900px;
+}
+
+/* 「两个口令」的并排说明卡：这是本面板最容易混淆的地方，值得单独排版 */
+.svc-passwords {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.svc-pass {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 13px 14px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-raised);
+}
+
+.svc-pass--key {
+  border-color: var(--t1000-border-accent);
+  background: var(--t1000-accent-softer);
+}
+
+.svc-pass__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.svc-pass__what {
+  color: var(--t1000-fg-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.svc-pass__warn {
+  color: var(--t1000-warn);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* 一次性令牌 */
+.svc-token {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--t1000-warn);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-warn-soft);
+}
+
+.svc-token__value {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-input);
+}
+
+.svc-token__value code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--t1000-font-mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* 客户端列表 */
+.svc-client {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-raised);
+  margin-bottom: 6px;
+}
+
+.svc-client--revoked {
+  opacity: 0.55;
+}
+
+.svc-client__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.svc-client__name {
+  font-size: 12.5px;
+  font-weight: 550;
+}
+
+.svc-client__meta {
+  color: var(--t1000-fg-faint);
+  font-size: 11px;
+  font-family: var(--t1000-font-mono);
+}
+
+/* 工具清单 */
+.svc-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.svc-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-bg-raised);
+  font-family: var(--t1000-font-mono);
+  font-size: 11px;
+  color: var(--t1000-fg-muted);
+}
+
+.svc-tool--off {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.svc-tool--sudo {
+  color: var(--t1000-warn);
+  border-color: color-mix(in srgb, var(--t1000-warn) 45%, transparent);
+}

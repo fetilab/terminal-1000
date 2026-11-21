@@ -90,6 +90,25 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   defaultEncoding: 'utf-8',
   colorScheme: 'default-dark',
   linkDetection: true,
+
+  // 0.2.0：kitty 内核 + 自绘 WebGL2。失败会自动回落 xterm（窗格会提示原因）
+  renderer: 'kitty',
+  fontWeight: 450,
+  boldWeight: 700,
+  fontFeatures: [],
+  ligatures: true,
+  padding: 6,
+  backgroundOpacity: 1,
+  cursorOpacity: 1,
+  cursorInactiveStyle: 'outline',
+  wheelMultiplier: 3,
+  selectionBackground: '#3ec9d6',
+  selectionForeground: '#0d0f14',
+  underlineColor: '',
+  kittyGraphics: true,
+  // 空数组 = 用配色方案自带的 16 色
+  palette: [],
+  termType: 'xterm-kitty',
 }
 
 export const DEFAULT_COMPLETION_SETTINGS: CompletionSettings = {
@@ -361,7 +380,7 @@ const getSchema = z.object({
 
 const resetSchema = z.object({
   /** 只重置某一棵子树；不传则全量重置 */
-  section: z.enum(['app', 'terminal', 'completion', 'highlights', 'ai', 'transfer', 'hotkeys', 'sync']).optional(),
+  section: z.enum(['app', 'terminal', 'termStyle', 'completion', 'highlights', 'ai', 'transfer', 'hotkeys', 'sync']).optional(),
 })
 
 export const settingsHandlers: Record<string, IpcHandler> = {
@@ -394,7 +413,9 @@ export const settingsHandlers: Record<string, IpcHandler> = {
 
     let next: Settings
     if (section) {
-      next = { ...getSettings(), [section]: defaults[section] } as Settings
+      // termStyle 是纯界面分区（字段都落在 terminal.* 上），重置时映射回 terminal 组
+      const group = section === 'termStyle' ? 'terminal' : section
+      next = { ...getSettings(), [group]: defaults[group] } as Settings
     } else {
       next = defaults
     }

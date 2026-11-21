@@ -21,6 +21,7 @@ import type { Connection, ConnectionGroup, Credential, WorkspaceLayout } from '@
 import { AppError } from '../../errors'
 import type { IpcHandler } from '../../ipc/router'
 import { StoreDb, type StoreEntity } from './db'
+import { importLegacyReferenceStores } from './legacy-import'
 import { Repository } from './repository'
 import {
   Vault,
@@ -668,9 +669,25 @@ export function setStoreService(instance: StoreService | null): void {
  * 从 ctx.paths 惰性解析库文件。
  * 不在模块顶层 import paths.ts，避免单测（无 Electron）加载时炸掉。
  */
-function ensureService(ctx: { paths: { dbFile: string } }): StoreService {
+function ensureService(ctx: { paths: { dbFile: string; userData?: string } }): StoreService {
   if (!service) {
     service = new StoreService(ctx.paths.dbFile)
+    // 一次性导入原产品（xterminal）的历史数据。只在真实文件库上做，
+    // 幂等由 meta 标记保证；任何异常都不能阻断启动。
+    if (ctx.paths.dbFile !== ':memory:' && ctx.paths.userData) {
+      try {
+        const report = importLegacyReferenceStores(service.db, dirname(ctx.paths.userData))
+        if (report) {
+          const n = Object.entries(report.imported)
+            .map(([k, v]) => `${k}:${v}`)
+            .join(' ')
+          if (n) console.info(`[store] 已从旧版数据导入：${n}（跳过 ${report.skipped}）`)
+          for (const e of report.errors) console.warn(`[store] 旧数据导入告警：${e}`)
+        }
+      } catch (err) {
+        console.warn('[store] 旧数据导入失败（不影响使用）：', err)
+      }
+    }
   }
   return service
 }

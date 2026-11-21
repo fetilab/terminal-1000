@@ -24,6 +24,7 @@ import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
 import type { Unicode11Addon } from '@xterm/addon-unicode11'
+import type { KittyEngine } from './kitty/engine'
 import { Events, type PublicProvider } from '@t1000/shared'
 import { Icon } from '../../components/Icon'
 import { Badge } from '../../components/Feedback'
@@ -272,6 +273,12 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [findText, setFindText] = useState('')
   const [dims, setDims] = useState<{ cols: number; rows: number } | null>(null)
+  /** kitty 引擎句柄（只有 kitty 后端时才非空） */
+  const kittyRef = useRef<KittyEngine | null>(null)
+  /** kitty 启动失败过：这一窗格钉死用 xterm，避免每次重连都再炸一遍 */
+  const kittyBrokenRef = useRef(false)
+  const [engineNonce, setEngineNonce] = useState(0)
+  const [backendLabel, setBackendLabel] = useState<string>('')
 
   /* ── 补全 ── */
   const trackerRef = useRef(new LineTracker())
@@ -450,6 +457,42 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     [completion, closeCompletion],
   )
 
+  /**
+   * 响铃。
+   *
+   * 抽成函数是因为两个后端都要用：xterm 的 `onBell` 与 kitty 内核的 `bell` 事件。
+   * 语义完全一致：设置说「不响」就一声不出，「响」放一声短促的合成音，
+   * 「闪」只闪画面边缘（不打断阅读）。
+   */
+  const ringBell = useCallback(() => {
+    const mode = termSettingsRef.current.bell
+    if (mode === 'none') return
+    if (mode === 'sound') {
+      try {
+        const Ctx =
+          window.AudioContext ??
+          (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+        if (Ctx) {
+          const ac = new Ctx()
+          const osc = ac.createOscillator()
+          const gain = ac.createGain()
+          gain.gain.value = 0.03
+          osc.frequency.value = 760
+          osc.connect(gain).connect(ac.destination)
+          osc.start()
+          osc.stop(ac.currentTime + 0.07)
+        }
+      } catch {
+        /* 发声失败无所谓 */
+      }
+      return
+    }
+    const el = hostRef.current
+    if (!el) return
+    el.classList.add('term-bell-flash')
+    window.setTimeout(() => el.classList.remove('term-bell-flash'), 160)
+  }, [])
+
   /* ── 创建终端 ─────────────────────────────────── */
   useEffect(() => {
     if (!everVisible) return
@@ -478,30 +521,82 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
 
         // 初值全部来自 settings.terminal（不再是硬编码），随后的改动由热更新 effect 负责
         const st = termSettingsRef.current
-        const term = new XTerm({
-          fontFamily: withEmojiFallback(st.fontFamily),
-          fontSize: st.fontSize,
-          lineHeight: st.lineHeight,
-          letterSpacing: st.letterSpacing,
-          cursorBlink: st.cursorBlink,
-          cursorStyle: st.cursorStyle,
-          scrollback: st.scrollback,
-          allowProposedApi: true,
-          convertEol: false,
-          macOptionIsMeta: true,
-          theme: themeFor(st.colorScheme, resolvedThemeRef.current),
-        })
-        const fit = new Fit()
-        const search = new Search()
-        // unicode11：Unicode 11 宽字符规则。必须在任何数据写入前加载——
-        // oh-my-zsh 主题的 emoji/图标宽度由它决定，缺了它 emoji 按窄字符排，
-        // 提示符从第一个 emoji 起整体错位（彩色块散落）。
-        // ⚠️ loadAddon 只**注册** provider（register 不改 activeVersion），
-        // 不显式切换的话 xterm 仍用内置 Unicode 6 表 —— 实测 ✅/⚡ 等仍按 1 格排。
-        term.loadAddon(new Unicode11())
-        term.unicode.activeVersion = '11'
-        term.loadAddon(fit)
-        term.loadAddon(search)
+        const useKitty = st.renderer !== 'xterm' && !kittyBrokenRef.current
+        // 两个后端共用同一个「引擎」变量；xterm 侧多挂几个 addon
+        let term: Terminal
+        let fit: FitAddon
+        let search: SearchAddon
+
+        if (useKitty) {
+          // ── kitty 内核 + WebGL2 渲染器 ──
+          // 失败时不能只报错：把这一窗格钉到 xterm 上重来一次（用户至少还能继续用）
+          const { KittyEngine } = await import('./kitty/engine')
+          const engine = new KittyEngine({
+            host,
+            sessionId: tab.sessionId ?? `pending-${tab.tabId}`,
+            kind: tab.kind === 'telnet' ? 'telnet' : tab.kind === 'ssh' ? 'ssh' : 'local',
+            settings: st,
+            resolvedTheme: resolvedThemeRef.current,
+            onWrite: (data) => {
+              const current = tabRef.current
+              if (!current.sessionId) return
+              const group = broadcastGroupOf(current.sessionId)
+              if (group && group.mode === 'broadcast') {
+                void sendBroadcast(group.groupId, data)
+                return
+              }
+              const domain = current.kind === 'ssh' ? 'ssh' : current.kind === 'telnet' ? 'telnet' : 'pty'
+              void invoke(domain, 'write', sessionPayload(current.kind, current.sessionId, { data })).catch(
+                (err: unknown) => {
+                  if (writeWarnedRef.current) return
+                  writeWarnedRef.current = true
+                  toast.error(`终端写入失败：${errorText(err)}`)
+                },
+              )
+            },
+            onBell: () => ringBell(),
+            onFatal: (message) => {
+              kittyBrokenRef.current = true
+              toast.warn(`kitty 渲染内核异常，已回退到 xterm：${message}`)
+              setEngineNonce((n) => n + 1)
+            },
+          })
+          await engine.open()
+          kittyRef.current = engine
+          term = engine as unknown as Terminal
+          fit = { fit: () => engine.fit() } as unknown as FitAddon
+          search = engine.searchShim as unknown as SearchAddon
+          term.element?.querySelector('.xterm-screen')?.setAttribute('data-engine', 'kitty')
+          setBackendLabel(engine.backendLabel)
+        } else {
+          term = new XTerm({
+            fontFamily: withEmojiFallback(st.fontFamily),
+            fontSize: st.fontSize,
+            lineHeight: st.lineHeight,
+            letterSpacing: st.letterSpacing,
+            cursorBlink: st.cursorBlink,
+            cursorStyle: st.cursorStyle,
+            scrollback: st.scrollback,
+            allowProposedApi: true,
+            convertEol: false,
+            macOptionIsMeta: true,
+            theme: themeFor(st.colorScheme, resolvedThemeRef.current),
+          })
+          const fitAddon = new Fit()
+          const searchAddon = new Search()
+          // unicode11：Unicode 11 宽字符规则。必须在任何数据写入前加载——
+          // oh-my-zsh 主题的 emoji/图标宽度由它决定，缺了它 emoji 按窄字符排，
+          // 提示符从第一个 emoji 起整体错位（彩色块散落）。
+          // ⚠️ loadAddon 只**注册** provider（register 不改 activeVersion），
+          // 不显式切换的话 xterm 仍用内置 Unicode 6 表 —— 实测 ✅/⚡ 等仍按 1 格排。
+          term.loadAddon(new Unicode11())
+          term.unicode.activeVersion = '11'
+          term.loadAddon(fitAddon)
+          term.loadAddon(searchAddon)
+          fit = fitAddon
+          search = searchAddon
+          setBackendLabel('xterm')
+        }
         // 链接点击交给主进程用系统浏览器打开（app.openExternal 内置协议白名单校验），
         // 避免渲染层自己 window.open 出一个裸的 Electron 窗口。
         linksCtorRef.current = Links
@@ -514,12 +609,13 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
           })
 
         // 设置里关掉链接识别就不挂这个 addon（可热开关，见下方 effect）
-        if (st.linkDetection) {
+        // kitty 后端不装 xterm addon：链接点击由引擎自己处理
+        if (st.linkDetection && !useKitty) {
           const addon = makeLinks()
           linksAddonRef.current = addon
           term.loadAddon(addon)
         }
-        term.open(host)
+        if (!useKitty) term.open(host)
 
         termRef.current = term
         fitRef.current = fit
@@ -590,35 +686,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         cleanups.push(() => selSub.dispose())
 
         // 响铃：xterm 自己不会发声，按设置决定"出声 / 闪一下 / 不管"
-        const bellSub = term.onBell(() => {
-          const mode = termSettingsRef.current.bell
-          if (mode === 'none') return
-          if (mode === 'sound') {
-            try {
-              const Ctx =
-                window.AudioContext ??
-                (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-              if (Ctx) {
-                const ac = new Ctx()
-                const osc = ac.createOscillator()
-                const gain = ac.createGain()
-                gain.gain.value = 0.03
-                osc.frequency.value = 760
-                osc.connect(gain).connect(ac.destination)
-                osc.start()
-                osc.stop(ac.currentTime + 0.07)
-              }
-            } catch {
-              /* 发声失败无所谓 */
-            }
-            return
-          }
-          // visual：闪一下画面边缘，不打断阅读
-          const el = hostRef.current
-          if (!el) return
-          el.classList.add('term-bell-flash')
-          window.setTimeout(() => el.classList.remove('term-bell-flash'), 160)
-        })
+        const bellSub = term.onBell(ringBell)
         cleanups.push(() => bellSub.dispose())
 
         /**
@@ -734,11 +802,13 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       writer.detach()
       termRef.current?.dispose()
       termRef.current = null
+      kittyRef.current = null
+      setBackendLabel('')
       fitRef.current = null
       searchRef.current = null
       setReady(false)
     }
-  }, [everVisible, tab.tabId])
+  }, [everVisible, tab.tabId, engineNonce])
 
   const fitSafely = (host: HTMLElement, fit: FitAddon): void => {
     // 容器不可见时尺寸为 0，fit 会算出 0 列 0 行；直接跳过，等可见了再算
@@ -754,10 +824,12 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   useEffect(() => {
     const el = hostRef.current
     if (!el) return
+    // kitty 渲染器在 GPU 侧按行着色，天然支持斑马纹；
+    // xterm 只有 DOM 渲染器能画（canvas/webgl 没有逐行 DOM）
+    const kitty = Boolean(kittyRef.current)
     const rows = el.querySelector('.xterm-rows')
-    // DOM 渲染器会生成 .xterm-rows>div；canvas/webgl 用 <canvas>，没有逐行 DOM
-    setZebraSupported(Boolean(rows))
-    el.classList.toggle('term-zebra', zebra && Boolean(rows))
+    setZebraSupported(kitty || Boolean(rows))
+    el.classList.toggle('term-zebra', zebra && (kitty || Boolean(rows)))
   }, [zebra, ready])
 
   /* ── 设置热更新 ───────────────────────────────── */
@@ -767,6 +839,13 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
    * 只有 addon 需要自己挂/卸（链接识别）。
    */
   useEffect(() => {
+    const kitty = kittyRef.current
+    if (kitty) {
+      // kitty 后端：字体/字号/配色/内边距都直接改渲染器，不必重建终端
+      kitty.applySettings({ ...termCfg, fontFamily: withEmojiFallback(termCfg.fontFamily) })
+      setBackendLabel(kitty.backendLabel)
+      return
+    }
     const term = termRef.current
     if (!term) return
     term.options.fontFamily = withEmojiFallback(termCfg.fontFamily)
@@ -1292,6 +1371,9 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         ) : null}
         <div style={{ flex: 1 }} />
         <span>编码 {tab.encoding}</span>
+        {backendLabel ? (
+          <span title="当前渲染后端（设置 > 终端美化 可切换）">· {backendLabel}</span>
+        ) : null}
         {dims ? (
           <span>
             {dims.cols}×{dims.rows}
