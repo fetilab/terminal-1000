@@ -17,9 +17,8 @@ AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研�
 - 远端：`https://github.com/fetilab/terminal-1000`（public，GPL-3.0），分支 `master`
 - 本机推送走 `https://github.com:443/...`（绕开全局 insteadOf 的只读代理重写）或
   `ssh.github.com:443`（公钥已注册到 fetilab 账号）；fastgithub/gh-proxy 只能克隆不能推送
-- Release：`v0.1.2`（当前，AppImage/deb/rpm/pacman 四附件）与 `v0.1.1`、`v0.1.0`
-  （后两者六附件含 flatpak 与实验性 exe）。**flatpak 与 Windows 安装器在本容器构建不出来**，
-  原因见「已知陷阱」21–24
+- Release：`v0.1.2`（当前，六附件：AppImage/deb/rpm/pacman/flatpak/setup.exe）与 `v0.1.1`、`v0.1.0`。
+  flatpak 与 Windows 安装器都能在本容器构建，但各有前置条件，见「已知陷阱」23–24
 - 推送凭据**没有落盘**：本机无 `credential.helper`、无 `~/.git-credentials`、无 `gh` CLI。
   需要时用 `GIT_ASKPASS` 临时脚本 + 环境变量传 token，推完即弃
 - flatpak 需要 24.08 运行时 + `org.electronjs.Electron2.BaseApp`（已装，源为 USTC 镜像）
@@ -254,12 +253,30 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）
     并返回非 0。后果：`rpmbuild` 的 `%clean`/`rmbuild` 阶段失败、`flatpak-builder` 清理失败，
     表现为「包其实已经写出来了，但进程 exit 1」。判断方法是**先看产物是否存在且大小合理**，
     不要被退出码骗了；`cp -a` 想保留时间戳也会 EPERM，用 `cp -R --preserve=mode,links`。
-23. **flatpak 构建在本容器不可用**：`/var/lib/flatpak` 不可写（system 范围装不了运行时），
-    `flatpak-builder --user` 能过运行时检查，但写 OSTree 对象时 `futimens` 返回 EPERM，
-    报 `Error: Writing content object: futimens: 不允许的操作`。**这是内核/文件系统限制，不是配置问题**。
-24. **Windows 安装器在本容器不可用**：NSIS 目标要用 wine 跑一遍安装器以生成卸载器，
-    wine 10.0 在此运行该安装器稳定 `free(): invalid pointer`（有/无 X 显示都一样），
-    产物只留下一个 160KB 的残片。判断残片：`terminal-1000 Setup *.exe` 正常约 114MB。
+23. **flatpak 能出包，但要挂三处开关**（缺一即失败，报错各不相同）：
+    - `/var/lib/flatpak` 属未映射的 `nobody`（rootless userns，`uid_map` 只有 `0→1000`），
+      system 范围装不了运行时 → `flatpak-builder --user`，运行时装 user 范围
+      （`org.freedesktop.Platform/Sdk 24.08`、`org.electronjs.Electron2.BaseApp 24.08`）。
+    - 没有 `/dev/fuse` → `Failure spawning rofiles-fuse` → `--disable-rofiles-fuse`。
+    - fd 形式的 `utimensat`/`futimens` 返回 EPERM，ostree 报
+      `Writing content object: futimens: 不允许的操作` → `LD_PRELOAD` 一个把
+      `futimens`/`utimensat`/`utimes` 变成返回 0 的垫片（只牺牲可复现性，不影响包内容）。
+    - 垫片要挂在**整个 electron-builder 进程**上，因为收尾的 `flatpak build-export`
+      是它自己 spawn 的，只包 `flatpak-builder` 不够。
+24. **Windows 安装器能出包，但要绕开 32 位与 `/tmp`**：
+    - 本容器 32 位 ELF 完全跑不起来（`/lib32/ld-linux.so.2 --version` 直接 SIGSEGV，
+      `wine32-stable` 同样；`wine64` 跑 PE32 会进 experimental wow64，挂在
+      `signal_init_process failed to allocate %fs selector`，glibc 报 `free(): invalid pointer`）。
+      NSIS 安装器正是 PE32，所以 wine 路线死路。
+      绕过：`NsisTarget` 里 `isMacOsCatalina()` 为真时走纯 JS 的 `UninstallerReader.exec()`
+      （解析 PE + NSIS 签名，从首轮安装器解出卸载器），不碰 wine。用 `--require` 垫片把
+      `app-builder-lib/out/util/macosVersion.js` 的 `isMacOsCatalina` 改成 `() => true` 即可。
+    - makensis 只要暂存数据超过 ~10MB 就 **SIGBUS**：exit 135、stdout 缓冲丢失（看起来「无输出」），
+      electron-builder 报 `Exit code: null`。根因是 **`/tmp` 是 10MB tmpfs**。
+      修法：`mount -t tmpfs -o size=3g,mode=1777 tmpfs /tmp` 后再构建，且必须与构建
+      **写在同一条命令里** —— 每次工具调用是独立的 mount namespace，上一条命令里的 mount 不保留。
+      判据：8MB 输入能出包，16/32/100MB 必 SIGBUS；同一份 32MB 输入若压缩后只有 68KB 则成功，
+      说明卡的是输出/暂存量而不是输入大小。正常产物约 114MB。
 
 ---
 
