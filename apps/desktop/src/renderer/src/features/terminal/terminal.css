@@ -70,9 +70,9 @@
 /* 文件栏（左）：与终端并存而非互换；SftpBrowser 根是 .content，这里约束它的外框 */
 .term-files {
   display: flex;
-  flex: 0 0 440px;
-  min-width: 280px;
-  max-width: 45%;
+  /* 宽度由内联 style 提供（可拖动）；这里只管"不参与弹性分配"与最小可用宽度 */
+  flex: 0 0 auto;
+  min-width: 0;
   min-height: 0;
   border-right: 1px solid var(--t1000-border);
   background: var(--t1000-bg-panel);
@@ -485,7 +485,7 @@
 .term-quickcmd {
   display: flex;
   flex-direction: column;
-  flex: 0 0 286px;
+  flex: 0 0 auto;
   min-width: 0;
   min-height: 0;
   border-right: 1px solid var(--t1000-border);
@@ -519,4 +519,185 @@
 /* 「打开工具条」关闭时隐藏：spec 允许隐藏，且可用右键菜单再打开 */
 .term-toolbar--hidden {
   display: none;
+}
+
+/* ── 会话栏折叠态（44px） ──────────────────────────────────────────────
+ * 只保留「协议图标 + 状态角标」。名字、地址、状态文字全部移到悬停卡片里，
+ * 换来的是终端多出约 200px 宽度 —— 这是折叠的唯一目的。
+ */
+.panel--mini {
+  align-items: center;
+  overflow: hidden;
+}
+
+.panel-mini__head,
+.panel-mini__foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 6px 0;
+}
+
+.panel-mini__head {
+  border-bottom: 1px solid var(--t1000-border);
+  min-height: 38px;
+}
+
+.panel-mini__foot {
+  border-top: 1px solid var(--t1000-border);
+  margin-top: auto;
+}
+
+.panel-mini__empty {
+  padding: 12px 0;
+  color: var(--t1000-fg-faint);
+}
+
+.sessions-mini {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sess-mini {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--t1000-fg-dim);
+  cursor: pointer;
+  transition: background var(--t1000-fast) var(--t1000-ease),
+    color var(--t1000-fast) var(--t1000-ease);
+}
+
+.sess-mini:hover {
+  background: var(--t1000-bg-hover);
+  color: var(--t1000-fg);
+}
+
+.sess-mini--active {
+  background: var(--t1000-bg-active);
+  border-color: var(--t1000-border-accent);
+  color: var(--t1000-accent);
+}
+
+/* 状态角标：只有 6px，但位置固定（右下），扫一眼就能分辨哪台掉线了 */
+.sess-mini__dot {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--t1000-fg-faint);
+  box-shadow: 0 0 0 2px var(--t1000-bg-panel);
+}
+
+.sess-mini__dot--ok { background: var(--t1000-ok); }
+.sess-mini__dot--warn { background: var(--t1000-warn); }
+.sess-mini__dot--danger { background: var(--t1000-danger); }
+.sess-mini__dot--accent { background: var(--t1000-accent); }
+
+/* 悬停属性卡：fixed 定位，脱离面板的 overflow 裁切 */
+.sess-tip {
+  position: fixed;
+  z-index: var(--t1000-z-popover);
+  width: 236px;
+  padding: 9px 11px 10px;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-panel);
+  box-shadow: var(--t1000-shadow-2);
+  pointer-events: none;
+  animation: t1000-tip-in 120ms var(--t1000-ease);
+}
+
+@keyframes t1000-tip-in {
+  from { opacity: 0; transform: translateX(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
+.sess-tip__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.sess-tip__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--t1000-fg);
+}
+
+.sess-tip__state {
+  flex: none;
+  padding: 0 6px;
+  border-radius: var(--t1000-radius-pill);
+  background: var(--t1000-bg-hover);
+  color: var(--t1000-fg-muted);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.sess-tip__state--ok { background: var(--t1000-ok-soft); color: var(--t1000-ok); }
+.sess-tip__state--warn { background: var(--t1000-warn-soft); color: var(--t1000-warn); }
+.sess-tip__state--danger { background: var(--t1000-danger-soft); color: var(--t1000-danger); }
+.sess-tip__state--accent { background: var(--t1000-accent-soft); color: var(--t1000-accent); }
+
+.sess-tip__props {
+  margin: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.sess-tip__props > div {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+}
+
+.sess-tip__props dt {
+  color: var(--t1000-fg-faint);
+}
+
+.sess-tip__props dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t1000-fg-muted);
+}
+
+/* 监控栏外框：只负责"多宽"，内部 MonitorPanel 填满它。
+ * 分隔条已经画了竖线，这里不再加 border-left，避免双线。 */
+.term-monitor {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.term-monitor > .monitor {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-left: none;
 }

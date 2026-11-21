@@ -26,6 +26,7 @@ export type IconName =
   | 'close'
   | 'check'
   | 'chevron-down'
+  | 'chevron-up'
   | 'chevron-right'
   | 'chevron-left'
   | 'search'
@@ -64,6 +65,8 @@ export type IconName =
   | 'split-h'
   | 'split-v'
   | 'panel-right'
+  | 'panel-left'
+  | 'external'
   | 'route'
   | 'globe'
   | 'user'
@@ -118,6 +121,7 @@ const GLYPHS: Record<IconName, JSX.Element> = {
   close: <path {...S} d="M6.4 6.4l11.2 11.2M17.6 6.4L6.4 17.6" />,
   check: <path {...S} d="M5.4 12.6l4.4 4.4L18.6 7.2" />,
   'chevron-down': <path {...S} d="M6.4 9.6l5.6 5.6 5.6-5.6" />,
+  'chevron-up': <path {...S} d="M6.4 14.4l5.6-5.6 5.6 5.6" />,
   'chevron-right': <path {...S} d="M9.6 6.4l5.6 5.6-5.6 5.6" />,
   'chevron-left': <path {...S} d="M14.4 6.4L8.8 12l5.6 5.6" />,
   search: (
@@ -304,6 +308,20 @@ const GLYPHS: Record<IconName, JSX.Element> = {
     <>
       <rect {...S} x="3.4" y="5" width="17.2" height="14" rx="2.2" />
       <path {...S} d="M14.6 5v14" />
+    </>
+  ),
+  'panel-left': (
+    <>
+      <rect {...S} x="3.4" y="5" width="17.2" height="14" rx="2.2" />
+      <path {...S} d="M9.4 5v14" />
+    </>
+  ),
+  /* 交给外部程序打开：方框 + 向外的箭头。与「下载」（向下的箭头入托盘）刻意区分 */
+  external: (
+    <>
+      <path {...S} d="M13.2 4.8h6v6" />
+      <path {...S} d="M19.2 4.8l-7.6 7.6" />
+      <path {...S} d="M18.2 14.2v4.2a1.8 1.8 0 0 1-1.8 1.8H5.8A1.8 1.8 0 0 1 4 18.4V7.8A1.8 1.8 0 0 1 5.8 6h4.2" />
     </>
   ),
   route: (

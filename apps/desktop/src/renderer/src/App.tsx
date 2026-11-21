@@ -239,6 +239,13 @@ export function App(): React.JSX.Element {
 
   const view = useStoreShallow((s) => ({ view: s.view })).view
 
+  /**
+   * 会话栏折叠只对控制台生效：折叠后侧栏只有 44px，
+   * 连接中心的分组树、设置的分区列表塞不进去 —— 那些视图保持原宽，
+   * 不必为了一个视图的偏好把别的视图挤坏。
+   */
+  const panelCollapsed = useStoreShallow((s) => ({ v: s.panelCollapsed })).v
+
   const searchOpen = useStoreShallow((s) => ({ v: s.globalSearchOpen })).v
 
   /**
@@ -276,7 +283,15 @@ export function App(): React.JSX.Element {
   }, [toggleSearch])
 
   return (
-    <div className={`app-shell${lock ? ' app-shell--locked' : ''}`}>
+    <div
+      className={[
+        'app-shell',
+        lock ? 'app-shell--locked' : '',
+        view === 'console' && panelCollapsed ? 'app-shell--collapsed' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
       <Rail />
       <Suspense fallback={<aside className="panel"><Loading text="载入面板…" /></aside>}>
         <Sidebar />

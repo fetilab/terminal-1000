@@ -30,7 +30,7 @@ import { Checkbox, Field, TextInput } from '../../components/Form'
 import { Icon } from '../../components/Icon'
 import { ContextMenu, type ContextMenuItem } from '../../components/ContextMenu'
 import { Modal } from '../../components/Modal'
-import { Segmented } from '../../components/Segmented'
+import { Switch } from '../../components/Switch'
 import { toast } from '../../components/Toast'
 import { VirtualList } from '../../components/VirtualList'
 import {
@@ -78,8 +78,11 @@ import {
   dropDir,
   expandPaths,
   flattenTree,
+  filterEntries,
   isSelfOrDescendant,
   sortEntries,
+  type EntrySortDir,
+  type EntrySortKey,
   toggleExpanded,
   treeKeyIntent,
   withDir,
@@ -91,6 +94,15 @@ import './sftp.css'
 
 const LOCAL_DIR_KEY = 't1000:sftp-local-dir'
 const VIEW_KEY = 't1000:sftp-view'
+const SORT_KEY = 't1000:sftp-sort'
+
+/** 列头定义：顺序即渲染顺序，key 与 sortEntries 的 EntrySortKey 一一对应 */
+const HEAD_COLS: ReadonlyArray<{ key: EntrySortKey; label: string; align?: 'right' }> = [
+  { key: 'name', label: '名称' },
+  { key: 'size', label: '大小', align: 'right' },
+  { key: 'perm', label: '权限' },
+  { key: 'mtime', label: '修改时间' },
+]
 
 /**
  * 视图模式。列表是既有主视图，树是按需懒加载的目录导航视图；
@@ -106,6 +118,30 @@ function rememberedViewMode(): SftpViewMode {
     return localStorage.getItem(VIEW_KEY) === 'tree' ? 'tree' : 'list'
   } catch {
     return 'list'
+  }
+}
+
+/**
+ * 记住排序列与方向。选错列的代价是"每次进来都要再点一次"，
+ * 所以和视图模式一样落 localStorage，而不是只活在组件状态里。
+ */
+function rememberedSort(): { key: EntrySortKey; dir: EntrySortDir } {
+  try {
+    const raw = localStorage.getItem(SORT_KEY)
+    if (!raw) return { key: 'name', dir: 'asc' }
+    const parsed = JSON.parse(raw) as { key?: string; dir?: string }
+    const key = HEAD_COLS.some((c) => c.key === parsed.key) ? (parsed.key as EntrySortKey) : 'name'
+    return { key, dir: parsed.dir === 'desc' ? 'desc' : 'asc' }
+  } catch {
+    return { key: 'name', dir: 'asc' }
+  }
+}
+
+function rememberSort(key: EntrySortKey, dir: EntrySortDir): void {
+  try {
+    localStorage.setItem(SORT_KEY, JSON.stringify({ key, dir }))
+  } catch {
+    /* 无痕模式下忽略 */
   }
 }
 
@@ -349,6 +385,14 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   const [batchChmodOpen, setBatchChmodOpen] = useState(false)
   const [batchDownloadOpen, setBatchDownloadOpen] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
+  /** 排序：默认名称升序；换列时名称/权限取升序、大小/时间取降序（"先看最大的/最新的"） */
+  const [sort, setSort] = useState(rememberedSort)
+  /** 当前目录的名称过滤（只作用于列表，不影响树） */
+  const [filter, setFilter] = useState('')
+  /** 「⋯」浮层：视图/显示开关与低频动作都收在这里，工具条只留高频项 */
+  const [moreOpen, setMoreOpen] = useState(false)
+  /** 路径直输：null 表示未编辑，字符串是正在编辑的草稿 */
+  const [pathEdit, setPathEdit] = useState<string | null>(null)
 
   const [viewMode, setViewMode] = useState<SftpViewMode>(rememberedViewMode)
   /** 树的固定锚点（远端 home）。树不随 cwd 重根，否则展开一个目录整棵树都会跳走 */
@@ -526,10 +570,24 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   }, [showHidden, cwd, treeRoot, load, fetchDir])
 
   const cwdEntries = dirs[cwd] ?? EMPTY_ENTRIES
-  /** 列表行的排序。树也用 `sortEntries`，两个视图对同一目录的条目与顺序必然一致 */
-  const sorted = useMemo(() => sortEntries(cwdEntries), [cwdEntries])
+  /**
+   * 列表 = 过滤 → 排序。树视图共用**同一份排序参数**，但不套用过滤：
+   * 树是导航结构，把分支从树上抹掉会让"展开着却看不到"变成谜。
+   */
+  const sorted = useMemo(
+    () => sortEntries(filterEntries(cwdEntries, filter), { key: sort.key, dir: sort.dir }),
+    [cwdEntries, filter, sort],
+  )
+  /** 可见文件的大小合计（目录不参与，避免为此递归扫描） */
+  const visibleBytes = useMemo(
+    () => sorted.reduce((n, e) => n + (e.type === 'directory' ? 0 : (e.size ?? 0)), 0),
+    [sorted],
+  )
 
-  const treeRootEntries = useMemo(() => sortEntries(dirs[treeRoot] ?? EMPTY_ENTRIES), [dirs, treeRoot])
+  const treeRootEntries = useMemo(
+    () => sortEntries(dirs[treeRoot] ?? EMPTY_ENTRIES, { key: sort.key, dir: sort.dir }),
+    [dirs, treeRoot, sort],
+  )
   const treeRows = useMemo(
     () =>
       flattenTree<RemoteEntry>({
@@ -944,6 +1002,47 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
     [treeRoot, fetchDir],
   )
 
+  /**
+   * 点列头：同一列切换升降序，换列则用该列的默认方向。
+   * 排序参数写进 localStorage，下次打开文件栏还是这个排法。
+   */
+  const toggleSort = useCallback(
+    (key: EntrySortKey): void => {
+      if (key === sort.key) {
+        const dir: EntrySortDir = sort.dir === 'asc' ? 'desc' : 'asc'
+        setSort({ key, dir })
+        rememberSort(key, dir)
+        return
+      }
+      const dir: EntrySortDir = key === 'name' || key === 'perm' ? 'asc' : 'desc'
+      setSort({ key, dir })
+      rememberSort(key, dir)
+    },
+    [sort],
+  )
+
+  /** 列表键盘导航：方向键/Home/End 移动选择，Enter/F2/Delete 作用于当前项 */
+  const moveListSelection = (move: number | 'first' | 'last'): void => {
+    if (sorted.length === 0) return
+    let idx: number
+    if (move === 'first') idx = 0
+    else if (move === 'last') idx = sorted.length - 1
+    else {
+      const cur = selection.anchor ? sorted.findIndex((e) => e.path === selection.anchor) : -1
+      const base = cur < 0 ? (move > 0 ? -1 : 0) : cur
+      idx = Math.min(sorted.length - 1, Math.max(0, base + move))
+    }
+    const target = sorted[idx]
+    if (!target) return
+    setSelection({ ids: [target.path], anchor: target.path })
+    // 虚拟列表只渲染视口内的行：选择移出视口时把它滚进来，否则按键看起来"没反应"
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-testid="sftp-row"][data-path="${CSS.escape(target.path)}"]`)
+        ?.scrollIntoView({ block: 'nearest' })
+    })
+  }
+
   const switchView = useCallback(
     (mode: SftpViewMode): void => {
       setViewMode(mode)
@@ -1127,7 +1226,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   }
 
   return (
-    <main className="content" aria-label={`${title} 文件`}>
+    <main className="content sftp-root" aria-label={`${title} 文件`}>
       {bookmarks.length > 0 ? (
         <div className="sftp-bookmarks" aria-label="目录书签">
           <Icon name="star" size={12} />
@@ -1168,34 +1267,94 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           </span>
         </div>
       ) : null}
-      <div className="t-toolbar">
-        <IconButton icon="chevron-left" label="上一级" disabled={!cwd || cwd === '/'} onClick={() => void load(parentRemote(cwd))} />
-        <IconButton icon="home" label="主目录" onClick={() => void load('~')} />
-        <IconButton icon="refresh" label="刷新" loading={loading} onClick={reload} />
-        <IconButton
-          icon="route"
-          label={
-            terminalCwd
-              ? `定位到终端目录（${terminalCwd}）`
-              : '定位到终端目录（尚未拿到终端 cwd）'
+      {/* 单行工具条：导航 + 面包屑 + 过滤 + 高频动作 + 「⋯」。
+          面包屑与工具条合并成一行，纵向省下约 32px —— 文件栏本来就窄，
+          三行头部会把可用的列表高度吃掉一大块。 */}
+      <div
+        className="sftp-top"
+        role="toolbar"
+        aria-label="文件浏览工具条"
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && moreOpen) {
+            e.stopPropagation()
+            setMoreOpen(false)
           }
-          onClick={locateToTerminal}
-        />
+        }}
+      >
         <IconButton
-          icon="star"
-          label="把当前目录加为书签"
-          disabled={!cwd}
-          onClick={() =>
-            setBmDialog({
-              mode: 'add',
-              path: cwd,
-              name: cwd.split('/').filter(Boolean).pop() ?? '/',
-            })
-          }
+          className="sftp-top__ib"
+          icon="chevron-left"
+          label="上一级"
+          disabled={!cwd || cwd === '/'}
+          onClick={() => void load(parentRemote(cwd))}
         />
+        <IconButton className="sftp-top__ib" icon="home" label="主目录" onClick={() => void load('~')} />
+        <IconButton className="sftp-top__ib" icon="refresh" label="刷新" loading={loading} onClick={reload} />
+
         <div className="t-toolbar__divider" />
-        <IconButton icon="folder" label="新建文件夹" onClick={() => setMkdir(true)} />
+
+        {pathEdit !== null ? (
+          <form
+            className="sftp-pathedit"
+            onSubmit={(e) => {
+              e.preventDefault()
+              const target = pathEdit.trim()
+              setPathEdit(null)
+              if (target) void load(target)
+            }}
+          >
+            <input
+              autoFocus
+              className="sftp-pathedit__input"
+              value={pathEdit}
+              aria-label="输入目录路径"
+              placeholder="/var/log 或 ~"
+              spellCheck={false}
+              onChange={(e) => setPathEdit(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setPathEdit(null)
+                }
+              }}
+            />
+          </form>
+        ) : (
+          <div className="sftp-crumbs" onDoubleClick={() => setPathEdit(cwd || '')} title="双击可直接输入路径">
+            {breadcrumbSegments(cwd || '/').map((seg, i, arr) => (
+              <span key={seg.path} className="sftp-crumb__wrap">
+                <button
+                  type="button"
+                  className={`sftp-crumb${i === arr.length - 1 ? ' sftp-crumb--last' : ''}`}
+                  onClick={() => void load(seg.path)}
+                >
+                  {seg.label}
+                </button>
+                {i < arr.length - 1 ? <span className="sftp-crumb__sep">/</span> : null}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <input
+          className="sftp-filter"
+          value={filter}
+          placeholder="过滤…"
+          aria-label="按名称过滤当前目录"
+          spellCheck={false}
+          onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation()
+              setFilter('')
+            }
+          }}
+        />
+
+        <IconButton className="sftp-top__ib" icon="folder" label="新建文件夹" onClick={() => setMkdir(true)} />
         <IconButton
+          className="sftp-top__ib"
           icon="upload"
           label="上传"
           onClick={() => {
@@ -1204,61 +1363,115 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           }}
         />
         <IconButton
+          className="sftp-top__ib"
           icon="download"
-          label="下载"
+          label="下载（选中项）"
           disabled={!selectedEntry}
           onClick={() => {
             if (selectedEntry) setDownloadTarget(selectedEntry)
           }}
         />
-        <IconButton
-          icon="edit"
-          label="用内置编辑器打开（语法高亮 + 查找替换）"
-          disabled={!selectedEntry}
-          onClick={() => {
-            if (selectedEntry && !selectedEntry.name.endsWith('/')) setEditingPath(selectedEntry.path)
-          }}
-        />
-        <IconButton
-          icon="download"
-          label="用系统编辑器打开（物化到本地临时文件）"
-          disabled={!selectedEntry}
-          onClick={() => {
-            if (selectedEntry) void openRemoteEditor(selectedEntry)
-          }}
-        />
-        <div className="t-toolbar__spacer" />
-        <div data-testid="sftp-view-toggle">
-          <Segmented
-            bare
-            ariaLabel="SFTP 视图模式"
-            value={viewMode}
-            onChange={switchView}
-            items={[
-              { value: 'list', label: '列表', icon: 'list' },
-              { value: 'tree', label: '树', icon: 'folder-open' },
-            ]}
-          />
-        </div>
-        <label className="sftp-row__perm" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <Checkbox checked={showHidden} onChange={setShowHidden} ariaLabel="显示隐藏文件" bare />
-          显示隐藏
-        </label>
-      </div>
 
-      <div className="sftp-crumbs">
-        {breadcrumbSegments(cwd || '/').map((seg, i, arr) => (
-          <span key={seg.path} style={{ display: 'inline-flex', alignItems: 'center' }}>
-            <button
-              type="button"
-              className={`sftp-crumb${i === arr.length - 1 ? ' sftp-crumb--last' : ''}`}
-              onClick={() => void load(seg.path)}
-            >
-              {seg.label}
-            </button>
-            {i < arr.length - 1 ? <span className="sftp-crumb__sep">/</span> : null}
-          </span>
-        ))}
+        <div className="sftp-top__more">
+          <IconButton
+            icon="more"
+            label="更多：视图、显示与低频操作"
+            tone={moreOpen ? 'accent' : 'default'}
+            aria-haspopup="dialog"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen((v) => !v)}
+          />
+          {moreOpen ? (
+            <>
+              <div className="sftp-pop__scrim" onMouseDown={() => setMoreOpen(false)} />
+              <div className="sftp-pop" role="dialog" aria-label="视图与显示选项">
+                {/* 开关带文字、文字在开关**下方**：竖排两格，比横排"标签-开关"更好扫读 */}
+                <div className="sftp-pop__cells" data-testid="sftp-view-toggle">
+                  <div className="sftp-pop__cell">
+                    <Switch
+                      checked={viewMode === 'tree'}
+                      onChange={(next) => switchView(next ? 'tree' : 'list')}
+                      label="树视图"
+                    />
+                    <span className="sftp-pop__cap">{viewMode === 'tree' ? '树视图' : '列表视图'}</span>
+                  </div>
+                  <div className="sftp-pop__cell">
+                    <Switch checked={showHidden} onChange={setShowHidden} label="显示隐藏文件" />
+                    <span className="sftp-pop__cap">显示隐藏</span>
+                  </div>
+                </div>
+
+                <div className="sftp-pop__sep" />
+
+                <button
+                  type="button"
+                  className="sftp-pop__item"
+                  onClick={() => {
+                    setMoreOpen(false)
+                    setPathEdit(cwd || '')
+                  }}
+                >
+                  <Icon name="edit" size={13} />
+                  <span>输入路径…</span>
+                  <span className="sftp-pop__hint">双击面包屑</span>
+                </button>
+                <button
+                  type="button"
+                  className="sftp-pop__item"
+                  onClick={() => {
+                    setMoreOpen(false)
+                    locateToTerminal()
+                  }}
+                >
+                  <Icon name="route" size={13} />
+                  <span>定位到终端目录</span>
+                  <span className="sftp-pop__hint">OSC 7</span>
+                </button>
+                <button
+                  type="button"
+                  className="sftp-pop__item"
+                  onClick={() => {
+                    setMoreOpen(false)
+                    setBmDialog({
+                      mode: 'add',
+                      path: cwd,
+                      name: cwd.split('/').filter(Boolean).pop() ?? '/',
+                    })
+                  }}
+                  disabled={!cwd}
+                >
+                  <Icon name="star" size={13} />
+                  <span>当前目录加为书签</span>
+                </button>
+                <button
+                  type="button"
+                  className="sftp-pop__item"
+                  disabled={!selectedEntry || selectedEntry.type === 'directory'}
+                  onClick={() => {
+                    setMoreOpen(false)
+                    if (selectedEntry) setEditingPath(selectedEntry.path)
+                  }}
+                >
+                  <Icon name="notes" size={13} />
+                  <span>用内置编辑器打开</span>
+                </button>
+                <button
+                  type="button"
+                  className="sftp-pop__item"
+                  disabled={!selectedEntry || selectedEntry.type === 'directory'}
+                  onClick={() => {
+                    setMoreOpen(false)
+                    if (selectedEntry) void openRemoteEditor(selectedEntry)
+                  }}
+                >
+                  {/* 与「下载」区分开：这里是把远端文件物化到本地再用系统程序打开 */}
+                  <Icon name="external" size={13} />
+                  <span>用系统程序打开</span>
+                </button>
+              </div>
+            </>
+          ) : null}
+        </div>
       </div>
 
       {error ? (
@@ -1269,11 +1482,26 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
         </div>
       ) : null}
 
-      <div className="sftp-head">
-        <span>名称</span>
-        <span style={{ textAlign: 'right' }}>大小</span>
-        <span>权限</span>
-        <span>修改时间</span>
+      {/* 列头即排序控件：与资源管理器/FileZilla 的手感一致，点击同一列切换升降序 */}
+      <div className="sftp-head" role="row">
+        {HEAD_COLS.map((col) => {
+          const active = sort.key === col.key
+          return (
+            <button
+              key={col.key}
+              type="button"
+              role="columnheader"
+              aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+              className={`sftp-head__btn${active ? ' sftp-head__btn--on' : ''}${
+                col.align === 'right' ? ' sftp-head__btn--right' : ''
+              }`}
+              onClick={() => toggleSort(col.key)}
+            >
+              <span>{col.label}</span>
+              {active ? <Icon name={sort.dir === 'asc' ? 'chevron-up' : 'chevron-down'} size={10} /> : null}
+            </button>
+          )
+        })}
       </div>
 
       {viewMode === 'list' ? (
@@ -1295,6 +1523,47 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
             if (e.key === 'Escape') {
               e.preventDefault()
               setSelection(clearSelection())
+              return
+            }
+            // 以下键只在列表拿到焦点时处理：终端里的同名按键不能被打断
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault()
+              e.stopPropagation()
+              moveListSelection(e.key === 'ArrowDown' ? 1 : -1)
+              return
+            }
+            if (e.key === 'Home' || e.key === 'End') {
+              e.preventDefault()
+              e.stopPropagation()
+              moveListSelection(e.key === 'Home' ? 'first' : 'last')
+              return
+            }
+            if (e.key === 'Enter') {
+              if (!selectedEntry) return
+              e.preventDefault()
+              e.stopPropagation()
+              if (selectedEntry.type === 'directory') void load(selectedEntry.path)
+              else setEditingPath(selectedEntry.path)
+              return
+            }
+            if (e.key === 'Backspace') {
+              e.preventDefault()
+              e.stopPropagation()
+              if (cwd && cwd !== '/') void load(parentRemote(cwd))
+              return
+            }
+            if (e.key === 'F2') {
+              if (!selectedEntry) return
+              e.preventDefault()
+              e.stopPropagation()
+              setRenameTarget(selectedEntry)
+              return
+            }
+            if (e.key === 'Delete') {
+              e.preventDefault()
+              e.stopPropagation()
+              if (multiSelecting) setBatchDeleteOpen(true)
+              else if (selectedEntry) setDeleteTarget(selectedEntry)
             }
           }}
           onMouseDown={(e) => {
@@ -1309,7 +1578,20 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           {loading && sorted.length === 0 ? (
             <Loading text="读取目录…" />
           ) : sorted.length === 0 && !error ? (
-            <EmptyState icon="folder" title="空目录" text="这个目录下没有可显示的内容。" />
+            filter.trim() === '' ? (
+              <EmptyState icon="folder" title="空目录" text="这个目录下没有可显示的内容。" />
+            ) : (
+              <EmptyState
+                icon="filter"
+                title="没有匹配项"
+                text={`当前目录里没有名称包含「${filter.trim()}」的条目。`}
+                actions={
+                  <Button size="sm" variant="outline" onClick={() => setFilter('')}>
+                    清除过滤
+                  </Button>
+                }
+              />
+            )
           ) : (
             <VirtualList
               items={sorted}
@@ -1338,7 +1620,9 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
                     }}
                     onDoubleClick={() => {
                       // 双击打开仅限单选；连选过程中双击不触发
-                      if (isDir && selection.ids.length <= 1) void load(entry.path)
+                      if (selection.ids.length > 1) return
+                      if (isDir) void load(entry.path)
+                      else setEditingPath(entry.path)
                     }}
                     // 与树视图共用同一个右键菜单（同一批 setter，不存在两套动作）
                     onContextMenu={(e) => {
@@ -1381,6 +1665,20 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
           onRetry={(row) => void fetchDir(row.path)}
         />
       )}
+
+      {/* 状态栏：条目数/已选/合计大小。文件管理器里这三项是最高频的"我在看什么"信息 */}
+      <div className="sftp-status" role="status" aria-live="polite">
+        <span data-testid="sftp-count">
+          {sorted.length} 项{filter.trim() === '' ? '' : ` / 共 ${cwdEntries.length}`}
+        </span>
+        {selection.ids.length > 0 ? (
+          <span className="sftp-status__sel">已选 {selection.ids.length}</span>
+        ) : null}
+        <span className="sftp-status__spacer" />
+        <span className="sftp-status__num" title="当前可见文件的大小合计（不含目录）">
+          {formatBytes(visibleBytes)}
+        </span>
+      </div>
 
       {multiSelecting ? (
         <div className="sftp-queue__head sftp-batchbar" data-testid="batch-toolbar">

@@ -9,19 +9,230 @@
   min-width: 0;
 }
 
-/* 面包屑 */
+/* ── 顶栏（单行：导航 + 面包屑 + 过滤 + 动作） ─────────────────────
+ * 高度 34px：比通用工具条（46px）矮一档。文件栏本身窄，纵向每一像素
+ * 都在和文件列表抢空间；图标也相应缩到 13px 以维持视觉比例。
+ */
+.sftp-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-raised);
+}
+
+.sftp-top .t-toolbar__divider {
+  height: 15px;
+  margin: 0 2px;
+}
+
+/* 顶栏图标按钮压到 24×24：默认的 28×28 在 34px 高的条里显得臃肿 */
+.sftp-top__ib.t-iconbtn {
+  width: 24px;
+  height: 24px;
+}
+
+/* 面包屑：不再单独占一行，而是工具条里的弹性区 */
 .sftp-crumbs {
   display: flex;
   align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--t1000-border);
-  background: var(--t1000-bg-raised);
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   white-space: nowrap;
+  scrollbar-width: none;
 }
+
+.sftp-crumbs::-webkit-scrollbar {
+  height: 0;
+}
+
+.sftp-crumb__wrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 路径直输：替换面包屑的输入框，视觉上与面包屑同高 */
+.sftp-pathedit {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+}
+
+.sftp-pathedit__input {
+  width: 100%;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--t1000-accent);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-input);
+  color: var(--t1000-fg);
+  font-family: var(--t1000-font-mono);
+  font-size: 11.5px;
+  outline: none;
+}
+
+/* 过滤框：窄面板下自动隐藏（容器查询，见文件末尾），避免把面包屑挤没 */
+.sftp-filter {
+  flex: 0 1 118px;
+  min-width: 62px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg-input);
+  color: var(--t1000-fg);
+  font-size: 11.5px;
+  outline: none;
+  transition: border-color var(--t1000-fast) var(--t1000-ease);
+}
+
+.sftp-filter::placeholder {
+  color: var(--t1000-fg-faint);
+}
+
+.sftp-filter:focus {
+  border-color: var(--t1000-accent);
+}
+
+/* 「⋯」浮层的锚点 */
+.sftp-top__more {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* 点击外部关闭的透明遮罩：比 document 级监听更可靠（拖动/焦点都不会漏） */
+.sftp-pop__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--t1000-z-popover) - 1);
+  background: transparent;
+}
+
+.sftp-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: var(--t1000-z-popover);
+  width: 232px;
+  padding: 8px;
+  border: 1px solid var(--t1000-border-strong);
+  border-radius: var(--t1000-radius);
+  background: var(--t1000-bg-panel);
+  box-shadow: var(--t1000-shadow-2);
+}
+
+/* 两个开关格并排：开关在上、文字在下 —— 手边即状态，不必读整句话 */
+.sftp-pop__cells {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.sftp-pop__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 4px 7px;
+  border: 1px solid var(--t1000-border);
+  border-radius: var(--t1000-radius-sm);
+  background: var(--t1000-bg);
+}
+
+.sftp-pop__cap {
+  color: var(--t1000-fg-muted);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.sftp-pop__sep {
+  height: 1px;
+  margin: 7px 2px 5px;
+  background: var(--t1000-border);
+}
+
+.sftp-pop__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 7px;
+  border: none;
+  border-radius: var(--t1000-radius-sm);
+  background: transparent;
+  color: var(--t1000-fg-muted);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sftp-pop__item:hover:not(:disabled) {
+  background: var(--t1000-bg-hover);
+  color: var(--t1000-fg);
+}
+
+.sftp-pop__item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sftp-pop__item > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-pop__hint {
+  flex: none;
+  color: var(--t1000-fg-faint);
+  font-size: 10px;
+  font-family: var(--t1000-font-mono);
+}
+
+/* 状态栏 */
+.sftp-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 12px;
+  border-top: 1px solid var(--t1000-border);
+  background: var(--t1000-bg-raised);
+  color: var(--t1000-fg-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sftp-status__sel {
+  color: var(--t1000-accent);
+}
+
+.sftp-status__spacer {
+  flex: 1;
+}
+
+.sftp-status__num {
+  font-family: var(--t1000-font-mono);
+}
+
+/* 容器查询的锚点：文件栏可拖动，430px 以下过滤框会挤掉面包屑 */
+.sftp-root {
+  container-type: inline-size;
+}
+
+
 
 .sftp-crumb {
   padding: 2px 6px;
@@ -67,11 +278,11 @@
 
 .sftp-head {
   display: grid;
-  grid-template-columns: minmax(0, 2.4fr) 96px 106px 148px;
-  gap: 10px;
-  padding: 0 14px;
-  height: 30px;
-  align-items: center;
+  grid-template-columns: minmax(0, 2.4fr) 64px 86px 122px;
+  gap: 8px;
+  padding: 0 12px;
+  height: 26px;
+  align-items: stretch;
   border-bottom: 1px solid var(--t1000-border);
   background: var(--t1000-bg-raised);
   color: var(--t1000-fg-dim);
@@ -81,13 +292,41 @@
   user-select: none;
 }
 
+/* 列头按钮铺满整格：点哪都能排序，而不是只有文字上那几像素 */
+.sftp-head__btn {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sftp-head__btn--right {
+  justify-content: flex-end;
+}
+
+.sftp-head__btn:hover {
+  color: var(--t1000-fg);
+}
+
+.sftp-head__btn--on {
+  color: var(--t1000-accent);
+}
+
 .sftp-row {
   display: grid;
-  grid-template-columns: minmax(0, 2.4fr) 96px 106px 148px;
-  gap: 10px;
+  grid-template-columns: minmax(0, 2.4fr) 64px 86px 122px;
+  gap: 8px;
   align-items: center;
   height: 30px;
-  padding: 0 14px;
+  padding: 0 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--t1000-border) 40%, transparent);
   cursor: default;
   font-size: 12px;
@@ -431,3 +670,30 @@
 .sftp-chmod__details > summary { cursor: pointer; color: var(--t1000-fg-dim); font-size: 11.5px; }
 .sftp-chmod__details ul { margin: 4px 0 0; padding: 0 0 0 16px; max-height: 180px; overflow: auto; }
 .sftp-chmod__details li { list-style: none; font-size: 11px; color: var(--t1000-fg-muted); }
+
+/* ⚠️ 容器查询必须放在文件**末尾**：它与基础规则（.sftp-head / .sftp-row）同特异性，
+   靠「后出现」才能覆盖四列模板。放在基础规则之前的话，窄面板下会被基础规则反超，
+   名称列被 350px 的固定列挤成 0 —— 实测踩过一次。 */
+/* 窄到放不下过滤框时把它藏掉：宁可少一个功能，也不要挤成一个 20px 的碎框 */
+@container (max-width: 430px) {
+  .sftp-filter {
+    display: none;
+  }
+}
+
+/* 再窄下去就只留「名称 + 大小」：四列的最小宽度合计约 274px，
+   继续压会让文件名只剩几个字。与手机端文件管理器的取舍一致。
+   ⚠️ 规则必须**直接命中** .sftp-head / .sftp-row：容器查询的声明不作用于
+   容器自身（.sftp-root），靠它设自定义属性再继承下来是无效的。 */
+@container (max-width: 370px) {
+  .sftp-head,
+  .sftp-row {
+    grid-template-columns: minmax(0, 1fr) 72px;
+    column-gap: 8px;
+  }
+
+  .sftp-head > :nth-child(n + 3),
+  .sftp-row > :nth-child(n + 3) {
+    display: none;
+  }
+}

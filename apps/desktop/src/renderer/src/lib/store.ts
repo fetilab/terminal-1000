@@ -243,6 +243,14 @@ export interface AppState {
    */
   toolbarVisible: boolean
   /**
+   * 控制台左侧「会话栏」是否折叠成窄条图标。
+   *
+   * 只影响控制台视图（折叠后宽度是 44px，其它视图的侧栏内容塞不进去）；
+   * 放 store 是因为外壳（App）要改 grid 列宽，而开关按钮在 SessionSidebar 里，
+   * 两者之间没有父子关系。偏好持久化到 localStorage，重启后保持。
+   */
+  panelCollapsed: boolean
+  /**
    * 会话 → 远端 shell 当前目录。
    *
    * 来源是终端输出里的 **OSC 7**（`\x1b]7;file://host/path\x07`）。
@@ -343,6 +351,15 @@ export const DEFAULT_MONITOR_CARDS: MonitorCardConfig[] = [
   { kind: 'gpu', enabled: false, order: 6, tier: 'slow' },
 ]
 
+/** 会话栏折叠偏好：坏值/不可用一律当"展开"，展开永远是最安全的默认 */
+function readPanelCollapsed(): boolean {
+  try {
+    return localStorage.getItem('t1000:panel-collapsed') === '1'
+  } catch {
+    return false
+  }
+}
+
 const initialState: AppState = {
   view: 'connections',
   protocol: 'ssh',
@@ -374,6 +391,7 @@ const initialState: AppState = {
   toolsSection: 'password',
   globalSearchOpen: false,
   toolbarVisible: true,
+  panelCollapsed: readPanelCollapsed(),
   sessionCwd: {},
   negotiations: {},
   broadcastGroups: [],
@@ -701,6 +719,19 @@ export const actions = {
 
   toggleToolbar() {
     setState((s) => ({ toolbarVisible: !s.toolbarVisible }))
+  },
+
+  /** 控制台会话栏折叠/展开。展开态是默认值，写盘失败也不影响当下这次切换。 */
+  togglePanelCollapsed() {
+    setState((s) => {
+      const next = !s.panelCollapsed
+      try {
+        localStorage.setItem('t1000:panel-collapsed', next ? '1' : '0')
+      } catch {
+        // 存不下来只意味着"下次启动回到展开"，不打断交互
+      }
+      return { panelCollapsed: next }
+    })
   },
 
   toggleGlobalSearch() {

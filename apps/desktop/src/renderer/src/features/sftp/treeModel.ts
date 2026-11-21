@@ -22,17 +22,62 @@ export interface TreeEntryLike {
   type: string
 }
 
+/** 可排序列：名称 / 大小 / 权限 / 修改时间 */
+export type EntrySortKey = 'name' | 'size' | 'perm' | 'mtime'
+export type EntrySortDir = 'asc' | 'desc'
+
+export interface EntrySortOptions {
+  key?: EntrySortKey
+  dir?: EntrySortDir
+}
+
 /**
- * 目录排序：**目录永远在文件前面**，再按名称本地化比较。
- * 列表视图与树视图都走这一个函数，避免两套排序口径。
+ * 目录排序。
+ *
+ * 两条不变量：
+ * 1. **目录永远在文件前面**，与升降序无关 —— 反序时把文件排到目录前面，
+ *    双击进目录的操作会突然变得不顺手（Windows 资源管理器也是这样）。
+ * 2. 列表与树视图走**同一个** `opts`，同一目录在两处渲染的顺序必然一致。
+ *
+ * 名称用 `zh-CN` 本地化比较（中文按拼音、数字按数值感知），
+ * 其余按字面/数值比较；大小对目录无意义（一律按 0 处理）。
  */
-export function sortEntries<T extends { name: string; type: string }>(entries: readonly T[]): T[] {
+export function sortEntries<
+  T extends { name: string; type: string; size?: number; mtime?: number; permissions?: string },
+>(entries: readonly T[], opts: EntrySortOptions = {}): T[] {
+  const key = opts.key ?? 'name'
+  const sign = opts.dir === 'desc' ? -1 : 1
+  const compare = (a: T, b: T): number => {
+    switch (key) {
+      case 'size':
+        return (a.size ?? 0) - (b.size ?? 0)
+      case 'mtime':
+        return (a.mtime ?? 0) - (b.mtime ?? 0)
+      case 'perm':
+        return (a.permissions ?? '').localeCompare(b.permissions ?? '', 'zh-CN')
+      case 'name':
+      default:
+        return a.name.localeCompare(b.name, 'zh-CN')
+    }
+  }
   return entries.slice().sort((a, b) => {
     const da = a.type === 'directory' ? 0 : 1
     const db = b.type === 'directory' ? 0 : 1
     if (da !== db) return da - db
-    return a.name.localeCompare(b.name, 'zh-CN')
+    const result = compare(a, b) * sign
+    // 同值时按名称兜底：否则大小/时间相同的条目顺序会随底层读取顺序抖动
+    return result !== 0 ? result : a.name.localeCompare(b.name, 'zh-CN')
   })
+}
+
+/** 按名称子串过滤（大小写不敏感）。空查询返回原数组，避免无谓复制。 */
+export function filterEntries<T extends { name: string }>(
+  entries: readonly T[],
+  query: string,
+): readonly T[] {
+  const q = query.trim().toLowerCase()
+  if (q === '') return entries
+  return entries.filter((e) => e.name.toLowerCase().includes(q))
 }
 
 /**

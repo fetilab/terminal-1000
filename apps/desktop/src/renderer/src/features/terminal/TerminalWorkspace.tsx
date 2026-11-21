@@ -14,10 +14,12 @@
  * 重新可见时会强制重新 fit。
  */
 
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge, EmptyState, Loading } from '../../components/Feedback'
 import { Button, IconButton } from '../../components/Button'
 import { Icon } from '../../components/Icon'
+import { Splitter } from '../../components/Splitter'
+import { usePaneWidth } from '../../lib/usePaneWidth'
 import type { RdpConnection, TunnelConnection, VncConnection } from '@t1000/shared'
 // 快速命令面板：只有终端类会话才有意义（它要往会话里发东西）
 const QuickCommandPanel = lazy(() => import('../quickcmd/QuickCommandPanel'))
@@ -90,6 +92,35 @@ export default function TerminalWorkspace(): React.JSX.Element {
   }, [])
   const [secondaryTabId, setSecondaryTabId] = useState<string | null>(null)
 
+  /**
+   * 三个可拖动的栏宽。默认值按「1280 宽窗口下终端仍留 ≈500px」定的，
+   * 记住的是用户最后一次拖到的宽度；窗口变窄时由 clamp 兜底。
+   */
+  const quickW = usePaneWidth({ key: 't1000:ws:quickcmd', initial: 286, min: 180, max: 480 })
+  const filesW = usePaneWidth({ key: 't1000:ws:files', initial: 420, min: 260, max: 760 })
+  const monitorW = usePaneWidth({ key: 't1000:ws:monitor', initial: 320, min: 220, max: 640 })
+
+  /**
+   * 工作区可用宽度。
+   *
+   * 记住的栏宽在窗口变窄后可能把终端挤成一条缝（实测 1080px 窗口 + 文件栏 560 +
+   * 监控 320 → 终端只剩约 90px，xterm 直接竖排断字）。所以按可用宽度**等比缩放**
+   * 两侧栏，始终给终端留 PANES_MIN：空间够时缩放系数为 1，宽度与用户拖的完全一致。
+   */
+  const wsRef = useRef<HTMLDivElement>(null)
+  const [wsWidth, setWsWidth] = useState(0)
+  const PANES_MIN = 320
+  useEffect(() => {
+    const el = wsRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0
+      setWsWidth(Math.round(w))
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   const active = tabs.find((t) => t.tabId === activeTabId) ?? null
   /** 当前标签所属的广播组（没有则不在任何组里） */
   /** 只有这几种才用"终端 + 文件"那套界面；vnc/rdp/tunnel 是各自独立的视图 */
@@ -144,6 +175,35 @@ export default function TerminalWorkspace(): React.JSX.Element {
   }
 
   const mono = active
+
+  const showQuick = isTerminalLike && quickcmdOpen
+  const showFiles = isTerminalLike && hasFiles && mono.filesOpen && Boolean(mono.sessionId)
+  const showMonitor = isTerminalLike && mono.monitorOpen
+
+  /**
+   * 面板宽度分配。
+   *
+   * - 窗口够宽（主流 1440+）：缩放系数为 1，用的就是用户拖出来的宽度；
+   * - 窗口变窄：三栏按比例一起收，但每栏有硬下限，终端永远保住 PANES_MIN；
+   * - 拖动上限 `*MaxDrag` 由「预算 - 其它栏」算出，因此拖到头就是真到头，
+   *   不会出现"往右拖反而变窄"（那样看起来像 bug）。
+   */
+  const budget = wsWidth > 0 ? Math.max(0, wsWidth - PANES_MIN) : Number.POSITIVE_INFINITY
+  const want = (showQuick ? quickW.width : 0) + (showFiles ? filesW.width : 0) + (showMonitor ? monitorW.width : 0)
+  const k = budget !== Number.POSITIVE_INFINITY && want > budget && want > 0 ? budget / want : 1
+  const effQuick = showQuick ? Math.max(150, Math.round(quickW.width * k)) : 0
+  const effFiles = showFiles ? Math.max(200, Math.round(filesW.width * k)) : 0
+  const effMonitor = showMonitor ? Math.max(180, Math.round(monitorW.width * k)) : 0
+  const dragBudget = budget === Number.POSITIVE_INFINITY ? 0 : budget
+  const quickMax = budget === Number.POSITIVE_INFINITY
+    ? quickW.max
+    : Math.max(quickW.min, dragBudget - effFiles - effMonitor)
+  const filesMax = budget === Number.POSITIVE_INFINITY
+    ? filesW.max
+    : Math.max(filesW.min, dragBudget - effQuick - effMonitor)
+  const monitorMax = budget === Number.POSITIVE_INFINITY
+    ? monitorW.max
+    : Math.max(monitorW.min, dragBudget - effQuick - effFiles)
 
   return (
     <main className="content" aria-label="终端工作区">
@@ -351,22 +411,44 @@ export default function TerminalWorkspace(): React.JSX.Element {
         </div>
       ) : null}
 
-      <div className="term-workspace">
+      <div className="term-workspace" ref={wsRef}>
         {/* 快速命令：终端自己的左栏（spec §6 的位置） */}
-        {isTerminalLike && quickcmdOpen ? (
-          <aside className="term-quickcmd" aria-label="快速命令">
-            <Suspense fallback={<Loading text="载入快速命令…" />}>
-              <QuickCommandPanel />
-            </Suspense>
-          </aside>
+        {showQuick ? (
+          <>
+            <aside className="term-quickcmd" style={{ width: effQuick }} aria-label="快速命令">
+              <Suspense fallback={<Loading text="载入快速命令…" />}>
+                <QuickCommandPanel />
+              </Suspense>
+            </aside>
+            <Splitter
+              side="left"
+              size={effQuick}
+              min={quickW.min}
+              max={quickMax}
+              onResize={quickW.setWidth}
+              onReset={quickW.reset}
+              label="拖动调整快速命令栏宽度"
+            />
+          </>
         ) : null}
         {/* 文件栏（左）：与会话并存而非互换 —— ssh 用真 sftp，local 用本地后端（见 sftp 域） */}
-        {isTerminalLike && hasFiles && mono.filesOpen && mono.sessionId ? (
-          <aside className="term-files" aria-label="文件浏览">
-            <Suspense fallback={<Loading text="正在载入文件浏览器…" />}>
-              <SftpBrowser sessionId={mono.sessionId} title={mono.title} />
-            </Suspense>
-          </aside>
+        {showFiles ? (
+          <>
+            <aside className="term-files" style={{ width: effFiles }} aria-label="文件浏览">
+              <Suspense fallback={<Loading text="正在载入文件浏览器…" />}>
+                <SftpBrowser sessionId={mono.sessionId} title={mono.title} />
+              </Suspense>
+            </aside>
+            <Splitter
+              side="left"
+              size={effFiles}
+              min={filesW.min}
+              max={filesMax}
+              onResize={filesW.setWidth}
+              onReset={filesW.reset}
+              label="拖动调整文件栏宽度"
+            />
+          </>
         ) : null}
         <div className={`term-panes term-panes--${isTerminalLike ? layout : 'single'}`}>
           {tabs.map((tab) => {
@@ -413,14 +495,28 @@ export default function TerminalWorkspace(): React.JSX.Element {
           })}
         </div>
 
-        {isTerminalLike && mono.monitorOpen ? (
-          <Suspense fallback={<div className="monitor"><Loading text="正在载入监控面板…" /></div>}>
-            <MonitorPanel
-              sessionId={mono.sessionId}
-              title={mono.title}
-              onClose={() => toggleTabMonitor(mono.tabId)}
+        {showMonitor ? (
+          <>
+            <Splitter
+              side="right"
+              size={effMonitor}
+              min={monitorW.min}
+              max={monitorMax}
+              onResize={monitorW.setWidth}
+              onReset={monitorW.reset}
+              label="拖动调整监控栏宽度"
             />
-          </Suspense>
+            {/* 外框只负责定宽：MonitorPanel 自己的根节点是 flex:0 0 320px，这里让它填满外框 */}
+            <div className="term-monitor" style={{ width: effMonitor }}>
+              <Suspense fallback={<div className="monitor"><Loading text="正在载入监控面板…" /></div>}>
+                <MonitorPanel
+                  sessionId={mono.sessionId}
+                  title={mono.title}
+                  onClose={() => toggleTabMonitor(mono.tabId)}
+                />
+              </Suspense>
+            </div>
+          </>
         ) : null}
       </div>
     </main>

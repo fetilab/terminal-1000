@@ -20,6 +20,7 @@ import {
   getDir,
   isSelfOrDescendant,
   sortEntries,
+  filterEntries,
   toggleExpanded,
   treeKeyIntent,
   withDir,
@@ -31,6 +32,9 @@ interface Entry {
   path: string
   name: string
   type: string
+  size?: number
+  mtime?: number
+  permissions?: string
 }
 
 function dir(path: string): Entry {
@@ -54,6 +58,64 @@ describe('sortEntries', () => {
 
   it('空输入不炸', () => {
     expect(sortEntries([])).toEqual([])
+  })
+})
+
+describe('sortEntries 指定列与方向', () => {
+  const mk = (name: string, type: string, size: number, mtime: number, permissions: string): Entry => ({
+    path: `/${name}`,
+    name,
+    type,
+    size,
+    mtime,
+    permissions,
+  })
+
+  it('按大小升序/降序', () => {
+    const list = [mk('big', 'file', 900, 3, '-rw-r--r--'), mk('small', 'file', 10, 1, '-rw-r--r--')]
+    expect(sortEntries(list, { key: 'size', dir: 'asc' }).map((e) => e.name)).toEqual(['small', 'big'])
+    expect(sortEntries(list, { key: 'size', dir: 'desc' }).map((e) => e.name)).toEqual(['big', 'small'])
+  })
+
+  it('按修改时间倒序', () => {
+    const list = [mk('old', 'file', 1, 100, '-rw-r--r--'), mk('new', 'file', 1, 900, '-rw-r--r--')]
+    expect(sortEntries(list, { key: 'mtime', dir: 'desc' }).map((e) => e.name)).toEqual(['new', 'old'])
+  })
+
+  it('按权限字典序', () => {
+    const list = [mk('x', 'file', 1, 1, '-rwxr-xr-x'), mk('r', 'file', 1, 1, '-r--r--r--')]
+    expect(sortEntries(list, { key: 'perm', dir: 'asc' }).map((e) => e.name)).toEqual(['r', 'x'])
+  })
+
+  it('反序也不能把文件排到目录前面', () => {
+    const list = [mk('a', 'file', 1, 1, ''), mk('z', 'directory', 0, 0, '')]
+    expect(sortEntries(list, { key: 'name', dir: 'desc' }).map((e) => e.type)).toEqual(['directory', 'file'])
+  })
+
+  it('同值按名称兜底，保证顺序稳定', () => {
+    const list = [mk('b', 'file', 5, 1, ''), mk('a', 'file', 5, 1, '')]
+    expect(sortEntries(list, { key: 'size', dir: 'asc' }).map((e) => e.name)).toEqual(['a', 'b'])
+  })
+
+  it('缺字段（目录没有 size）按 0 处理，不产生 NaN', () => {
+    const list = [mk('f', 'file', 0, 1, ''), { path: '/d', name: 'd', type: 'directory' } as Entry]
+    expect(sortEntries(list, { key: 'size', dir: 'asc' }).map((e) => e.name)).toEqual(['d', 'f'])
+  })
+})
+
+describe('filterEntries 名称过滤', () => {
+  const list = [file('/Alpha.txt'), file('/beta.log'), dir('/cache')]
+
+  it('大小写不敏感的子串匹配', () => {
+    expect(filterEntries(list, 'ALP').map((e) => e.name)).toEqual(['Alpha.txt'])
+  })
+
+  it('空查询原样返回（同一个引用，避免无谓复制）', () => {
+    expect(filterEntries(list, '   ')).toBe(list)
+  })
+
+  it('无匹配返回空数组', () => {
+    expect(filterEntries(list, 'nope')).toEqual([])
   })
 })
 
