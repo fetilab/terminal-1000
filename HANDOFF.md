@@ -17,7 +17,11 @@ AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研�
 - 远端：`https://github.com/fetilab/terminal-1000`（public，GPL-3.0），分支 `master`
 - 本机推送走 `https://github.com:443/...`（绕开全局 insteadOf 的只读代理重写）或
   `ssh.github.com:443`（公钥已注册到 fetilab 账号）；fastgithub/gh-proxy 只能克隆不能推送
-- Release：`v0.1.0` 已发布，deb/rpm/pacman/AppImage/flatpak/exe 六附件（exe 为实验性）
+- Release：`v0.1.2`（当前，AppImage/deb/rpm/pacman 四附件）与 `v0.1.1`、`v0.1.0`
+  （后两者六附件含 flatpak 与实验性 exe）。**flatpak 与 Windows 安装器在本容器构建不出来**，
+  原因见「已知陷阱」21–24
+- 推送凭据**没有落盘**：本机无 `credential.helper`、无 `~/.git-credentials`、无 `gh` CLI。
+  需要时用 `GIT_ASKPASS` 临时脚本 + 环境变量传 token，推完即弃
 - flatpak 需要 24.08 运行时 + `org.electronjs.Electron2.BaseApp`（已装，源为 USTC 镜像）
 
 ### 合规红线（必须遵守）
@@ -184,11 +188,14 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）
 - electron-builder 的 fpm 1.9.3 与 **rpm ≥ 4.20 不兼容**（buildroot 布局变更，BUILDROOT 不被填充、
   spec 里 `%undefine` 被当注释）——症状是所有文件报 "File not found: …/BUILD/…-build/BUILDROOT/…"。
 - 解法：`~/.local/pkgshim/rpmbuild` 垫片把 rpmbuild 钉在**用户态解包的 rpm 4.18**
-  （`~/.pkg-tools/rpm4/`，来自 noble 的 deb 解包）；构建时 `PATH=~/.local/pkgshim:$PATH`。
+  （实际位于 **`/home/mosfet/dsh1/.pkg-tools/rpm4/`**，来自 noble 的 deb 解包；垫片会自己设
+  `LD_LIBRARY_PATH` 指向 `usr/lib/x86_64-linux-gnu`）；构建时 `PATH=~/.local/pkgshim:$PATH`。
+  不垫这一层时的症状就是所有文件报 "File not found: …/BUILD/…-build/BUILDROOT/…"。
 - 另需 `~/.rpmmacros` 写 `%_dbpath <可写目录>`，否则 rpm 6 以非 root 校验时会开系统 rpmdb 被拒。
 - 系统依赖（root 已装）：`apt-get install rpm libarchive-tools`（pacman 目标的 fpm 要 bsdtar）。
-- 产物在 `apps/desktop/release/`：`terminal-1000-0.1.0.x86_64.rpm`（91.6 MiB，310 文件）、
-  `terminal-1000-0.1.0.pacman`（93.5 MiB，376 项）。验证：`rpm -qip` / `bsdtar -tf`。
+- 产物在 `apps/desktop/release/`：`terminal-1000-0.1.2.x86_64.rpm`（91.6 MiB，310 文件，
+  带 `%post` 的 update-alternatives 链接脚本）、`terminal-1000-0.1.2.pacman`（91.6 MiB）。
+  验证：`rpm -qip` / `rpm -qp --scripts` / `bsdtar -tf`。
 | P2 记账本 | 方向 A（spec 未细化，做之前先与用户对齐） |
 | VNC / RDP 真机交互 | 夹具端到端已覆盖协议层；真实 tigervnc/xrdp 的真机门控测试保留（需外部机器，用户曾授权临时装 .187） |
 
@@ -238,6 +245,21 @@ SFTP 浏览器（多选/批量/chmod 对话框/书签/**树/列表双视图**）
     验收走 `scripts/ssh-test-host.mjs` + CDP（SSH 不需要本地 pty）。
 20. **无头窗口默认 1080 CSS 宽**，三栏全开时没有拖动余量；验收要先用
     `Emulation.setDeviceMetricsOverride` 放大到 1600×900 再量宽度。
+21. **本机 `fs.copyFile` 一律 EPERM**（`copy_file_range` / `sendfile` 被拦），普通 read/write
+    正常（`cp` 可用）。electron-builder 打包 asarUnpack 与 Electron 发行版复制全靠它，
+    于是必然 `EPERM: operation not permitted, copyfile …`。解法：用
+    `NODE_OPTIONS=--require <patch>.cjs` 把 `fs.copyFile`/`fs.copyFileSync`/`fs.promises.copyFile`
+    在 EPERM 时降级成「读-写」。**与 WorkBuddy 沙箱开关无关**，关掉沙箱一样 EPERM。
+22. **`/bin/rm` 是 `gnurm` 垫片**（`rm -> gnurm`），一次删除 >50 个目标会被 bulk guard 拒绝
+    并返回非 0。后果：`rpmbuild` 的 `%clean`/`rmbuild` 阶段失败、`flatpak-builder` 清理失败，
+    表现为「包其实已经写出来了，但进程 exit 1」。判断方法是**先看产物是否存在且大小合理**，
+    不要被退出码骗了；`cp -a` 想保留时间戳也会 EPERM，用 `cp -R --preserve=mode,links`。
+23. **flatpak 构建在本容器不可用**：`/var/lib/flatpak` 不可写（system 范围装不了运行时），
+    `flatpak-builder --user` 能过运行时检查，但写 OSTree 对象时 `futimens` 返回 EPERM，
+    报 `Error: Writing content object: futimens: 不允许的操作`。**这是内核/文件系统限制，不是配置问题**。
+24. **Windows 安装器在本容器不可用**：NSIS 目标要用 wine 跑一遍安装器以生成卸载器，
+    wine 10.0 在此运行该安装器稳定 `free(): invalid pointer`（有/无 X 显示都一样），
+    产物只留下一个 160KB 的残片。判断残片：`terminal-1000 Setup *.exe` 正常约 114MB。
 
 ---
 
