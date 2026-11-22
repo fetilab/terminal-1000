@@ -175,6 +175,20 @@ const PICK_FILTERS: Record<NonNullable<FieldDef['pick']>, { name: string; extens
   script: { name: '背景脚本', extensions: ['ts'] },
 }
 
+/**
+ * 滑杆读数：比率类字段（0~1）显示成百分比、模糊类显示成 px。
+ *
+ * 存的是 0.72 这种比率（CSS/Lua 侧都按比率算），但用户读的应该是 72%。
+ * 只做显示换算，回写仍是原值 —— 所以不引入第二套单位。
+ */
+function sliderText(def: FieldDef, value: number): string {
+  const scale = def.displayScale ?? 1
+  const n = value * scale
+  // 缩放后去掉浮点毛刺（0.35×100 = 35.000000000000004）
+  const shown = Math.abs(n - Math.round(n)) < 1e-6 ? String(Math.round(n)) : n.toFixed(1)
+  return `${shown}${def.unit ?? ''}`
+}
+
 function FieldControl({
   def,
   value,
@@ -217,7 +231,7 @@ function FieldControl({
               }}
               aria-label={def.label}
             />
-            <span className="settings-slider__value">{num}</span>
+            <span className="settings-slider__value">{sliderText(def, num)}</span>
           </div>
         )
       }

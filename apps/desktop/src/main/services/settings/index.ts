@@ -299,18 +299,63 @@ function setPath(obj: Record<string, unknown>, path: string, value: unknown): vo
  */
 const APPEARANCE_REV = 3
 
+/**
+ * 全新安装时的外观初值。
+ *
+ * 必须与 renderer 的 `APPEARANCE_DEFAULTS` 保持一致（那里是渲染用的真源，
+ * 这里是落库用的真源；主进程不能 import 渲染层代码，所以只能各存一份）。
+ *
+ * 为什么不能只靠渲染层兜底：设置界面读的是**文档里的值**，缺字段就显示 0 ——
+ * 于是新装的用户会看到"界面明显是 72% 半透明，设置里却写着 0%"。
+ * 早先这里只盖章不写值，面板上一排滑杆全归零就是这么来的。
+ */
+const FRESH_APPEARANCE: Record<string, unknown> = {
+  preset: 'aurora',
+  backgroundImage: '',
+  backgroundOpacity: 1,
+  backgroundBlur: 5,
+  backgroundScrim: 0.35,
+  panelOpacity: 0.72,
+  sidebarOpacity: 0.72,
+  modalOpacity: 1,
+  menuOpacity: 1,
+  inputOpacity: 1,
+  codeOpacity: 1,
+  glassBlur: 8,
+  accentStrength: 0.22,
+  scale: 1,
+  backgroundType: 'none',
+  backgroundColor: '#10141a',
+  backgroundVideo: '',
+  backgroundScript: '',
+  backgroundFps: 30,
+}
+
 function migrateAppearance(data: Record<string, unknown>): boolean {
   const app = data.app
   if (!isPlainObject(app)) return false
-  if (app.appearanceRev === APPEARANCE_REV) return false
-  const ap = app.appearance
-  if (!isPlainObject(ap)) {
-    // 全新安装：没有外观配置，不需要改值，只需盖章
-    app.appearanceRev = APPEARANCE_REV
+
+  /*
+   * 已经迁移过：只补**后来新增**的缺字段（老版 v3 文档缺 scale 之类）。
+   * 幂等 —— 补完之后不再缺，就不会再写。
+   */
+  if (app.appearanceRev === APPEARANCE_REV) {
+    const cur = app.appearance
+    if (!isPlainObject(cur)) return false
+    const missing = Object.keys(FRESH_APPEARANCE).filter((k) => !(k in cur))
+    if (missing.length === 0) return false
+    app.appearance = { ...FRESH_APPEARANCE, ...cur }
     return true
   }
 
-  // v1/v2 的「可见度」语义：把旧值换算成面板/侧边栏 alpha，保住当前观感
+  const raw = app.appearance
+  const ap: Record<string, unknown> = isPlainObject(raw) ? { ...raw } : {}
+
+  /*
+   * v1/v2 的「可见度」换算必须在补默认值**之前**判定：
+   * 先合并 FRESH 的话 panelOpacity 就已经存在，hasGroups 永远是 true，
+   * 老用户的 0.25 会被当成"已经调好的分组 alpha"原样留下（壁纸直接糊满）。
+   */
   const legacy = typeof ap.backgroundOpacity === 'number' ? ap.backgroundOpacity : null
   const hasGroups = typeof ap.panelOpacity === 'number'
   if (legacy !== null && !hasGroups) {
@@ -330,20 +375,11 @@ function migrateAppearance(data: Record<string, unknown>): boolean {
     ap.backgroundScrim = 0
   }
 
-  if (typeof ap.backgroundOpacity !== 'number') ap.backgroundOpacity = 1
-  if (typeof ap.backgroundBlur !== 'number') ap.backgroundBlur = 5
-  if (typeof ap.backgroundScrim !== 'number') ap.backgroundScrim = 0.35
-  if (typeof ap.panelOpacity !== 'number') ap.panelOpacity = 0.72
-  if (typeof ap.sidebarOpacity !== 'number') ap.sidebarOpacity = 0.72
-  // 浮层默认实色：半透明会让壁纸与文字抢对比度
-  if (typeof ap.modalOpacity !== 'number') ap.modalOpacity = 1
-  if (typeof ap.menuOpacity !== 'number') ap.menuOpacity = 1
-  if (typeof ap.inputOpacity !== 'number') ap.inputOpacity = 1
-  if (typeof ap.codeOpacity !== 'number') ap.codeOpacity = 1
-  if (typeof ap.glassBlur !== 'number') ap.glassBlur = 8
-  if (typeof ap.accentStrength !== 'number') ap.accentStrength = 0.22
-  // 已合并/废弃的第二、第三个透明度旋钮
+  // 已合并/废弃的旋钮
   delete ap.opacity
+
+  // 缺什么补什么，已有的用户值优先
+  app.appearance = { ...FRESH_APPEARANCE, ...ap }
   app.appearanceRev = APPEARANCE_REV
   return true
 }

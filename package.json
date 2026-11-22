@@ -1,6 +1,6 @@
 {
   "name": "terminal-1000",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "Terminal and remote connection manager (independent reimplementation)",
   "license": "GPL-3.0-or-later",

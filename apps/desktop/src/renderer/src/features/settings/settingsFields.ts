@@ -41,6 +41,10 @@ export interface FieldDef {
   caution?: boolean
   /** 分组标题：相邻同组字段会归在同一个标题下（只影响渲染，不影响存取） */
   group?: string
+  /** 滑杆读数的单位（'%'、'px'），只影响显示 */
+  unit?: string
+  /** 读数放大倍数：0~1 的比率用 100 显示成百分比 */
+  displayScale?: number
 }
 
 const THEME_OPTIONS: readonly SelectOption[] = [
@@ -138,6 +142,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.05,
       group: '背景',
+      unit: '%',
+      displayScale: 100,
       hint: '壁纸自身的不透明度：调低可让壁纸融入背景色，0 = 完全藏起来',
     },
     {
@@ -148,6 +154,7 @@ export const SETTINGS_FIELDS: Record<
       max: 40,
       step: 1,
       group: '背景',
+      unit: 'px',
       hint: '壁纸的高斯模糊强度（px）：模糊花纹、减少炫光',
     },
     {
@@ -158,6 +165,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.05,
       group: '背景',
+      unit: '%',
+      displayScale: 100,
       hint: '在壁纸上盖一层主题色（浅色盖白/深色盖黑），调高后壁纸上的文字更易读',
     },
     {
@@ -168,6 +177,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.02,
       group: '界面',
+      unit: '%',
+      displayScale: 100,
       hint: '主区域（含终端）的不透明度：终端画布与面板读同一个值，所以两者永远一致；100% = 不透明',
     },
     {
@@ -178,6 +189,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.02,
       group: '界面',
+      unit: '%',
+      displayScale: 100,
       hint: '左侧图标栏与侧边面板的不透明度',
     },
     {
@@ -188,6 +201,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.02,
       group: '界面',
+      unit: '%',
+      displayScale: 100,
       hint: '设置窗口、确认框这类大块弹窗；默认 100%（实色）保证可读',
     },
     {
@@ -198,6 +213,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.02,
       group: '界面',
+      unit: '%',
+      displayScale: 100,
       hint: '右键菜单、命令补全、全局搜索浮层；默认 100%',
     },
     {
@@ -208,6 +225,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.02,
       group: '界面',
+      unit: '%',
+      displayScale: 100,
       hint: '工具栏搜索框、表单输入框的背景',
     },
     {
@@ -218,6 +237,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.02,
       group: '界面',
+      unit: '%',
+      displayScale: 100,
       hint: '编辑器与代码预览块的不透明度',
     },
     {
@@ -228,6 +249,8 @@ export const SETTINGS_FIELDS: Record<
       max: 1,
       step: 0.02,
       group: '界面',
+      unit: '%',
+      displayScale: 100,
       hint: '选中/悬停时强调色填充的浓度（越大越显眼）',
     },
     {
@@ -238,6 +261,7 @@ export const SETTINGS_FIELDS: Record<
       max: 40,
       step: 1,
       group: '界面',
+      unit: 'px',
       hint: '面板/侧栏/主区域背后的磨砂半径（px）：与终端同源，所以整个界面一起变；0 = 关闭',
     },
     {

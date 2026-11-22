@@ -107,6 +107,44 @@ describe('settings 域', () => {
     expect(v.value).toBeUndefined()
   })
 
+  it('全新文档：外观落库时补齐全部默认值（否则设置面板一排滑杆显示 0）', () => {
+    /*
+     * 回归用例：早先这里只盖 appearanceRev 章、不写值，
+     * 结果设置界面读不到字段 —— 界面明明是 72% 半透明，滑杆却显示 0%。
+     */
+    const fresh = { version: 1, data: { app: { theme: 'light' } } }
+    getStoreService().db.put(storeKeyOf('Settings'), 'app', JSON.stringify(fresh), Date.now())
+    resetSettingsCache()
+
+    const s = call('getAll') as ReturnType<typeof defaultSettings> & {
+      app: { appearance?: Record<string, unknown> }
+    }
+    const ap = s.app.appearance
+    expect(ap).toBeDefined()
+    for (const key of [
+      'backgroundOpacity',
+      'backgroundBlur',
+      'backgroundScrim',
+      'panelOpacity',
+      'sidebarOpacity',
+      'modalOpacity',
+      'menuOpacity',
+      'inputOpacity',
+      'codeOpacity',
+      'glassBlur',
+      'accentStrength',
+    ]) {
+      expect(typeof ap![key], `${key} 必须落库`).toBe('number')
+    }
+    // 与渲染层 APPEARANCE_DEFAULTS 一致的那几个关键值
+    expect(ap!.panelOpacity).toBe(0.72)
+    expect(ap!.sidebarOpacity).toBe(0.72)
+    expect(ap!.glassBlur).toBe(8)
+    expect(ap!.scale).toBe(1)
+    expect(ap!.backgroundType).toBe('none')
+    expect(ap!.preset).toBe('aurora')
+  })
+
   it('旧外观文档迁移到 v3：可见度换算成分组 alpha，壁纸改为满强度', () => {
     // v1 文档：没有 backgroundBlur，带 opacity（界面不透明度），可见度是「背景图层缩放」语义
     const legacy = {
