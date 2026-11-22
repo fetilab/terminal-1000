@@ -283,6 +283,40 @@ function setPath(obj: Record<string, unknown>, path: string, value: unknown): vo
 
 // ── 持久化 ───────────────────────────────────────────
 
+/**
+ * 外观 v2 迁移：`app.appearance.backgroundOpacity` 换了语义。
+ *
+ * v1 里它是「背景图层自身的不透明度」——终端画布是实色的，这个旋钮调到
+ * 任何值都看不出区别，用户存下来的小值（0.25 / 0.35）只是「调过但没用」的
+ * 痕迹。v2 起它是**唯一的透明度旋钮**（表面 alpha = 1 - v × 0.9），再把
+ * 0.25 原样套进新公式，终端就会重新糊上约 40% 的主题色膜 —— 用户看到的
+ * 就是「终端还是叠加颜色、不完全透明」。
+ *
+ * 判定用显式的 `app.appearanceRev` 版本戳，**不能**用「缺少 backgroundBlur」
+ * 之类的字段存在性：writeDoc 会盖戳，所以任何 v2 代码写过的文档都不会被
+ * 二次迁移（否则用户只拖了一次可见度滑杆，重启就被重置回默认值）。
+ */
+const APPEARANCE_V2_VISIBILITY = 0.8
+const APPEARANCE_REV = 2
+
+function migrateAppearance(data: Record<string, unknown>): boolean {
+  const app = data.app
+  if (!isPlainObject(app)) return false
+  if (app.appearanceRev === APPEARANCE_REV) return false
+  const ap = app.appearance
+  if (!isPlainObject(ap)) {
+    // 全新安装：没有外观配置，不需要改值，只需盖章
+    app.appearanceRev = APPEARANCE_REV
+    return true
+  }
+  if (typeof ap.backgroundBlur !== 'number') ap.backgroundBlur = 12
+  ap.backgroundOpacity = APPEARANCE_V2_VISIBILITY
+  // 「界面不透明度」已合并进上面那个唯一旋钮；留着只会让人以为还有第二个开关
+  delete ap.opacity
+  app.appearanceRev = APPEARANCE_REV
+  return true
+}
+
 function readDoc(): Settings {
   const db = getStoreService().db
   const row = db.get(storeKeyOf('Settings'), SETTINGS_ITEM_ID)
@@ -291,7 +325,15 @@ function readDoc(): Settings {
   try {
     const parsed = JSON.parse(row.payload) as Partial<SettingsDoc>
     // 与默认值深合并：旧版本新增的设置项会自动补齐，不会因缺字段而 undefined
-    return deepMerge(defaultSettings(), parsed.data ?? {})
+    const data = parsed.data ?? {}
+    if (migrateAppearance(data as Record<string, unknown>)) {
+      const migrated = deepMerge(defaultSettings(), data)
+      // 落盘：避免每次启动都用内存里的迁移值、而设置面板显示旧值
+      writeDoc(migrated)
+      log.info('外观设置已迁移到 v2（单滑杆 + 背景模糊）')
+      return migrated
+    }
+    return deepMerge(defaultSettings(), data)
   } catch (err) {
     log.warn('设置文档损坏，回退默认值', err)
     return defaultSettings()
@@ -300,6 +342,10 @@ function readDoc(): Settings {
 
 function writeDoc(settings: Settings): void {
   const db = getStoreService().db
+  // v2 代码写出的文档一律盖戳：这样迁移只发生一次，之后用户把可见度调成
+  // 任何值都不会在下次启动被重置（判定依据见 migrateAppearance）
+  const app = (settings as { app?: unknown }).app
+  if (isPlainObject(app) && isPlainObject(app.appearance)) app.appearanceRev = APPEARANCE_REV
   const doc: SettingsDoc = { version: SETTINGS_VERSION, data: settings }
   const now = Date.now()
   db.put(storeKeyOf('Settings'), SETTINGS_ITEM_ID, JSON.stringify(doc), now)

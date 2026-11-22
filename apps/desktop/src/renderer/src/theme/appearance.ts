@@ -48,8 +48,8 @@ export interface AppearanceConfig {
 export const APPEARANCE_DEFAULTS: AppearanceConfig = {
   preset: 'aurora',
   backgroundImage: '',
-  // 0.6：默认就明显透出背景（表面 46%），而不是「设了背景却像没生效」
-  backgroundOpacity: 0.6,
+  // 0.8：设了背景就该看得见（表面 28%、终端约 11%），而不是「设了像没生效」
+  backgroundOpacity: 0.8,
   backgroundBlur: 12,
   scale: 1,
   backgroundType: 'none',

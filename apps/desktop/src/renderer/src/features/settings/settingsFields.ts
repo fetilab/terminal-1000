@@ -135,7 +135,7 @@ export const SETTINGS_FIELDS: Record<
       min: 0,
       max: 1,
       step: 0.05,
-      hint: '拉高界面更透、背景更可见；推到 0 隐藏背景层',
+      hint: '唯一透明度旋钮：越高壁纸越清楚、界面/终端越透（拉满 = 终端完全透明）',
     },
     {
       path: 'app.appearance.backgroundBlur',

@@ -2,7 +2,8 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { StoreService, setStoreService } from '../store'
+import { StoreService, getStoreService, setStoreService } from '../store'
+import { storeKeyOf } from '../store/db'
 import { AppError } from '../../errors'
 import {
   DEFAULT_TERMINAL_SETTINGS,
@@ -104,6 +105,66 @@ describe('settings 域', () => {
   it('get 不存在的路径返回 undefined 而不是抛错', () => {
     const v = call('get', { path: 'nope.not.here' }) as { value: unknown }
     expect(v.value).toBeUndefined()
+  })
+
+  it('v1 外观文档迁移：旧 backgroundOpacity 重映射，补 backgroundBlur，丢弃 opacity', () => {
+    // v1 文档：没有 backgroundBlur，带 opacity（界面不透明度），可见度是「背景图层缩放」语义
+    const legacy = {
+      version: 1,
+      data: {
+        app: {
+          theme: 'light',
+          appearance: {
+            preset: 'aurora',
+            backgroundType: 'image',
+            backgroundImage: '/tmp/wall.png',
+            backgroundOpacity: 0.25,
+            opacity: 0.95,
+          },
+        },
+      },
+    }
+    new StoreService(':memory:') // 确保 db 可用（setStoreService 已在 beforeEach 建好）
+    getStoreService().db.put(storeKeyOf('Settings'), 'app', JSON.stringify(legacy), Date.now())
+    resetSettingsCache()
+
+    const s = call('getAll') as ReturnType<typeof defaultSettings> & {
+      app: { appearance?: Record<string, unknown> }
+    }
+    const ap = s.app.appearance
+    expect(ap).toBeDefined()
+    // 0.25 在新公式下会让终端糊 40% 的膜 —— 必须重映射到新默认可见度
+    expect(ap!.backgroundOpacity).toBe(0.8)
+    expect(ap!.backgroundBlur).toBe(12)
+    expect(ap as Record<string, unknown>).not.toHaveProperty('opacity')
+    // 其余字段原样保留（迁移不能顺手清掉用户的壁纸）
+    expect(ap!.backgroundImage).toBe('/tmp/wall.png')
+    expect(ap!.preset).toBe('aurora')
+
+    // 幂等：再读一次不会重复迁移，且迁移结果已落盘
+    resetSettingsCache()
+    const again = call('getAll') as typeof s
+    expect((again.app.appearance as Record<string, unknown>).backgroundOpacity).toBe(0.8)
+  })
+
+  it('v2 文档不再被迁移：单独调过可见度的配置重启后保持原值', () => {
+    // 用户只拖了可见度滑杆（没有 backgroundBlur 字段）——绝不能被当成旧文档重置
+    const doc = {
+      version: 1,
+      data: {
+        app: {
+          appearanceRev: 2,
+          appearance: { backgroundType: 'image', backgroundImage: '/tmp/w.png', backgroundOpacity: 0.35 },
+        },
+      },
+    }
+    getStoreService().db.put(storeKeyOf('Settings'), 'app', JSON.stringify(doc), Date.now())
+    resetSettingsCache()
+
+    const s = call('getAll') as ReturnType<typeof defaultSettings> & {
+      app: { appearance?: Record<string, unknown> }
+    }
+    expect(s.app.appearance!.backgroundOpacity).toBe(0.35)
   })
 
   it('reset 单个分区只重置该分区', () => {

@@ -60,6 +60,7 @@ import { CompletionPopup } from './CompletionPopup'
 import { computeCompletionAnchor, type CompletionAnchor } from './completionAnchor'
 import { cellsFor, normalizeHexColor, segmentHighlightStyle, segmentText } from './highlights'
 import {
+  BACKGROUND_SURFACE_MAX,
   backgroundImageUrl,
   effectiveSurfaceAlpha,
   currentMediaSurfaceAlpha,
@@ -247,14 +248,19 @@ function parseOsc7(data: string): string | null {
  * `--t1000-surface-alpha`），并**再乘一个更低的终端系数**：终端是"看穿"的
  * 内容区，壁纸主要从终端透出来（kitty background_opacity 的观感），
  * 面板则要承托按钮/文字，保持稍实一点。
- * 不再与 terminal.backgroundOpacity 取 min —— 那是第二个透明度滑杆，
- * 会把「可见度拉满」钉在 0.88，用户看到的就是「调到头终端还是不完全透明」。
+ *
+ * 关键：先扣掉面板在「可见度拉满」时的下限（1 - BACKGROUND_SURFACE_MAX = 0.1），
+ * 再乘增益 —— 这样可见度拉满时终端 alpha **正好是 0**，等同 kitty
+ * `background_opacity=0`：壁纸原样透出，不再有任何主题色薄膜。
+ * 之前是 `max(0.05, mediaAlpha × 0.55)`，下限 5% 就是用户看到的
+ * 「终端还是叠加了一层颜色、不完全透明」。
  */
-const TERMINAL_SURFACE_FACTOR = 0.55
+const TERMINAL_SURFACE_FACTOR = 0.6
 
 function bgAlphaFor(cfg: TerminalSettings, mediaAlpha: number | null): number {
   if (mediaAlpha === null) return cfg.backgroundOpacity
-  return Math.max(0.05, mediaAlpha * TERMINAL_SURFACE_FACTOR)
+  const floor = 1 - BACKGROUND_SURFACE_MAX
+  return Math.max(0, mediaAlpha - floor) * TERMINAL_SURFACE_FACTOR
 }
 
 function themeFor(colorScheme: string, resolved: 'light' | 'dark'): import('@xterm/xterm').ITheme {

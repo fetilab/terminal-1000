@@ -170,11 +170,14 @@ body.t1000-has-dynbg .kitty-surface {
 /*
  * 媒体背景激活时，终端画布 → 背景层之间的**中间容器必须全部透明**。
  *
- * 这是最关键的修复（「命令行终端不透明」的根因）：这些容器各自带
- * --t1000-bg-* 半透明底色，单层看似无害（alpha≈0.59），但画布、
- * .term-pane、.content、body 四层叠加是 1-(1-0.59)⁴ ≈ 0.97 ——
- * 终端区域视觉上几乎完全不透明，而侧栏只有单层所以明显透出，
- * 用户看到的就是「界面毛玻璃有了，唯独终端不透明」。
+ * 这是「命令行终端不透明」的根因：这些容器各自带 --t1000-bg-* 半透明
+ * 底色，单层看似无害，但画布 + .term-pane + .term-panes + .content + body
+ * 多层串联叠加（1-(1-a)^n），终端区域视觉上几乎完全不透明，而侧栏只有
+ * 单层所以明显透出——用户看到的就是「界面毛玻璃有了，唯独终端不透明」。
+ *
+ * **名单必须覆盖画布到 body 的每一层**：漏掉任何一层，就会在壁纸上多盖
+ * 一层主题色薄膜。`.term-panes`（多窗格网格容器）此前不在名单里、默认
+ * 46% 表面 alpha，正是「终端还是叠加颜色」的那一层。
  *
  * 透明后终端画布的 alpha 直接对背景层生效（kitty background_opacity
  * 同款观感）；没有媒体背景时这些规则不生效，body 的底色照常兜底，
@@ -187,7 +190,15 @@ body.t1000-has-dynbg {
 
 body.t1000-has-bg .content,
 body.t1000-has-dynbg .content,
+body.t1000-has-bg .term-workspace,
+body.t1000-has-dynbg .term-workspace,
+body.t1000-has-bg .term-panes,
+body.t1000-has-dynbg .term-panes,
+body.t1000-has-bg .term-slot,
+body.t1000-has-dynbg .term-slot,
 body.t1000-has-bg .term-pane,
-body.t1000-has-dynbg .term-pane {
+body.t1000-has-dynbg .term-pane,
+body.t1000-has-bg .term-pane__surface,
+body.t1000-has-dynbg .term-pane__surface {
   background: transparent;
 }

@@ -21,6 +21,31 @@ const SHOTS = '/home/mosfet/dsh1/_shots'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let xvfbLog = ''
 
+/**
+ * 计算样式里的颜色 alpha 解析器（注入到页面里用）。
+ *
+ * Chromium 对 color-mix() 的结果输出的是 `color(srgb 0.91 0.92 0.95 / 0.46)`，
+ * 只认 `rgba()` 的解析器会把它当成"不透明"或"解析失败 → a=0"。上一版探针
+ * 正是因此把 `.term-panes` 的 46% 表面色算成 0，链路合成恒为 0 而误报 PASS ——
+ * 用户实机看到的「终端还是叠加颜色」就是这么漏出去的。这里三种语法全覆盖。
+ */
+const ALPHA_PARSER = `
+  const parseAlpha = (css) => {
+    const s = String(css || '').trim()
+    if (!s || s === 'transparent') return 0
+    let m = s.match(/^rgba?\\(([^)]+)\\)$/)
+    if (m) {
+      const parts = m[1].split(/[,\\/]/).map((x) => parseFloat(x)).filter((x) => !Number.isNaN(x))
+      if (parts.length >= 4) return parts[3]
+      return 1
+    }
+    m = s.match(/^color\\([^)]*\\/\\s*([\\d.]+)\\s*\\)$/)
+    if (m) return parseFloat(m[1])
+    if (s.startsWith('color(')) return 1
+    return 1
+  }
+`
+
 /** 确保测试跑在 Xvfb 虚拟显示里——Xvfb 掉了绝不回退主屏（Electron 会连 :0 弹窗） */
 async function ensureXvfb() {
   for (let i = 0; i < 10; i++) {
@@ -645,7 +670,25 @@ async function probeRealPane(cdp) {
   await cdp.eval(`window.__t1000.setAppearance('app.appearance.backgroundType', 'color')`)
   await sleep(900)
   const paneAlpha = await canvasBgAlpha(cdp, paneCanvas, paneRender)
+  // 画布"薄膜"像素占比：可见度拉满时终端画布必须**完全没有半透明底色**
+  // （等同 kitty background_opacity=0），只剩字形像素。少量 2~200 的像素
+  // 来自文字抗锯齿边缘，正常应远低于 1%。
+  const film = await cdp.eval(`(() => {
+    ${paneRender}
+    const glc = document.querySelector('.kitty-canvas')
+    if (!glc) return { ratio: 1, total: 0 }
+    const c2 = document.createElement('canvas')
+    c2.width = glc.width; c2.height = glc.height
+    const ctx = c2.getContext('2d')
+    ctx.drawImage(glc, 0, 0)
+    const d = ctx.getImageData(0, 0, c2.width, c2.height).data
+    let film = 0
+    const total = c2.width * c2.height
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 2 && d[i] < 200) film++
+    return { ratio: +(film / total).toFixed(5), total, film }
+  })()`)
   const composite = await cdp.eval(`(() => {
+    ${ALPHA_PARSER}
     const canvas = document.querySelector('.kitty-canvas')
     const dyn = document.querySelector('.t1000-dynbg')
     if (!canvas || !dyn) return { ok: false, why: 'missing elements' }
@@ -655,19 +698,15 @@ async function probeRealPane(cdp) {
     const redSet = colorEl && getComputedStyle(colorEl).backgroundColor === 'rgb(192, 57, 43)'
     const dynOpacity = parseFloat(getComputedStyle(dyn).opacity)
     // 画布 → body 之间的**累积合成 alpha**：1-∏(1-aᵢ)。
-    // 上一版只查单层 a≥0.999 的实色层，漏掉了「画布/term-pane/content/body
-    // 四层各 0.59 叠出 0.97」的级联 —— 终端不透明的真正根因。
+    // 上一版只查单层 a≥0.999 的实色层，且解析器不认 color(srgb …/a)，
+    // 漏掉了「.term-panes 46% + 画布 + …」的级联 —— 终端叠加颜色的真正根因。
     // 媒体背景激活时这些中间层必须全部透明（合成 ≈0），画布 alpha 直接对背景层。
     const chainLayers = []
     let p = canvas.parentElement
     while (p) {
-      const bg = getComputedStyle(p).backgroundColor
-      const m = bg.match(/rgba?\\(([^)]+)\\)/)
-      if (m) {
-        const parts = m[1].split(',').map(s => parseFloat(s))
-        const a = parts.length === 4 ? parts[3] : 1
-        chainLayers.push({ el: p.tagName + '.' + String(p.className || '').split(' ')[0], a })
-      }
+      const cs = getComputedStyle(p)
+      const a = parseAlpha(cs.backgroundColor) * (parseFloat(cs.opacity) || 1)
+      if (a > 0.0005) chainLayers.push({ el: p.tagName + '.' + String(p.className || '').split(' ')[0], a: +a.toFixed(4), bg: cs.backgroundColor })
       if (p === document.body) break
       p = p.parentElement
     }
@@ -677,17 +716,16 @@ async function probeRealPane(cdp) {
     chainComposite = 1 - chainComposite
     // DOCUMENT_POSITION_FOLLOWING：canvas 在 dyn 之后 → dyn 在画布之前绘制（在下层）
     const dynBeforeContent = !!(dyn.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING)
-    return { coversViewport, redSet, dynOpacity, opaqueLayers, chainComposite, dynBeforeContent }
+    return { coversViewport, redSet, dynOpacity, opaqueLayers, chainComposite: +chainComposite.toFixed(4), dynBeforeContent }
   })()`)
   const bgVisibleOk =
-    paneAlpha >= 10 &&
-    paneAlpha < 45 &&
+    // 终端画布上不能有任何半透明底色薄膜；中间容器累积合成必须≈0
+    film.ratio < 0.01 &&
     composite.coversViewport &&
     composite.redSet &&
     composite.dynOpacity > 0.95 &&
     composite.opaqueLayers.length === 0 &&
-    // 中间层累积合成必须接近全透明（画布 alpha 已由 paneAlpha 单独断言）
-    composite.chainComposite < 0.35 &&
+    composite.chainComposite < 0.02 &&
     composite.dynBeforeContent
   await cdp.shot('pane-bg-red.png')
 
@@ -725,7 +763,7 @@ async function probeRealPane(cdp) {
   console.log(`REAL-PANE: ${themeKeepOk && textVisibleOk && bgVisibleOk && mouseOk ? 'PASS' : 'FAIL'} (配色跟随=${themeKeepOk} 历史文字可见=${textVisibleOk} 背景透出=${bgVisibleOk} 模拟鼠标=${mouseOk})`)
   console.log('  before =', JSON.stringify(before), 'greenPxBefore =', greenPxBefore)
   console.log('  after  =', JSON.stringify(after), 'greenPxAfter =', greenPxAfter)
-  console.log('  paneAlpha =', paneAlpha, 'composite =', JSON.stringify(composite), 'greenPxBefore =', greenPxBefore, 'greenPxAfter =', greenPxAfter)
+  console.log('  paneAlpha =', paneAlpha, 'film =', JSON.stringify(film), 'composite =', JSON.stringify(composite), 'greenPxBefore =', greenPxBefore, 'greenPxAfter =', greenPxAfter)
   return themeKeepOk && textVisibleOk && bgVisibleOk && mouseOk
 }
 
