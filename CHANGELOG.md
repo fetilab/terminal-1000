@@ -7,6 +7,50 @@
 "修复了 X 的问题"。因为这个项目里有一批缺陷属于"看起来正常、实际从未生效"，
 把根因写下来，比写"已修复"对后来者有用得多。
 
+## [0.2.5] - 2026-11-22
+
+这一版把「光标」和「鼠标选择」按 kitty 源码（`cursor_trail.c`、`screen.c`、
+`shaders/cell.slang`、`shaders/trail.slang`、`shaders/background.slang`）逐条对齐。
+
+### 修复
+
+- **光标移动后卡在变形状态半秒**：拖尾四边形少了 `needs_render` 这道门。kitty 的
+  `stop_os_window_rendering` 只在 `cursor_trail.needs_render` 为真时画拖尾，四角收敛到
+  半格以内就停笔；我们一直画，那块"变形"就一直留在屏幕上，直到 500ms 后的闪烁定时器
+  把整行重画才消失 —— 观感就是"卡半秒，然后突然弹回去"。现在只在
+  `needs || needs_prev` 时绘制（多跑一帧擦残影），并删掉自创的"头部角钉死"，
+  恢复纯指数缓动；
+- **块光标盖住字符**：改成 kitty 的「整格反色」——该格背景换成光标色、文字换成原底色
+  （`cell.slang` 的 `has_block_cursor` 分支），字符始终可见；不再额外盖一个实心矩形；
+- **汉字上的块光标只反色半格**：kitty 对 multicell 做 `cursor_x2 += mcd_x_limit-1`，
+  光标要盖满整个宽字符。现在按 `F_WIDE` 伸展到两格；
+- **失焦后光标还在闪**：kitty 的判据是 `!non_blinking && os_window->is_focused`，
+  失焦应当常亮（形状换成 `cursor_shape_unfocused`）。现在失焦停表、聚焦重新起表；
+- **空心光标横竖不等宽**：`add_hollow_cursor` 是四条绝对线宽的 box-drawing 细线，
+  早先用 `0.08 格` 近似，在窄格子上竖边只有 0.56px；beam/underline 默认粗细也一并
+  对齐 kitty 的 1.5pt / 2.0pt（96dpi 下 2px / 2.67px）；
+- **DIM/FAINT 在浅色主题上没有效果**：kitty 是 `lerp(cell_bg, fg, dim_opacity=0.4)`
+  ——把前景往底色上兑；我们写的是"fg × 0.62"，黑字乘完还是黑。
+
+### 修复（鼠标选择）
+
+- **一按下就出现选区且消不掉**：按下时只起锚点（anchor == cursor，同一格同一半格
+  即空选区，屏幕上什么都不画），超过 5px 拖拽阈值才扩展；单击清空选区
+  ——kitty 的 `left click → mouse_handle_click selection link prompt` 在已有选区时
+  什么都不做，那是给带 shell 集成的场景用的，我们没有集成，照搬会导致选区永远消不掉；
+- **选区边界差半格**：选区规则抽成 `selectionSpans.ts`，逐条对齐 `iteration_data()`：
+  起点在右半格则 +1、终点在左半格则 −1，12 例单测覆盖正反向、跨行、矩形、越界；
+- **双击/三击后拖动会降级成按格**：补上 kitty 的 `SelectionExtendMode`
+  （`EXTEND_WORD` / `EXTEND_LINE`），拖动时按词/按行伸缩，方向由指针与锚点的先后决定。
+
+### 修复（全屏程序里的鼠标）
+
+- **vim/htop 里拖不动、像卡死**：程序抓取鼠标后，按下就 `return` 导致 move/up 监听
+  根本没挂上——程序只收到 press，永远等不到 release，就认为鼠标一直被按着。
+  现在按下照常挂监听，move 发 DRAG（`32;x;y M`）、up 发 release；
+- Shift+拖动绕过程序做本地选择（`shift+left press grabbed mouse_selection normal`）；
+- 备用屏/未抓取时滚轮按 `fake_scroll` 翻译成 ↑/↓ 的按下+释放，而不是滚回看。
+
 ## [0.2.4] - 2026-11-22
 
 ### 修复
