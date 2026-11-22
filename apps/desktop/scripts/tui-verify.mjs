@@ -467,7 +467,7 @@ async function probeDynbgChain(cdp) {
       surfaceAlpha: parseFloat(root.style.getPropertyValue('--t1000-surface-alpha')),
     }
   })()`)
-  const defaultVisOk = cDef.hasBgClass && cDef.imgOpacity === 1 && cDef.surfaceAlpha > 60 && cDef.surfaceAlpha < 75
+  const defaultVisOk = cDef.hasBgClass && cDef.imgOpacity === 1 && cDef.surfaceAlpha > 70 && cDef.surfaceAlpha < 80
   await cdp.shot('dynbg-default-vis.png')
   // 可见度推到 0：媒体层整体隐藏（has-bg 撤、图片 none、毛玻璃撤）
   await set('app.appearance.backgroundOpacity', 0)
