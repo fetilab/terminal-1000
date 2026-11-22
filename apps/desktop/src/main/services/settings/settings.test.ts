@@ -107,7 +107,7 @@ describe('settings 域', () => {
     expect(v.value).toBeUndefined()
   })
 
-  it('v1 外观文档迁移：旧 backgroundOpacity 重映射，补 backgroundBlur，丢弃 opacity', () => {
+  it('旧外观文档迁移到 v3：可见度换算成分组 alpha，壁纸改为满强度', () => {
     // v1 文档：没有 backgroundBlur，带 opacity（界面不透明度），可见度是「背景图层缩放」语义
     const legacy = {
       version: 1,
@@ -133,28 +133,53 @@ describe('settings 域', () => {
     }
     const ap = s.app.appearance
     expect(ap).toBeDefined()
-    // 0.25 在新公式下会让终端糊 40% 的膜 —— 必须重映射到新默认可见度
-    expect(ap!.backgroundOpacity).toBe(0.8)
-    expect(ap!.backgroundBlur).toBe(12)
+    // 旧「可见度 0.25」→ 面板 alpha = 1 - 0.25×0.9 = 0.775：观感不变
+    expect(ap!.panelOpacity).toBeCloseTo(0.775, 3)
+    expect(ap!.sidebarOpacity).toBeCloseTo(0.775, 3)
+    // 壁纸自身改为满强度（v3 里它不再兼任界面透明度）
+    expect(ap!.backgroundOpacity).toBe(1)
+    // 背景三件套与浮层组补齐默认值
+    // 遮罩必须留 0：旧模型没有这一层，塞默认 0.35 会让老用户壁纸凭空变淡
+    expect(ap!.backgroundScrim).toBe(0)
+    expect(ap!.glassBlur).toBe(8)
+    expect(ap!.accentStrength).toBe(0.22)
+    expect(ap!.modalOpacity).toBe(1)
+    expect(ap!.menuOpacity).toBe(1)
+    expect(ap!.inputOpacity).toBe(1)
+    expect(ap!.codeOpacity).toBe(1)
     expect(ap as Record<string, unknown>).not.toHaveProperty('opacity')
     // 其余字段原样保留（迁移不能顺手清掉用户的壁纸）
     expect(ap!.backgroundImage).toBe('/tmp/wall.png')
     expect(ap!.preset).toBe('aurora')
+    expect(ap!.backgroundType).toBe('image')
 
     // 幂等：再读一次不会重复迁移，且迁移结果已落盘
     resetSettingsCache()
     const again = call('getAll') as typeof s
-    expect((again.app.appearance as Record<string, unknown>).backgroundOpacity).toBe(0.8)
+    expect((again.app.appearance as Record<string, unknown>).panelOpacity).toBeCloseTo(0.775, 3)
+    expect((again.app as unknown as Record<string, unknown>).appearanceRev).toBe(3)
   })
 
-  it('v2 文档不再被迁移：单独调过可见度的配置重启后保持原值', () => {
-    // 用户只拖了可见度滑杆（没有 backgroundBlur 字段）——绝不能被当成旧文档重置
+  it('v3 文档不再被迁移：用户调过的分组 alpha 重启后保持原值', () => {
     const doc = {
       version: 1,
       data: {
         app: {
-          appearanceRev: 2,
-          appearance: { backgroundType: 'image', backgroundImage: '/tmp/w.png', backgroundOpacity: 0.35 },
+          appearanceRev: 3,
+          appearance: {
+            backgroundType: 'image',
+            backgroundImage: '/tmp/w.png',
+            backgroundOpacity: 1,
+            panelOpacity: 0.4,
+            sidebarOpacity: 0.55,
+            modalOpacity: 1,
+            menuOpacity: 1,
+            inputOpacity: 1,
+            codeOpacity: 1,
+            backgroundScrim: 0.2,
+            glassBlur: 12,
+            accentStrength: 0.3,
+          },
         },
       },
     }
@@ -164,7 +189,9 @@ describe('settings 域', () => {
     const s = call('getAll') as ReturnType<typeof defaultSettings> & {
       app: { appearance?: Record<string, unknown> }
     }
-    expect(s.app.appearance!.backgroundOpacity).toBe(0.35)
+    expect(s.app.appearance!.panelOpacity).toBe(0.4)
+    expect(s.app.appearance!.sidebarOpacity).toBe(0.55)
+    expect(s.app.appearance!.glassBlur).toBe(12)
   })
 
   it('reset 单个分区只重置该分区', () => {

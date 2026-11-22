@@ -205,6 +205,7 @@ export class KittyEngine {
     this.wrap.style.position = 'absolute'
     this.wrap.style.inset = '0'
     this.wrap.style.outline = 'none'
+    this.syncWrapBg()
 
     this.canvas = document.createElement('canvas')
     this.canvas.className = 'kitty-canvas'
@@ -398,6 +399,7 @@ export class KittyEngine {
       core: base,
     })
     this.renderer.setTheme(this.theme)
+    this.syncWrapBg()
   }
 
   /* ─────────────────────────── 事件 ─────────────────────────── */
@@ -697,6 +699,21 @@ export class KittyEngine {
 
   private cssWidth(): number {
     return Math.max(1, this.element.clientWidth)
+  }
+
+  /**
+   * 让 .kitty-surface 的底色与画布清屏色一致。
+   *
+   * 渲染器的 canvas 只覆盖「网格区域」：四周由 options.padding 留白，
+   * 留白处看到的是容器底色。如果容器底色不是终端底色（例如透明、或面板色），
+   * 终端四周就会浮出一圈颜色不同的「间隔」，而且这圈和中间的字区永远对不上。
+   * 把 wrap 底色同步成 theme.bg（含 alpha）后：alpha=1 时留白=画布色，
+   * alpha=0（有媒体背景）时两者都是完全透明，都无缝。
+   */
+  private syncWrapBg(): void {
+    const { r, g, b, a } = this.theme.bg
+    const c = (v: number): number => Math.round(Math.min(1, Math.max(0, v)) * 255)
+    this.wrap.style.backgroundColor = `rgba(${c(r)}, ${c(g)}, ${c(b)}, ${a})`
   }
 
   private cssHeight(): number {
@@ -1101,6 +1118,7 @@ export class KittyEngine {
       core: this.customThemeBase ?? undefined,
     })
     this.renderer.setTheme(this.theme)
+    this.syncWrapBg()
   }
 
   /** 换主题/字体（设置热更新） */
@@ -1122,6 +1140,7 @@ export class KittyEngine {
       core: this.customThemeBase ?? undefined,
     })
     this.renderer.setTheme(this.theme)
+    this.syncWrapBg()
     this.renderer.setOptions({ ligatures: settings.ligatures, zebra: settings.zebraStripes })
     this.renderer.setCursorTrail(settings.cursorTrail)
     this.renderer.setCursorShapeOverride(settings.cursorStyle)

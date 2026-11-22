@@ -12,7 +12,7 @@
  *    不是只读展示。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppPaths, Settings } from '@t1000/shared'
 import { Button, IconButton, Section } from '../../components/Button'
 import { Badge, Banner, Loading } from '../../components/Feedback'
@@ -280,33 +280,44 @@ function FieldsGrid({
 }): React.JSX.Element {
   return (
     <div className="t-grid t-grid--2 settings-grid">
-      {defs.map((def) => {
+      {defs.map((def, i) => {
         const value = readPath(settings, def.path)
+        // 分组标题：与上一个字段的 group 不同就插一行（参考成熟终端的设置面板）
+        const showGroup = Boolean(def.group) && def.group !== defs[i - 1]?.group
         if (def.kind === 'switch') {
           return (
-            <div className="settings-switch-row" key={def.path}>
-              <FieldControl def={def} value={value} onChange={(v) => update(def.path, v)} />
-              <div className="t-field__hint">
-                {def.hint ?? def.path}
-                {def.caution ? <Badge tone="warn">谨慎</Badge> : null}
+            <Fragment key={def.path}>
+              {showGroup ? <GroupTitle title={def.group as string} /> : null}
+              <div className="settings-switch-row">
+                <FieldControl def={def} value={value} onChange={(v) => update(def.path, v)} />
+                <div className="t-field__hint">
+                  {def.hint ?? def.path}
+                  {def.caution ? <Badge tone="warn">谨慎</Badge> : null}
+                </div>
               </div>
-            </div>
+            </Fragment>
           )
         }
         return (
-          <Field
-            key={def.path}
-            label={def.label}
-            hint={def.hint}
-            className={def.wide ? 't-grid__span2' : undefined}
-            aside={def.caution ? <Badge tone="warn">谨慎</Badge> : undefined}
-          >
-            <FieldControl def={def} value={value} onChange={(v) => update(def.path, v)} />
-          </Field>
+          <Fragment key={def.path}>
+            {showGroup ? <GroupTitle title={def.group as string} /> : null}
+            <Field
+              label={def.label}
+              hint={def.hint}
+              className={def.wide ? 't-grid__span2' : undefined}
+              aside={def.caution ? <Badge tone="warn">谨慎</Badge> : undefined}
+            >
+              <FieldControl def={def} value={value} onChange={(v) => update(def.path, v)} />
+            </Field>
+          </Fragment>
         )
       })}
     </div>
   )
+}
+
+function GroupTitle({ title }: { title: string }): React.JSX.Element {
+  return <div className="settings-group-title">{title}</div>
 }
 
 function ReadonlyRows({ rows }: { rows: Array<[string, React.ReactNode]> }): React.JSX.Element {

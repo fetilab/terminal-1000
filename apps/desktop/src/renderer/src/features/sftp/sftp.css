@@ -227,8 +227,23 @@
   font-family: var(--t1000-font-mono);
 }
 
-/* 容器查询的锚点：文件栏可拖动，430px 以下过滤框会挤掉面包屑 */
+/*
+ * 容器查询的锚点：文件栏可拖动，430px 以下过滤框会挤掉面包屑。
+ *
+ * 布局部分原来是由全局 `.content` 兼职的（这个根节点曾经写成
+ * className="content sftp-root"）。那样会顺手继承 `.content` 的
+ * 面板底色与毛玻璃，于是文件区比周围多一层 alpha、多一层模糊 ——
+ * 现在类名独立，列布局必须自己声明。
+ * 底色**不要**在这里写：文件区是 .content 里的满幅面板，
+ * 由 `.content` 统一提供那唯一一层。
+ */
 .sftp-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   container-type: inline-size;
 }
 

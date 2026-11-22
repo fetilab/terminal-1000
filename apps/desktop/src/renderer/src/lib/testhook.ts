@@ -167,8 +167,33 @@ export interface T1000TestHook {
    * 与 SettingsView.update 完全一致 —— 验收动态背景时走这条，别绕过 UI 链路。
    */
   setAppearance(path: string, value: unknown): Promise<boolean>
-  /** 切换应用深浅主题（store.applyTheme 同款路径：写入 store resolvedTheme + data-theme） */
-  setThemeMode(mode: 'light' | 'dark' | 'system'): void
+  /**
+   * 切换应用深浅主题（与 SettingsView.update 同一条链路：
+   * 写设置 → applyTheme → applyAppearance 重算调色板）
+   */
+  setThemeMode(mode: 'light' | 'dark' | 'system'): Promise<boolean>
+}
+
+/**
+ * 设置界面改一个字段的完整动作，抽取出来供探针复用：
+ * IPC set 拿回全量文档 → 应用外观 → 主题项额外同步 store。
+ *
+ * 探针走这条而不是各写一遍，是为了保证"测的就是用户点设置时发生的事"。
+ */
+async function setBySettingsPath(path: string, value: unknown): Promise<void> {
+  const { invoke } = await import('./ipc')
+  const { applyAppearance } = await import('../theme/appearance')
+  const { applyTheme } = await import('./store')
+  const next = await invoke<'settings', 'set', { path: string; value: unknown }, Record<string, unknown>>(
+    'settings',
+    'set',
+    { path, value },
+  )
+  applyAppearance(next as never)
+  if (path === 'app.theme') {
+    const theme = (next as { app?: { theme?: 'light' | 'dark' | 'system' } }).app?.theme
+    if (theme) applyTheme(theme)
+  }
 }
 
 function install(): void {
@@ -264,18 +289,19 @@ function install(): void {
     },
     snapshot: (processCount = 300) => demoSnapshot(processCount),
     setAppearance: async (path, value) => {
-      const { invoke } = await import('./ipc')
-      const { applyAppearance } = await import('../theme/appearance')
-      const next = await invoke<'settings', 'set', { path: string; value: unknown }, Record<string, unknown>>(
-        'settings',
-        'set',
-        { path, value },
-      )
-      applyAppearance(next as never)
+      await setBySettingsPath(path, value)
       return true
     },
-    setThemeMode: (mode) => {
-      void import('./store').then(({ applyTheme }) => applyTheme(mode))
+    /*
+     * 切明暗必须走**设置界面同款路径**：写 app.theme → applyTheme（store 的 resolvedTheme
+     * + data-theme）→ applyAppearance（重算调色板）。
+     *
+     * 少了第二步会留下"文字换成浅色、面板还是浅色底"的半截状态 ——
+     * 那不是应用的 bug，是探针抄了近路；探针必须和用户走同一条链路才有意义。
+     */
+    setThemeMode: async (mode) => {
+      await setBySettingsPath('app.theme', mode)
+      return true
     },
   }
 

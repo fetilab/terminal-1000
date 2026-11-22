@@ -2,58 +2,106 @@
 /* Copyright (C) 2026 terminal-1000 contributors */
 
 /*
- * 外观层：半透明表面、背景图、界面缩放。
+ * 外观层：背景（不透明度/模糊/遮罩）+ 六组界面不透明度 + 毛玻璃。
  *
  * 由 global.css 顶部 @import 引入，排在令牌定义之后 —— 这里对同名令牌的写法
  * 因此覆盖 global.css 里的静态值（同优先级、后写的胜出）。
  *
- * 设计要点：表面令牌**不再写死颜色**，而是从 `-solid` 版本按
- * `--t1000-surface-alpha` 派生。alpha=100% 时 color-mix 的结果与实色完全相同，
- * 所以默认观感与加这一层之前一模一样；调低透明度（或设背景图）才真的透出后面那层。
+ * 设计原则（与 kitty / iTerm 系一致）：
+ * 1. **透明度分组**：面板、侧边栏、弹窗、浮层、输入框、代码块各自一个 alpha，
+ *    互不牵连。全 100% 时 color-mix 的结果与实色完全相同，默认观感不变。
+ * 2. **背景三件套互相独立**：壁纸自身的不透明度 / 模糊 / 遮罩各管一段，
+ *    调其中任何一个都不会改变界面的透出量。
+ * 3. **一层负责底色**：任何区域只允许一层带 alpha 的底色。
+ *    `.content`（主区域）与 `.panel`/`.rail`（侧栏）各自上色，
+ *    中间容器一律 transparent —— 否则多层串联 1-(1-a)ⁿ 会把半透明叠成实色，
+ *    这正是历史上「终端看起来不透明、还蒙着一层颜色」的根因。
+ * 4. **毛玻璃同源**：只挂在 .rail / .panel / .content 三个区域容器上，
+ *    强度都是 --t1000-glass-blur。终端画布透明后自然继承同一层，
+ *    因此终端与两侧的模糊度必然一致（不需要终端专属的 backdrop-filter）。
  */
 
 :root {
-  /* JS（theme/appearance.ts）按设置写入；这里给的是"没有 JS 也要正确"的兜底 */
-  --t1000-surface-alpha: 100%;
+  /* JS（theme/appearance.ts）按设置写入；这里是"没有 JS 也要正确"的兜底 */
+  --t1000-alpha-panel: 100%;
+  --t1000-alpha-sidebar: 100%;
+  --t1000-alpha-modal: 100%;
+  --t1000-alpha-menu: 100%;
+  --t1000-alpha-input: 100%;
+  --t1000-alpha-code: 100%;
+
   --t1000-bg-image: none;
-  --t1000-bg-image-opacity: 0;
-  --t1000-bg-blur: 12px;
+  --t1000-bg-image-opacity: 1;
+  --t1000-bg-blur: 0px;
+  --t1000-bg-scrim: 0;
+  --t1000-scrim-color: #000000;
+
+  --t1000-glass-blur: 0px;
+  --t1000-accent-strength: 22%;
   --t1000-ui-scale: 1;
+
   /* 动态背景（视频/纯色/TS 脚本），由 DynamicBackground 组件消费 */
   --t1000-dyn-bg-color: #000000;
-  --t1000-dyn-bg-opacity: 0.35;
+  --t1000-dyn-bg-opacity: 1;
 
-  --t1000-bg: color-mix(in srgb, var(--t1000-bg-solid) var(--t1000-surface-alpha), transparent);
+  /* ── 派生表面：每组只读自己的 alpha ─────────────────── */
+
+  /* 主区域（内容区 / 终端）：面板组 */
+  --t1000-bg: color-mix(in srgb, var(--t1000-bg-solid) var(--t1000-alpha-panel), transparent);
   --t1000-bg-sunken: color-mix(
     in srgb,
-    var(--t1000-bg-sunken-solid) var(--t1000-surface-alpha),
+    var(--t1000-bg-sunken-solid) var(--t1000-alpha-panel),
     transparent
   );
   --t1000-bg-raised: color-mix(
     in srgb,
-    var(--t1000-bg-raised-solid) var(--t1000-surface-alpha),
-    transparent
-  );
-  --t1000-bg-panel: color-mix(
-    in srgb,
-    var(--t1000-bg-panel-solid) var(--t1000-surface-alpha),
+    var(--t1000-bg-raised-solid) var(--t1000-alpha-panel),
     transparent
   );
   --t1000-bg-hover: color-mix(
     in srgb,
-    var(--t1000-bg-hover-solid) var(--t1000-surface-alpha),
+    var(--t1000-bg-hover-solid) var(--t1000-alpha-panel),
     transparent
   );
   --t1000-bg-active: color-mix(
     in srgb,
-    var(--t1000-bg-active-solid) var(--t1000-surface-alpha),
+    var(--t1000-bg-active-solid) var(--t1000-alpha-panel),
+    transparent
+  );
+
+  /* 侧边栏（图标栏 + 文件树/会话面板）：侧边栏组 */
+  --t1000-bg-sidebar: color-mix(
+    in srgb,
+    var(--t1000-bg-panel-solid) var(--t1000-alpha-sidebar),
+    transparent
+  );
+  /* 旧名 .panel 一直在用，指向侧边栏组 */
+  --t1000-bg-panel: var(--t1000-bg-sidebar);
+
+  /* 浮层三组 */
+  --t1000-bg-modal: color-mix(
+    in srgb,
+    var(--t1000-bg-panel-solid) var(--t1000-alpha-modal),
+    transparent
+  );
+  --t1000-bg-menu: color-mix(
+    in srgb,
+    var(--t1000-bg-panel-solid) var(--t1000-alpha-menu),
     transparent
   );
   --t1000-bg-input: color-mix(
     in srgb,
-    var(--t1000-bg-input-solid) var(--t1000-surface-alpha),
+    var(--t1000-bg-input-solid) var(--t1000-alpha-input),
     transparent
   );
+  --t1000-bg-code: color-mix(
+    in srgb,
+    var(--t1000-bg-sunken-solid) var(--t1000-alpha-code),
+    transparent
+  );
+
+  /* 兼容旧消费点：surface-alpha 现在就是主区域 alpha（终端画布同源） */
+  --t1000-surface-alpha: var(--t1000-alpha-panel);
 }
 
 /*
@@ -62,6 +110,11 @@
  */
 html {
   background: var(--t1000-bg-solid);
+}
+
+/* 终端/窗口有媒体背景时，窗口本体要透明，否则壁纸透不出来 */
+body.t1000-has-media {
+  background: transparent;
 }
 
 /*
@@ -82,6 +135,10 @@ body::before {
   /*
    * 高斯模糊：壁纸越花越晃眼，模糊后焦点回到文字上。
    * blur 会让边缘取样到视口外（发虚/露底色），用 scale 略放大补偿。
+   *
+   * 这是**唯一**的壁纸模糊来源。界面元素背后的磨砂是另一件事（毛玻璃），
+   * 由 .rail/.panel/.content 的 backdrop-filter 承担；两者语义不同，
+   * 但全屏处处同源，绝不会出现「中间糊、两侧清楚」。
    */
   filter: blur(var(--t1000-bg-blur, 0px));
   transform: scale(1.06);
@@ -90,11 +147,29 @@ body::before {
 }
 
 /*
- * #root 抬到背景图之上。
+ * 背景遮罩：壁纸之上、界面之下的一层主题色。
+ * 浅色主题盖白（提亮 + 降低花纹对比度），深色盖黑（压暗）。
+ * 只影响壁纸的可读性，不参与界面透明度 —— 所以它和六组 alpha 互不干扰。
+ */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: var(--t1000-scrim-color);
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.t1000-has-media::after {
+  opacity: var(--t1000-bg-scrim);
+}
+
+/*
+ * #root 抬到背景层之上。
  *
  * 这一条不能只在"有背景图"时加：`position: fixed` 的伪元素属于定位层，
  * 而 .rail/.panel/.content 都是非定位元素，若 #root 不建层，背景图会盖住它们的底色。
- * z-index + position 让 #root 成为独立层叠上下文，内部所有视图都在背景图之上。
  */
 #root {
   position: relative;
@@ -129,7 +204,7 @@ body.t1000-has-dynbg::before {
   position: fixed;
   inset: 0;
   z-index: 0;
-  opacity: var(--t1000-dyn-bg-opacity, 0.35);
+  opacity: var(--t1000-dyn-bg-opacity, 1);
   /* 与静态背景图同一套高斯模糊/边缘补偿 */
   filter: blur(var(--t1000-bg-blur, 0px));
   transform: scale(1.06);
@@ -157,54 +232,75 @@ body.t1000-has-dynbg::before {
 }
 
 /*
- * 终端区域**不做二次模糊**。
+ * 毛玻璃：三大区域容器各自磨砂自己的背景。
  *
- * 这里曾有一条 `.kitty-surface { backdrop-filter: blur(14px) }`，想给终端加
- * 磨砂感，实际造成三个可见缺陷：
- *   1. 壁纸层已有「背景模糊」滑杆（body::before 的 filter），再叠 14px 就是
- *      **两层高斯模糊**——终端糊成白雾，而两侧只有壁纸层的一层，清晰可见，
- *      中间与两侧观感完全不一致；
- *   2. backdrop-filter 让 .kitty-surface 变成独立合成层，边缘（尤其底部）
- *      采样越界，圆角与底边被切掉；
- *   3. 它与 kitty 原版模型相悖：kitty 只有整张壁纸的 background_blur，
- *      没有「终端区域单独磨砂」这回事。
- *
- * 模糊的唯一来源 = 背景层的 `--t1000-bg-blur`（全屏统一，见 body::before）。
- * 终端只负责「透出多少」（画布 alpha 联动 --t1000-surface-alpha）。
+ * 为什么是"三大区域"而不是"每个组件"：终端画布是透明绘制的，
+ * 它看到的背景就是 .content 磨砂后的结果 —— 于是终端和两侧面板拿到的是
+ * 同一层毛玻璃、同一个强度（--t1000-glass-blur），观感必然统一。
+ * 给终端单独加 backdrop-filter 会造成「中间糊、两侧清楚」的割裂，
+ * 并且让 .kitty-surface 变成独立合成层、边缘被切。
  */
+body.t1000-has-media .rail,
+body.t1000-has-media .panel,
+body.t1000-has-media .content {
+  backdrop-filter: blur(var(--t1000-glass-blur)) saturate(1.08);
+  -webkit-backdrop-filter: blur(var(--t1000-glass-blur)) saturate(1.08);
+}
 
 /*
- * 媒体背景激活时，终端画布 → 背景层之间的**中间容器必须全部透明**。
+ * 一层负责底色：媒体背景激活时，主区域内的所有中间容器必须透明。
  *
- * 这是「命令行终端不透明」的根因：这些容器各自带 --t1000-bg-* 半透明
- * 底色，单层看似无害，但画布 + .term-pane + .term-panes + .content + body
- * 多层串联叠加（1-(1-a)^n），终端区域视觉上几乎完全不透明，而侧栏只有
- * 单层所以明显透出——用户看到的就是「界面毛玻璃有了，唯独终端不透明」。
- *
- * **名单必须覆盖画布到 body 的每一层**：漏掉任何一层，就会在壁纸上多盖
- * 一层主题色薄膜。`.term-panes`（多窗格网格容器）此前不在名单里、默认
- * 46% 表面 alpha，正是「终端还是叠加颜色」的那一层。
- *
- * 透明后终端画布的 alpha 直接对背景层生效（kitty background_opacity
- * 同款观感）；没有媒体背景时这些规则不生效，body 的底色照常兜底，
- * 不会露出 html 实色或窗口默认色。
+ * `.content` 已经带了面板 alpha + 毛玻璃，终端画布（alpha=0）直接透出它。
+ * 如果 .term-pane/.term-panes 再各带一层底色，串联后 1-(1-a)ⁿ 会把
+ * 72% 叠成 99% —— 「终端不透明、还蒙着一层主题色」就是这么来的。
  */
-body.t1000-has-bg,
-body.t1000-has-dynbg {
+body.t1000-has-media .term-workspace,
+body.t1000-has-media .term-panes,
+body.t1000-has-media .term-slot,
+body.t1000-has-media .term-pane,
+body.t1000-has-media .term-pane__surface,
+body.t1000-has-media .term-pane__status {
   background: transparent;
 }
 
-body.t1000-has-bg .content,
-body.t1000-has-dynbg .content,
-body.t1000-has-bg .term-workspace,
-body.t1000-has-dynbg .term-workspace,
-body.t1000-has-bg .term-panes,
-body.t1000-has-dynbg .term-panes,
-body.t1000-has-bg .term-slot,
-body.t1000-has-dynbg .term-slot,
-body.t1000-has-bg .term-pane,
-body.t1000-has-dynbg .term-pane,
-body.t1000-has-bg .term-pane__surface,
-body.t1000-has-dynbg .term-pane__surface {
+/*
+ * `.content` / `.panel` 内部的**满幅**面板同样必须让位。
+ *
+ * 这些容器不是卡片，而是和父级等宽等高的分区：文件树、监控栏、文件浏览、
+ * 侧栏底部工具条。它们各自也用了 --t1000-bg-panel，于是和父级串联：
+ *   1-(1-0.72)² = 92%，文件区甚至三层 = 98%
+ * 结果就是「终端 72% 灰蓝、文件区 98% 惨白」——两侧与中间割裂的真正原因
+ * 根本不在终端，而在这里叠得太多。
+ *
+ * 分区之间靠 1px 边框区分层次，不靠再叠一层底色。
+ * 只在有媒体背景时生效：没有壁纸时各层同色，叠加看不出差别，
+ * 保留原色反而维持了无背景下的层次感。
+ */
+body.t1000-has-media .term-files,
+body.t1000-has-media .monitor,
+body.t1000-has-media .sftp-root,
+body.t1000-has-media .panel-footer {
+  background: transparent;
+}
+
+/*
+ * 满幅横条同理：标签条、工具栏、表头、状态条、书签条。
+ *
+ * 它们是"分区"不是"卡片"——和父级同宽，没有任何方向上的收进，
+ * 所以再叠一层 alpha 只会得到一条比周围更亮的横带（92% vs 72%），
+ * 看上去就像"这里贴了一条不透明的胶带"。
+ * 分区之间的层次交给已有的 1px border-bottom/top。
+ *
+ * 有意保留底色的：真正有边界的卡片/药丸（.mcard、.term-tab--active、
+ * .sftp-queue、.t-badge…）。它们有圆角和内缩，看上去"浮在面板上"，
+ * 比面板更实是符合直觉的，也不会拉出贯穿整屏的色带。
+ */
+body.t1000-has-media .term-tabs,
+body.t1000-has-media .term-toolbar,
+body.t1000-has-media .sftp-top,
+body.t1000-has-media .sftp-head,
+body.t1000-has-media .sftp-status,
+body.t1000-has-media .sftp-bookmarks,
+body.t1000-has-media .t-toolbar {
   background: transparent;
 }

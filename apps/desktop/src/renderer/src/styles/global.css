@@ -217,7 +217,7 @@ a {
   align-items: center;
   gap: 4px;
   padding: 10px 0 12px;
-  background: var(--t1000-bg-raised);
+  background: var(--t1000-bg-sidebar);
   border-right: 1px solid var(--t1000-border);
   z-index: var(--t1000-z-panel);
 }

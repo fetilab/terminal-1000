@@ -2,16 +2,22 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 /**
- * 外观设置（主题预设 / 背景图 / 界面透明度 / 界面缩放）的解析与应用。
+ * 外观设置（主题预设 / 背景 / 界面各组不透明度 / 毛玻璃 / 缩放）的解析与应用。
  *
- * **设置分组为什么是 `app.appearance.*`、而 packages/shared 不动**：
- * 设置文档的深合并保留未知键（见 main/services/settings/index.ts 里 sessionRecording 的先例），
- * 所以渲染层可以先行落地一个新分组；等 shared 补上强类型组后，
- * 把 resolveAppearance 换成直读 `settings.app.appearance` 即可，消费点不用改。
+ * **为什么要按「组件组」拆不透明度**：单一「界面不透明度」滑杆无法表达
+ * 「面板要透一点看壁纸，但设置弹窗和菜单必须实色才读得清」。参考成熟终端
+ * （kitty / iTerm 系）的设置面板，透明度是**分组**的：面板、侧边栏、
+ * 设置弹窗、菜单浮层、输入框、代码块各自一个旋钮，外加背景层的
+ * 不透明度 / 模糊 / 遮罩三件套，以及统一的毛玻璃强度。
  *
  * 结构上分两层：
  * - 解析与配色是**纯函数**（color.ts / presets.ts），可在 node 下单测；
- * - 只有 applyAppearance 及其下游碰 document，因此不需要 jsdom 也能覆盖逻辑。
+ * - 只有 applyToDocument 碰 document，因此不需要 jsdom 也能覆盖逻辑。
+ *
+ * 一致性约束（终端与两侧必须同源）：
+ * 终端画布 alpha 直接取 `panelOpacity`，与 `.content` 面板用**同一个变量**；
+ * 毛玻璃只在三大区域容器（.rail / .panel / .content）上各加一层，强度同源。
+ * 因此任何一档设置下，终端区域的透出量与模糊度都必然等于两侧面板。
  */
 
 import type { ThemeMode } from '@t1000/shared'
@@ -23,16 +29,39 @@ export interface AppearanceConfig {
   preset: ThemePresetId
   /** 本地图片的绝对路径（也接受 file:/data:/blob: URL）；空串表示不设背景图 */
   backgroundImage: string
-  /**
-   * 背景可见度 0~1 —— **唯一的透明度滑杆**。
-   * 越高：背景越清晰、界面/终端画布越透；0 = 隐藏背景层且界面全实心。
-   * （旧版还叠加一个「界面不透明度」滑杆，两者语义重复且互相打架，已合并到这里。）
-   */
+
+  // ── 背景层 ────────────────────────────────────────────
+  /** 背景媒体自身的不透明度 0~1：1 = 壁纸原样，0 = 完全隐藏 */
   backgroundOpacity: number
-  /** 背景高斯模糊强度（px）：模糊壁纸、降低炫光，文字更好读 */
+  /** 背景高斯模糊强度（px）：模糊壁纸、降低炫光 */
   backgroundBlur: number
+  /** 背景遮罩 0~1：在壁纸上盖一层主题色（浅色=白 / 深色=黑），提高文字对比度 */
+  backgroundScrim: number
+
+  // ── 界面各组不透明度（1 = 不透明，0 = 全透） ─────────────
+  /** 主区域（内容区 / 终端）：终端画布 alpha 与它同源 */
+  panelOpacity: number
+  /** 侧边栏（左侧图标栏 + 文件树/会话面板） */
+  sidebarOpacity: number
+  /** 设置与弹窗 */
+  modalOpacity: number
+  /** 菜单与浮层（右键菜单、补全弹窗、命令面板） */
+  menuOpacity: number
+  /** 输入框（工具栏搜索框、表单控件） */
+  inputOpacity: number
+  /** 代码块（编辑器、代码预览、日志块） */
+  codeOpacity: number
+
+  // ── 质感 ─────────────────────────────────────────────
+  /** 毛玻璃强度（px）：三大区域背后的磨砂半径，0 = 关闭 */
+  glassBlur: number
+  /** 强调色浓度 0~1：选中/hover 的强调色填充强度 */
+  accentStrength: number
+
   /** 界面缩放 0.8~1.4 */
   scale: number
+
+  // ── 背景内容 ──────────────────────────────────────────
   /** 动态背景类型：纯色/图片/视频/TS 脚本，任意界面播放 */
   backgroundType: BackgroundType
   /** 纯色背景色（#RRGGBB / #RRGGBBAA） */
@@ -48,9 +77,19 @@ export interface AppearanceConfig {
 export const APPEARANCE_DEFAULTS: AppearanceConfig = {
   preset: 'aurora',
   backgroundImage: '',
-  // 0.8：设了背景就该看得见（表面 28%、终端约 11%），而不是「设了像没生效」
-  backgroundOpacity: 0.8,
-  backgroundBlur: 12,
+  backgroundOpacity: 1,
+  backgroundBlur: 5,
+  backgroundScrim: 0.35,
+  // 0.72：能看见壁纸，但文字仍然压得住；想全透就直接拉到 0
+  panelOpacity: 0.72,
+  sidebarOpacity: 0.72,
+  // 浮层默认实色：半透明会让壁纸透进来与文字抢对比度（这是用户反复抱怨的点）
+  modalOpacity: 1,
+  menuOpacity: 1,
+  inputOpacity: 1,
+  codeOpacity: 1,
+  glassBlur: 8,
+  accentStrength: 0.22,
   scale: 1,
   backgroundType: 'none',
   backgroundColor: '#10141a',
@@ -59,24 +98,30 @@ export const APPEARANCE_DEFAULTS: AppearanceConfig = {
   backgroundFps: 30,
 }
 
+/**
+ * 六组界面不透明度的**唯一真源**：设置字段、CSS 变量、探针断言都从这里取，
+ * 避免「加了一组但漏了某个消费点」。
+ */
+export const OPACITY_GROUPS = [
+  { key: 'panelOpacity', cssVar: '--t1000-alpha-panel', label: '面板不透明度' },
+  { key: 'sidebarOpacity', cssVar: '--t1000-alpha-sidebar', label: '侧边栏不透明度' },
+  { key: 'modalOpacity', cssVar: '--t1000-alpha-modal', label: '设置与弹窗不透明度' },
+  { key: 'menuOpacity', cssVar: '--t1000-alpha-menu', label: '菜单与浮层不透明度' },
+  { key: 'inputOpacity', cssVar: '--t1000-alpha-input', label: '输入框不透明度' },
+  { key: 'codeOpacity', cssVar: '--t1000-alpha-code', label: '代码块不透明度' },
+] as const
+
+export type OpacityGroupKey = (typeof OPACITY_GROUPS)[number]['key']
+
 /** 设置项路径；与 settingsFields.ts 的声明保持一致（那边是"设置必须被消费"的唯一真源） */
 export const APPEARANCE_PATHS = {
   preset: 'app.appearance.preset',
   backgroundImage: 'app.appearance.backgroundImage',
   backgroundOpacity: 'app.appearance.backgroundOpacity',
   backgroundBlur: 'app.appearance.backgroundBlur',
+  backgroundScrim: 'app.appearance.backgroundScrim',
   scale: 'app.appearance.scale',
 } as const
-
-/**
- * 背景可见度 → 表面（面板/终端画布）剩余不透明度上限。
- *
- * 语义：**唯一一个滑杆**。可见度 1 → 表面只剩 10%（几乎全透，背景清晰）；
- * 可见度 0 → 背景层隐藏、表面 100% 实心。
- * 旧版把「界面不透明度」与「背景可见度」相乘，两个滑杆语义重复还互相抵消，
- * 用户看到的就是「怎么调都不透」——合并后单滑杆直接决定透多少。
- */
-export const BACKGROUND_SURFACE_MAX = 0.9
 
 const SCALE_MIN = 0.8
 const SCALE_MAX = 1.4
@@ -114,6 +159,25 @@ export function resolveAppearance(settings: unknown): AppearanceConfig {
       APPEARANCE_DEFAULTS.backgroundOpacity,
     ),
     backgroundBlur: clampNumber(source.backgroundBlur, 0, 40, APPEARANCE_DEFAULTS.backgroundBlur),
+    backgroundScrim: clampNumber(
+      source.backgroundScrim,
+      0,
+      1,
+      APPEARANCE_DEFAULTS.backgroundScrim,
+    ),
+    ...Object.fromEntries(
+      OPACITY_GROUPS.map((g) => [
+        g.key,
+        clampNumber(source[g.key], 0, 1, APPEARANCE_DEFAULTS[g.key]),
+      ]),
+    ),
+    glassBlur: clampNumber(source.glassBlur, 0, 40, APPEARANCE_DEFAULTS.glassBlur),
+    accentStrength: clampNumber(
+      source.accentStrength,
+      0,
+      1,
+      APPEARANCE_DEFAULTS.accentStrength,
+    ),
     scale: clampNumber(source.scale, SCALE_MIN, SCALE_MAX, APPEARANCE_DEFAULTS.scale),
     backgroundType:
       type === 'image' || type === 'video' || type === 'color' || type === 'script' || type === 'none'
@@ -128,7 +192,7 @@ export function resolveAppearance(settings: unknown): AppearanceConfig {
     backgroundScript:
       typeof source.backgroundScript === 'string' ? source.backgroundScript : APPEARANCE_DEFAULTS.backgroundScript,
     backgroundFps: clampNumber(source.backgroundFps, 10, 60, APPEARANCE_DEFAULTS.backgroundFps),
-  }
+  } as AppearanceConfig
 }
 
 /** 读 `app.theme`；未知值按 system 处理 */
@@ -180,35 +244,70 @@ function cssUrlValue(url: string): string {
 }
 
 /**
- * 界面/终端画布的表面不透明度（面板、窗格、GL 画布全部同源）。
+ * 当前设置下媒体背景是否真的可见。
  *
- * 单滑杆语义：可见度 v → 表面 alpha = 1 - v × BACKGROUND_SURFACE_MAX。
- * v=1 → 10%（背景清晰可见，终端几乎全透）；v=0 → 100%（背景隐藏、界面实心）。
- * 没有媒体背景时恒为 1（透出来只有窗口默认色，没有意义）。
+ * **必须严格按 backgroundType 判定来源**：用户可能同时存着图片路径、视频路径
+ * 和脚本名（切来切去留下的），只有被选中的那一个才生效。如果拿"任意字段非空"
+ * 当有媒体，就会出现「类型选了无、壁纸却还在」「遮罩/毛玻璃莫名全屏」这类
+ * 联动错乱 —— 这是背景设置最容易出错的地方。
  */
-export function effectiveSurfaceAlpha(config: AppearanceConfig, hasImage: boolean): number {
-  if (!hasImage) return 1
-  return 1 - config.backgroundOpacity * BACKGROUND_SURFACE_MAX
+export function hasVisibleMedia(config: AppearanceConfig): boolean {
+  if (config.backgroundOpacity <= 0.001) return false
+  switch (config.backgroundType) {
+    case 'image':
+      return Boolean(backgroundImageUrl(config.backgroundImage))
+    case 'video':
+      return config.backgroundVideo.trim() !== ''
+    case 'script':
+      return config.backgroundScript.trim() !== ''
+    case 'color':
+      return config.backgroundColor.trim() !== ''
+    default:
+      return false
+  }
 }
 
 /**
- * 当前设置下是否有媒体背景在生效；有则返回界面不透明系数（终端画布
- * 也应降到这个 alpha，否则背景层被实心画布挡住），没有返回 null。
- * 供终端窗格初始化时同步（applyAppearance 在窗格挂载前就跑过一次，
- * 只听 t1000-appearance 事件会漏掉启动时已生效的背景）。
+ * 主区域（面板 / 终端画布）的不透明度。
+ *
+ * **恒等于 panelOpacity**，不随背景有无/类型变化 —— 这正是「不同背景可见度下
+ * 终端必须和两侧一致」的保证：三者读同一个数字，没有第二套公式。
  */
-export function currentMediaSurfaceAlpha(): number | null {
-  if (cachedSettings === null) return null
-  const config = resolveAppearance(cachedSettings)
-  // 可见度推到 0 = 媒体层整体隐藏（applyToDocument 同款判定），画布回到自身不透明度
-  if (config.backgroundOpacity <= 0.001) return null
-  const url = backgroundImageUrl(config.backgroundImage)
-  const media =
-    Boolean(url) ||
-    (config.backgroundType === 'video' && config.backgroundVideo.trim() !== '') ||
-    (config.backgroundType === 'script' && config.backgroundScript.trim() !== '') ||
-    (config.backgroundType === 'color' && config.backgroundColor.trim() !== '')
-  return media ? effectiveSurfaceAlpha(config, true) : null
+export function panelAlpha(config: AppearanceConfig): number {
+  return config.panelOpacity
+}
+
+/**
+ * 终端画布的 alpha。
+ *
+ * **只在「有媒体背景」时降到 0** —— 此时终端画布完全透明，透出来的是
+ * `.content` 的面板色（panelOpacity + 毛玻璃），于是终端区域与两侧面板
+ * 拿到的是同一层底色、同一层磨砂，任何一档设置下都不可能不一致。
+ *
+ * 无媒体背景时画布实色（1），终端显示自己的配色；此时把画布调半透只会
+ * 透出窗口底色，没有观感收益。
+ *
+ * 注意不要用 panelOpacity 直接当画布 alpha：画布与 `.content` 是两层，
+ * 两层各 72% 会复合出 92%，终端又比两侧实一截 —— 这就是历史上反复
+ * 出现的「终端和其他界面不一致」。（一层负责底色，见 appearance.css）
+ */
+export function canvasAlphaFor(config: AppearanceConfig): number {
+  return hasVisibleMedia(config) ? 0 : 1
+}
+
+/** 启动时的画布 alpha（窗格挂载可能早于第一条 t1000-appearance 事件） */
+export function currentCanvasAlpha(): number {
+  if (cachedSettings === null) return 1
+  return canvasAlphaFor(resolveAppearance(cachedSettings))
+}
+
+/**
+ * 当前设置下的主区域不透明度（供终端窗格初始化时同步）。
+ * 窗格挂载可能早于第一条 `t1000-appearance` 事件，只靠监听会漏掉启动态。
+ */
+export function currentPanelAlpha(): number {
+  if (cachedSettings === null) return APPEARANCE_DEFAULTS.panelOpacity
+  return panelAlpha(resolveAppearance(cachedSettings))
 }
 
 function prefersLight(): boolean {
@@ -247,6 +346,10 @@ export function applyAppearanceConfig(config: AppearanceConfig, mode: Appearance
   applyToDocument(config, mode)
 }
 
+function pct(value: number): string {
+  return `${(value * 100).toFixed(1)}%`
+}
+
 function applyToDocument(config: AppearanceConfig, mode: AppearanceMode): void {
   if (typeof document === 'undefined') return
   const root = document.documentElement
@@ -258,37 +361,48 @@ function applyToDocument(config: AppearanceConfig, mode: AppearanceMode): void {
   root.dataset.theme = mode
   root.dataset.appearancePreset = config.preset
 
+  // 六组界面不透明度：每组一个变量，CSS 里各区域各取各的
+  for (const group of OPACITY_GROUPS) {
+    root.style.setProperty(group.cssVar, pct(config[group.key]))
+  }
+
   const url = backgroundImageUrl(config.backgroundImage)
+  const mediaVisible = hasVisibleMedia(config)
   /*
-   * 媒体层满强度显示（kitty 观感：壁纸满强度铺底 + 终端 background_opacity + blur）。
-   * 此前媒体层自己乘 backgroundOpacity（默认 0.35），与终端画布的透出（0.68）双衰减，
-   * 壁纸净贡献只剩 ~11% —— 用户看到的就是「命令行终端（kitty 界面）不透明」。
-   * 「背景可见度」滑杆现在唯一的作用是控制表面/画布透明度（effectiveSurfaceAlpha）：
-   * 拉高 → 界面更透 → 背景更可见；推到 0 → 媒体层彻底隐藏（含 has-* 类，毛玻璃一并撤）。
+   * 背景层三件套，语义互相独立（参考图的分法）：
+   *   backgroundOpacity —— 壁纸自身多不透明（0 = 藏起来）
+   *   backgroundBlur    —— 壁纸自身模糊半径
+   *   backgroundScrim   —— 壁纸之上盖一层主题色，压住花哨部分让文字更好读
+   * 三者都只影响壁纸，不参与界面构造 —— 界面读的是六组 alpha。
    */
-  const mediaHidden = config.backgroundOpacity <= 0.001
-  root.style.setProperty('--t1000-bg-image', url && !mediaHidden ? cssUrlValue(url) : 'none')
-  root.style.setProperty('--t1000-bg-image-opacity', '1')
+  const imageActive = mediaVisible && config.backgroundType === 'image'
+  root.style.setProperty('--t1000-bg-image', imageActive ? cssUrlValue(url) : 'none')
+  root.style.setProperty('--t1000-bg-image-opacity', String(config.backgroundOpacity))
   // 动态背景（视频/纯色/脚本）生效时收敛静态背景图，两层不叠画
   const dynActive =
-    !mediaHidden &&
+    mediaVisible &&
     ((config.backgroundType === 'video' && config.backgroundVideo.trim() !== '') ||
       (config.backgroundType === 'script' && config.backgroundScript.trim() !== ''))
   const colorActive =
-    !mediaHidden && config.backgroundType === 'color' && config.backgroundColor.trim() !== ''
-  root.style.setProperty('--t1000-dyn-bg-opacity', '1')
+    mediaVisible && config.backgroundType === 'color' && config.backgroundColor.trim() !== ''
+  root.style.setProperty('--t1000-dyn-bg-opacity', String(config.backgroundOpacity))
   root.style.setProperty('--t1000-dyn-bg-color', config.backgroundColor.trim() || '#000000')
-  // 背景高斯模糊强度：静态图与动态层共用（media 层自己带 scale 补偿，见 appearance.css）
   root.style.setProperty('--t1000-bg-blur', `${config.backgroundBlur}px`)
-  document.body?.classList.toggle('t1000-has-dynbg', dynActive || colorActive)
-  const surfaceHasMedia = (Boolean(url) && !mediaHidden) || dynActive || colorActive
-  root.style.setProperty(
-    '--t1000-surface-alpha',
-    `${(effectiveSurfaceAlpha(config, surfaceHasMedia) * 100).toFixed(1)}%`,
-  )
+  // 遮罩颜色跟随明暗：浅色主题用白压（提亮壁纸），深色用黑压（压暗）
+  root.style.setProperty('--t1000-scrim-color', mode === 'light' ? '#ffffff' : '#000000')
+  root.style.setProperty('--t1000-bg-scrim', String(config.backgroundScrim))
+  // 毛玻璃：三大区域容器共用一个强度，终端画布透明后自然继承
+  root.style.setProperty('--t1000-glass-blur', `${config.glassBlur}px`)
+  // 强调色浓度：accent-soft / accent-softer 的填充比例
+  root.style.setProperty('--t1000-accent-strength', pct(config.accentStrength))
+  // 兼容旧消费点：surface-alpha 现在就是主区域 alpha（终端画布同源）
+  root.style.setProperty('--t1000-surface-alpha', pct(panelAlpha(config)))
   root.style.setProperty('--t1000-ui-scale', String(config.scale))
 
-  document.body?.classList.toggle('t1000-has-bg', Boolean(url) && !mediaHidden)
+  document.body?.classList.toggle('t1000-has-bg', imageActive)
+  document.body?.classList.toggle('t1000-has-dynbg', dynActive || colorActive)
+  // 「有媒体在播」：毛玻璃/遮罩只在这时才有意义（背后没东西可磨）
+  document.body?.classList.toggle('t1000-has-media', mediaVisible)
 
   // 动态背景层（React 组件）监听这个事件换内容；不用把 appearance 塞进全局 store
   window.dispatchEvent(new CustomEvent<AppearanceConfig>('t1000-appearance', { detail: config }))

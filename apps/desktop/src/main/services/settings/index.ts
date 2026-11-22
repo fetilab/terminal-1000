@@ -284,20 +284,20 @@ function setPath(obj: Record<string, unknown>, path: string, value: unknown): vo
 // ── 持久化 ───────────────────────────────────────────
 
 /**
- * 外观 v2 迁移：`app.appearance.backgroundOpacity` 换了语义。
+ * 外观迁移到 **v3：分组不透明度 + 背景三件套**。
  *
- * v1 里它是「背景图层自身的不透明度」——终端画布是实色的，这个旋钮调到
- * 任何值都看不出区别，用户存下来的小值（0.25 / 0.35）只是「调过但没用」的
- * 痕迹。v2 起它是**唯一的透明度旋钮**（表面 alpha = 1 - v × 0.9），再把
- * 0.25 原样套进新公式，终端就会重新糊上约 40% 的主题色膜 —— 用户看到的
- * 就是「终端还是叠加颜色、不完全透明」。
+ * v1/v2 只有「背景可见度」一个旋钮，语义是「表面 alpha = 1 - v × 0.9」。
+ * v3 起透明度按组件组拆开（面板/侧边栏/弹窗/浮层/输入框/代码块各一个），
+ * 背景层则有「不透明度 / 模糊 / 遮罩」三件套。
  *
- * 判定用显式的 `app.appearanceRev` 版本戳，**不能**用「缺少 backgroundBlur」
- * 之类的字段存在性：writeDoc 会盖戳，所以任何 v2 代码写过的文档都不会被
- * 二次迁移（否则用户只拖了一次可见度滑杆，重启就被重置回默认值）。
+ * 迁移目标：**保持用户当前观感**，不突然变样 ——
+ * 旧的 v 换算成 panel/sidebar 的 alpha（同一个公式），背景媒体层改为满强度
+ * （v=0 时表示用户不想看壁纸 → 媒体不透明度 0），其余组给实色默认值。
+ *
+ * 判定用显式的 `app.appearanceRev` 版本戳，**不能**用字段存在性：
+ * writeDoc 会盖戳，所以写过的文档不会再迁移（否则用户调完重启就被重置）。
  */
-const APPEARANCE_V2_VISIBILITY = 0.8
-const APPEARANCE_REV = 2
+const APPEARANCE_REV = 3
 
 function migrateAppearance(data: Record<string, unknown>): boolean {
   const app = data.app
@@ -309,9 +309,40 @@ function migrateAppearance(data: Record<string, unknown>): boolean {
     app.appearanceRev = APPEARANCE_REV
     return true
   }
-  if (typeof ap.backgroundBlur !== 'number') ap.backgroundBlur = 12
-  ap.backgroundOpacity = APPEARANCE_V2_VISIBILITY
-  // 「界面不透明度」已合并进上面那个唯一旋钮；留着只会让人以为还有第二个开关
+
+  // v1/v2 的「可见度」语义：把旧值换算成面板/侧边栏 alpha，保住当前观感
+  const legacy = typeof ap.backgroundOpacity === 'number' ? ap.backgroundOpacity : null
+  const hasGroups = typeof ap.panelOpacity === 'number'
+  if (legacy !== null && !hasGroups) {
+    const v = Math.min(1, Math.max(0, legacy))
+    // 旧公式：surface = 1 - v × 0.9；下限 15% 避免面板完全消失
+    const surface = Math.min(1, Math.max(0.15, 1 - v * 0.9))
+    ap.panelOpacity = surface
+    ap.sidebarOpacity = surface
+    // 旧值 0 = 用户不想看壁纸 → 新语义下就是媒体不透明度 0
+    ap.backgroundOpacity = v <= 0.001 ? 0 : 1
+    /*
+     * 遮罩必须给 0：旧模型里没有这一层，壁纸看到多少就是多少。
+     * 如果迁移时塞上默认的 0.35，老用户的壁纸会凭空被盖掉三成
+     * （可见量 1-0.775=22.5% 再乘 (1-0.35) ≈ 14.6%，明显变淡）。
+     * 保持 0 才能让「升完级一看还是原来那样」成立；新装才用 0.35。
+     */
+    ap.backgroundScrim = 0
+  }
+
+  if (typeof ap.backgroundOpacity !== 'number') ap.backgroundOpacity = 1
+  if (typeof ap.backgroundBlur !== 'number') ap.backgroundBlur = 5
+  if (typeof ap.backgroundScrim !== 'number') ap.backgroundScrim = 0.35
+  if (typeof ap.panelOpacity !== 'number') ap.panelOpacity = 0.72
+  if (typeof ap.sidebarOpacity !== 'number') ap.sidebarOpacity = 0.72
+  // 浮层默认实色：半透明会让壁纸与文字抢对比度
+  if (typeof ap.modalOpacity !== 'number') ap.modalOpacity = 1
+  if (typeof ap.menuOpacity !== 'number') ap.menuOpacity = 1
+  if (typeof ap.inputOpacity !== 'number') ap.inputOpacity = 1
+  if (typeof ap.codeOpacity !== 'number') ap.codeOpacity = 1
+  if (typeof ap.glassBlur !== 'number') ap.glassBlur = 8
+  if (typeof ap.accentStrength !== 'number') ap.accentStrength = 0.22
+  // 已合并/废弃的第二、第三个透明度旋钮
   delete ap.opacity
   app.appearanceRev = APPEARANCE_REV
   return true

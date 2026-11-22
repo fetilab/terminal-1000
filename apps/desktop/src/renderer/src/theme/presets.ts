@@ -307,8 +307,10 @@ export function paletteToCssVars(p: Palette, mode: AppearanceMode): Record<strin
     '--t1000-accent': p.accent,
     '--t1000-accent-strong': p.accentStrong,
     '--t1000-accent-fg': p.accentFg,
-    '--t1000-accent-soft': rgba(p.accent, mode === 'light' ? 0.13 : 0.14),
-    '--t1000-accent-softer': rgba(p.accent, mode === 'light' ? 0.06 : 0.07),
+    // 填充比例由「强调色浓度」设置控制（inline style 优先级最高，所以必须在这里引用变量，
+    // 写到 appearance.css 里的同名覆盖会被这里盖掉）
+    '--t1000-accent-soft': `color-mix(in srgb, ${p.accent} var(--t1000-accent-strength, 22%), transparent)`,
+    '--t1000-accent-softer': `color-mix(in srgb, ${p.accent} calc(var(--t1000-accent-strength, 22%) * 0.45), transparent)`,
     '--t1000-border-accent': rgba(p.accent, 0.45),
     '--t1000-danger': p.danger,
     '--t1000-danger-soft': rgba(p.danger, soft),

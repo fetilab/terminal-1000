@@ -1208,7 +1208,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
 
   if (!sessionId) {
     return (
-      <main className="content" aria-label="文件">
+      <main className="sftp-root" aria-label="文件">
         <div className="conn-empty">
           <EmptyState
             icon="folder"
@@ -1226,7 +1226,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
   }
 
   return (
-    <main className="content sftp-root" aria-label={`${title} 文件`}>
+    <main className="sftp-root" aria-label={`${title} 文件`}>
       {bookmarks.length > 0 ? (
         <div className="sftp-bookmarks" aria-label="目录书签">
           <Icon name="star" size={12} />

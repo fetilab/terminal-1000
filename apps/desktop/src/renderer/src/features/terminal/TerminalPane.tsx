@@ -60,10 +60,9 @@ import { CompletionPopup } from './CompletionPopup'
 import { computeCompletionAnchor, type CompletionAnchor } from './completionAnchor'
 import { cellsFor, normalizeHexColor, segmentHighlightStyle, segmentText } from './highlights'
 import {
-  BACKGROUND_SURFACE_MAX,
   backgroundImageUrl,
-  effectiveSurfaceAlpha,
-  currentMediaSurfaceAlpha,
+  canvasAlphaFor,
+  currentCanvasAlpha,
   type AppearanceConfig,
 } from '../../theme/appearance'
 import './terminal.css'
@@ -241,28 +240,6 @@ function parseOsc7(data: string): string | null {
   }
 }
 
-/**
- * 终端画布 alpha。
- *
- * 媒体背景激活时跟随「背景可见度」的统一系数（与面板同一个
- * `--t1000-surface-alpha`），并**再乘一个更低的终端系数**：终端是"看穿"的
- * 内容区，壁纸主要从终端透出来（kitty background_opacity 的观感），
- * 面板则要承托按钮/文字，保持稍实一点。
- *
- * 关键：先扣掉面板在「可见度拉满」时的下限（1 - BACKGROUND_SURFACE_MAX = 0.1），
- * 再乘增益 —— 这样可见度拉满时终端 alpha **正好是 0**，等同 kitty
- * `background_opacity=0`：壁纸原样透出，不再有任何主题色薄膜。
- * 之前是 `max(0.05, mediaAlpha × 0.55)`，下限 5% 就是用户看到的
- * 「终端还是叠加了一层颜色、不完全透明」。
- */
-const TERMINAL_SURFACE_FACTOR = 0.6
-
-function bgAlphaFor(cfg: TerminalSettings, mediaAlpha: number | null): number {
-  if (mediaAlpha === null) return cfg.backgroundOpacity
-  const floor = 1 - BACKGROUND_SURFACE_MAX
-  return Math.max(0, mediaAlpha - floor) * TERMINAL_SURFACE_FACTOR
-}
-
 function themeFor(colorScheme: string, resolved: 'light' | 'dark'): import('@xterm/xterm').ITheme {
   if (colorScheme === 'light') return TERMINAL_THEME_LIGHT
   if (colorScheme === 'high-contrast') return TERMINAL_THEME_HC
@@ -275,7 +252,7 @@ function themeFor(colorScheme: string, resolved: 'light' | 'dark'): import('@xte
  * xterm 只有在 `allowTransparency: true`（创建时固定）且 theme.background
  * 是带 alpha 的颜色时画布才真正透明 —— 实色 `#0d0f14` 会把背景层整个盖住，
  * 这就是「xterm 后端终端不透明」的成因。kitty 后端走 buildTheme 的
- * settings.backgroundOpacity，两后端用同一个 bgAlphaFor 系数保持观感一致。
+ * settings.backgroundOpacity；两后端都用 canvasAlphaFor 的同一个值。
  */
 function themeWithAlpha(theme: import('@xterm/xterm').ITheme, alpha: number): import('@xterm/xterm').ITheme {
   if (alpha >= 0.999) return theme
@@ -372,24 +349,14 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
    * 否则 WebGL 画布几乎不透明，背景层被盖住 —— 用户看到的就是「背景设置了
    * 完全不显示」。系数与面板（--t1000-surface-alpha）同源，整体观感一致。
    * ref 供引擎创建闭包读（创建 effect 是异步的，等 state 会晚一拍）。 */
-  const [surfaceAlpha, setSurfaceAlpha] = useState<number | null>(() => currentMediaSurfaceAlpha())
-  const surfaceAlphaRef = useRef(surfaceAlpha)
-  surfaceAlphaRef.current = surfaceAlpha
+  const [canvasAlpha, setCanvasAlpha] = useState<number>(() => currentCanvasAlpha())
+  const canvasAlphaRef = useRef(canvasAlpha)
+  canvasAlphaRef.current = canvasAlpha
   useEffect(() => {
     const sync = (cfg: AppearanceConfig | null): void => {
       if (!cfg) return
-      // 可见度 0 = 媒体层整体隐藏（applyToDocument 同款判定）
-      if (cfg.backgroundOpacity <= 0.001) {
-        setSurfaceAlpha(null)
-        return
-      }
-      const url = backgroundImageUrl(cfg.backgroundImage)
-      const media =
-        Boolean(url) ||
-        (cfg.backgroundType === 'video' && cfg.backgroundVideo.trim() !== '') ||
-        (cfg.backgroundType === 'script' && cfg.backgroundScript.trim() !== '') ||
-        (cfg.backgroundType === 'color' && cfg.backgroundColor.trim() !== '')
-      setSurfaceAlpha(media ? effectiveSurfaceAlpha(cfg, true) : null)
+      // 有媒体背景 → 画布 alpha 0（透出 .content 的面板色 + 毛玻璃，与两侧同源）
+      setCanvasAlpha(canvasAlphaFor(cfg))
     }
     const onChange = (e: Event): void => sync((e as CustomEvent<AppearanceConfig>).detail ?? null)
     window.addEventListener('t1000-appearance', onChange)
@@ -611,7 +578,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
             kind: tab.kind === 'telnet' ? 'telnet' : tab.kind === 'ssh' ? 'ssh' : 'local',
             // 创建时就应用背景半透明联动——设置 effect 只在依赖变化时跑，
             // 引擎异步创建完成后不会自动重跑，漏掉这一步背景永远被盖住
-            settings: { ...st, backgroundOpacity: bgAlphaFor(st, surfaceAlphaRef.current) },
+            settings: { ...st, backgroundOpacity: canvasAlphaRef.current },
             resolvedTheme: resolvedThemeRef.current,
             onWrite: (data) => {
               const current = tabRef.current
@@ -665,7 +632,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
             allowTransparency: true,
             theme: themeWithAlpha(
               themeFor(st.colorScheme, resolvedThemeRef.current),
-              bgAlphaFor(st, surfaceAlphaRef.current),
+              canvasAlphaRef.current,
             ),
           })
           const fitAddon = new Fit()
@@ -931,8 +898,8 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       // 配色跟随应用深浅模式：深色=用户 kitty 配置的 Mocha，明亮=同系列 Latte
       // （kitty.setResolvedTheme 内部重建渲染主题），历史文字必须原样保留。
       kitty.setResolvedTheme(resolvedTheme)
-      // 背景（图/视频/脚本/纯色）激活时终端画布跟着半透明，否则背景层被盖住
-      const bgAlpha = bgAlphaFor(termCfg, surfaceAlphaRef.current)
+      // 有媒体背景时画布 alpha=0：直接透出 .content 的面板色 + 毛玻璃（与两侧同源）
+      const bgAlpha = canvasAlphaRef.current
       kitty.applySettings({ ...termCfg, fontFamily: withEmojiFallback(termCfg.fontFamily), backgroundOpacity: bgAlpha })
       setBackendLabel(kitty.backendLabel)
       return
@@ -948,7 +915,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     term.options.scrollback = termCfg.scrollback
     term.options.theme = themeWithAlpha(
       themeFor(termCfg.colorScheme, resolvedTheme),
-      bgAlphaFor(termCfg, surfaceAlphaRef.current),
+      canvasAlphaRef.current,
     )
 
     // 链接识别：开关切换时挂/卸 addon
@@ -968,7 +935,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         linksAddonRef.current = null
       }
     }
-  }, [termCfg, resolvedTheme, ready, surfaceAlpha])
+  }, [termCfg, resolvedTheme, ready, canvasAlpha])
 
   /* ── 尺寸跟踪 ─────────────────────────────────── */
   useEffect(() => {

@@ -67,7 +67,7 @@
   min-width: 0;
 }
 
-/* 文件栏（左）：与终端并存而非互换；SftpBrowser 根是 .content，这里约束它的外框 */
+/* 文件栏（左）：与终端并存而非互换；SftpBrowser 根是 .sftp-root，这里约束它的外框 */
 .term-files {
   display: flex;
   /* 宽度由内联 style 提供（可拖动）；这里只管"不参与弹性分配"与最小可用宽度 */
@@ -78,7 +78,9 @@
   background: var(--t1000-bg-panel);
 }
 
-.term-files .content {
+/* 撑满文件栏：不加这条 .sftp-root 会退化成宽度 0（它是 inline-size 容器，
+   不会反向把父级撑开），整个文件区就白了。 */
+.term-files .sftp-root {
   flex: 1;
   min-width: 0;
 }
@@ -220,7 +222,10 @@
   position: relative;
   flex: 1;
   min-height: 0;
-  padding: 6px 2px 2px 8px;
+  /* 内边距由渲染器按 terminal.padding 处理（canvas 偏移 + 网格收缩）。
+     这里再加 padding 等于双份留白：画布不覆盖边缘，露出比画布更透的底色，
+     视觉上就是终端四周一圈「间隔」。 */
+  padding: 0;
   overflow: hidden;
 }
 
@@ -240,7 +245,8 @@
   flex: 0 0 auto;
   padding: 3px 10px;
   border-top: 1px solid var(--t1000-border);
-  background: var(--t1000-bg-raised);
+  /* 透明：透出 .content 的面板色。这一层再上色就会与终端区形成一条色差带 */
+  background: transparent;
   color: var(--t1000-fg-faint);
   font-size: 11px;
 }

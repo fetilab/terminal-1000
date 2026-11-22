@@ -25,8 +25,10 @@ import {
 } from './presets'
 import {
   APPEARANCE_DEFAULTS,
-  BACKGROUND_SURFACE_MAX,
-  effectiveSurfaceAlpha,
+  OPACITY_GROUPS,
+  canvasAlphaFor,
+  hasVisibleMedia,
+  panelAlpha,
   resolveAppearance,
   resolveMode,
   backgroundImageUrl,
@@ -106,6 +108,10 @@ describe('resolveAppearance（脏值容错）', () => {
           backgroundImage: 42,
           backgroundOpacity: 7,
           backgroundBlur: 999,
+          backgroundScrim: -3,
+          panelOpacity: 7,
+          glassBlur: 999,
+          accentStrength: -1,
           scale: 99,
         },
       },
@@ -114,6 +120,10 @@ describe('resolveAppearance（脏值容错）', () => {
     expect(cfg.backgroundImage).toBe('')
     expect(cfg.backgroundOpacity).toBe(1)
     expect(cfg.backgroundBlur).toBe(40)
+    expect(cfg.backgroundScrim).toBe(0)
+    expect(cfg.panelOpacity).toBe(1)
+    expect(cfg.glassBlur).toBe(40)
+    expect(cfg.accentStrength).toBe(0)
     expect(cfg.scale).toBe(1.4)
   })
 
@@ -121,7 +131,7 @@ describe('resolveAppearance（脏值容错）', () => {
     const cfg = resolveAppearance({
       app: { appearance: { preset: 'ember', backgroundImage: '/tmp/wall.png', backgroundOpacity: 0.5, backgroundBlur: 6, scale: 1.2 } },
     })
-    expect(cfg).toEqual({
+    expect(cfg).toMatchObject({
       preset: 'ember',
       backgroundImage: '/tmp/wall.png',
       backgroundOpacity: 0.5,
@@ -166,14 +176,39 @@ describe('明暗解析与表面透明度', () => {
     expect(readThemeMode(undefined)).toBe('system')
   })
 
-  it('设了背景图时表面按可见度变透，未设时实心（单滑杆合并后不再乘 opacity）', () => {
+  it('面板 alpha 恒等于 panelOpacity，不随背景类型变化（终端一致性的根据）', () => {
     const cfg = APPEARANCE_DEFAULTS
-    // 无媒体背景：表面恒实心（透出来只有窗口默认色，没有意义）
-    expect(effectiveSurfaceAlpha(cfg, false)).toBe(1)
-    // 可见度 1 → 表面 10%（背景几乎全清晰）；可见度 0 → 100% 实心
-    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 1 }, true)).toBeCloseTo(1 - BACKGROUND_SURFACE_MAX)
-    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 0 }, true)).toBeCloseTo(1)
-    // 默认 0.6 → 46%
-    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 0.6 }, true)).toBeCloseTo(0.46)
+    // 有无背景、什么类型，面板 alpha 都只读 panelOpacity —— 没有第二套公式
+    expect(panelAlpha(cfg)).toBe(cfg.panelOpacity)
+    expect(panelAlpha({ ...cfg, backgroundOpacity: 0 })).toBe(cfg.panelOpacity)
+    expect(panelAlpha({ ...cfg, backgroundType: 'color', backgroundColor: '#c0392b' })).toBe(cfg.panelOpacity)
+    expect(panelAlpha({ ...cfg, backgroundType: 'image', backgroundImage: '/tmp/w.png' })).toBe(cfg.panelOpacity)
+  })
+
+  it('终端画布只在有媒体背景时透明（透出面板色 + 毛玻璃）', () => {
+    const cfg = APPEARANCE_DEFAULTS
+    expect(canvasAlphaFor(cfg)).toBe(1)
+    expect(canvasAlphaFor({ ...cfg, backgroundType: 'image', backgroundImage: '/tmp/w.png' })).toBe(0)
+    expect(canvasAlphaFor({ ...cfg, backgroundType: 'color', backgroundColor: '#fff' })).toBe(0)
+    expect(canvasAlphaFor({ ...cfg, backgroundType: 'video', backgroundVideo: '/tmp/v.mp4' })).toBe(0)
+    expect(canvasAlphaFor({ ...cfg, backgroundType: 'script', backgroundScript: 'matrix' })).toBe(0)
+    // 媒体不透明度 0 = 壁纸藏起来 → 画布回到实色
+    expect(
+      canvasAlphaFor({ ...cfg, backgroundType: 'image', backgroundImage: '/tmp/w.png', backgroundOpacity: 0 }),
+    ).toBe(1)
+  })
+
+  it('hasVisibleMedia 与画布 alpha 同步：空路径/类型不符都不算媒体', () => {
+    const cfg = APPEARANCE_DEFAULTS
+    expect(hasVisibleMedia(cfg)).toBe(false)
+    expect(hasVisibleMedia({ ...cfg, backgroundType: 'video', backgroundVideo: '  ' })).toBe(false)
+    expect(hasVisibleMedia({ ...cfg, backgroundType: 'image', backgroundImage: '/tmp/w.png' })).toBe(true)
+  })
+
+  it('六组不透明度各自独立解析，互不牵连', () => {
+    const cfg = resolveAppearance({
+      app: { appearance: { panelOpacity: 0.2, sidebarOpacity: 0.4, modalOpacity: 1, menuOpacity: 0.9 } },
+    })
+    expect(OPACITY_GROUPS.map((g) => cfg[g.key])).toEqual([0.2, 0.4, 1, 0.9, 1, 1])
   })
 })

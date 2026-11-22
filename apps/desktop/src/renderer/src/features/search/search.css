@@ -21,7 +21,7 @@
   border: 1px solid var(--t1000-border-strong);
   border-radius: var(--t1000-radius-lg);
   /* 浮层必须实色：全局搜索是浮在壁纸上的面板，半透明会让壁纸透进来抢对比度 */
-  background: var(--t1000-bg-panel-solid);
+  background: var(--t1000-bg-menu);
   box-shadow: 0 18px 48px rgb(0 0 0 / 32%);
   overflow: hidden;
 }

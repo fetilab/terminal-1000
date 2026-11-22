@@ -28,7 +28,8 @@
   padding: 12px 14px;
   border: 1px solid var(--t1000-border);
   border-radius: var(--t1000-radius);
-  background: var(--t1000-bg-sunken);
+  /* 代码预览块：跟随「代码块不透明度」 */
+  background: var(--t1000-bg-code);
   margin-bottom: 18px;
 }
 
@@ -301,4 +302,22 @@
 .settings-path > :first-child {
   flex: 1;
   min-width: 0;
+}
+
+/* 设置面板分组标题（背景 / 界面 …） */
+.settings-group-title {
+  grid-column: 1 / -1;
+  margin: 8px 0 -4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--t1000-border);
+  color: var(--t1000-fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.settings-grid > .settings-group-title:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }

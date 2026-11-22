@@ -8,7 +8,8 @@
   border: 1px solid var(--t1000-border);
   border-radius: var(--t1000-radius-sm);
   overflow: hidden;
-  background: var(--t1000-bg-sunken);
+  /* 代码编辑器：跟随「代码块不透明度」 */
+  background: var(--t1000-bg-code);
 }
 
 .code-editor__host {
@@ -36,7 +37,7 @@
   padding: 10px 12px;
   border: none;
   border-top: 1px solid var(--t1000-border);
-  background: var(--t1000-bg-sunken);
+  background: var(--t1000-bg-code);
   color: var(--t1000-fg);
   font-family: var(--t1000-font-mono);
   font-size: 12.5px;
