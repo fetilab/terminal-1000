@@ -24,7 +24,7 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'app.theme': 'lib/store.ts applyTheme() → 根节点 data-theme + 终端配色跟随',
   'app.appearance.preset': 'theme/appearance.ts applyAppearance() → paletteFor(preset) 写入根节点全套 CSS 令牌（背景/面板/文字/强调）',
   'app.appearance.backgroundImage': 'theme/appearance.ts applyAppearance() → --t1000-bg-image（只接受本地来源，http(s) 一律拒绝）',
-  'app.appearance.backgroundOpacity': 'theme/appearance.ts applyAppearance() → --t1000-bg-image-opacity / --t1000-dyn-bg-opacity',
+  'app.appearance.backgroundOpacity': 'theme/appearance.ts applyAppearance() → 背景可见度：控制 --t1000-surface-alpha（表面/终端画布透明度）；媒体层恒满强度显示，推到 0 时媒体层整体隐藏',
   'app.appearance.backgroundType': 'theme/appearance.ts applyAppearance() + features/background/DynamicBackground.tsx（none/color/image/video/script 分流）',
   'app.appearance.backgroundColor': 'theme/appearance.ts → --t1000-dyn-bg-color；DynamicBackground 纯色层',
   'app.appearance.backgroundVideo': 'DynamicBackground → <video> 循环静音播放（本地来源校验同背景图）',

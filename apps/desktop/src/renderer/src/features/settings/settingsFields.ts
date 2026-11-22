@@ -135,7 +135,7 @@ export const SETTINGS_FIELDS: Record<
       min: 0,
       max: 1,
       step: 0.05,
-      hint: '背景媒体/纯色的整体可见度',
+      hint: '拉高界面更透、背景更可见；推到 0 隐藏背景层',
     },
     {
       path: 'app.appearance.opacity',

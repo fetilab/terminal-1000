@@ -48,3 +48,8 @@ asar-extracted/
 # docs/ 为工程文档，需要入库；仅忽略其中的临时截图
 docs/*.png
 docs/shot-*.png
+
+# vitest/electron-vite 运行期临时产物
+apps/desktop/vitest.config.ts.timestamp-*.mjs
+apps/desktop/electron.vite.config.*.mjs
+_tmp_*

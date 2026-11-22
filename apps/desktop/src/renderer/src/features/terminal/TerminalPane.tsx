@@ -254,6 +254,24 @@ function themeFor(colorScheme: string, resolved: 'light' | 'dark'): import('@xte
   return resolved === 'light' ? TERMINAL_THEME_LIGHT : TERMINAL_THEME
 }
 
+/**
+ * 给 xterm 主题的背景色套上 alpha。
+ *
+ * xterm 只有在 `allowTransparency: true`（创建时固定）且 theme.background
+ * 是带 alpha 的颜色时画布才真正透明 —— 实色 `#0d0f14` 会把背景层整个盖住，
+ * 这就是「xterm 后端终端不透明」的成因。kitty 后端走 buildTheme 的
+ * settings.backgroundOpacity，两后端用同一个 bgAlphaFor 系数保持观感一致。
+ */
+function themeWithAlpha(theme: import('@xterm/xterm').ITheme, alpha: number): import('@xterm/xterm').ITheme {
+  if (alpha >= 0.999) return theme
+  const hex = (theme.background ?? '#000000').replace('#', '')
+  const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex.slice(0, 6)
+  const r = Number.parseInt(full.slice(0, 2), 16)
+  const g = Number.parseInt(full.slice(2, 4), 16)
+  const b = Number.parseInt(full.slice(4, 6), 16)
+  return { ...theme, background: `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})` }
+}
+
 /** 浅色下的终端配色：底色与整体主题一致，前景用深色保证对比度 */
 const TERMINAL_THEME_LIGHT = {
   ...TERMINAL_THEME,
@@ -345,6 +363,11 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   useEffect(() => {
     const sync = (cfg: AppearanceConfig | null): void => {
       if (!cfg) return
+      // 可见度 0 = 媒体层整体隐藏（applyToDocument 同款判定）
+      if (cfg.backgroundOpacity <= 0.001) {
+        setSurfaceAlpha(null)
+        return
+      }
       const url = backgroundImageUrl(cfg.backgroundImage)
       const media =
         Boolean(url) ||
@@ -622,7 +645,13 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
             allowProposedApi: true,
             convertEol: false,
             macOptionIsMeta: true,
-            theme: themeFor(st.colorScheme, resolvedThemeRef.current),
+            // 半透明背景的前提：创建时必须开启（后续不可切换）。
+            // theme.background 的 alpha 由 themeWithAlpha 按背景联动系数套上
+            allowTransparency: true,
+            theme: themeWithAlpha(
+              themeFor(st.colorScheme, resolvedThemeRef.current),
+              bgAlphaFor(st, surfaceAlphaRef.current),
+            ),
           })
           const fitAddon = new Fit()
           const searchAddon = new Search()
@@ -902,7 +931,10 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     term.options.cursorBlink = termCfg.cursorBlink
     term.options.cursorStyle = termCfg.cursorStyle
     term.options.scrollback = termCfg.scrollback
-    term.options.theme = themeFor(termCfg.colorScheme, resolvedTheme)
+    term.options.theme = themeWithAlpha(
+      themeFor(termCfg.colorScheme, resolvedTheme),
+      bgAlphaFor(termCfg, surfaceAlphaRef.current),
+    )
 
     // 链接识别：开关切换时挂/卸 addon
     const ctor = linksCtorRef.current

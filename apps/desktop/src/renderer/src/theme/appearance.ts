@@ -195,6 +195,8 @@ export function effectiveSurfaceAlpha(config: AppearanceConfig, hasImage: boolea
 export function currentMediaSurfaceAlpha(): number | null {
   if (cachedSettings === null) return null
   const config = resolveAppearance(cachedSettings)
+  // 可见度推到 0 = 媒体层整体隐藏（applyToDocument 同款判定），画布回到自身不透明度
+  if (config.backgroundOpacity <= 0.001) return null
   const url = backgroundImageUrl(config.backgroundImage)
   const media =
     Boolean(url) ||
@@ -252,24 +254,34 @@ function applyToDocument(config: AppearanceConfig, mode: AppearanceMode): void {
   root.dataset.appearancePreset = config.preset
 
   const url = backgroundImageUrl(config.backgroundImage)
-  root.style.setProperty('--t1000-bg-image', url ? cssUrlValue(url) : 'none')
-  root.style.setProperty('--t1000-bg-image-opacity', String(config.backgroundOpacity))
+  /*
+   * 媒体层满强度显示（kitty 观感：壁纸满强度铺底 + 终端 background_opacity + blur）。
+   * 此前媒体层自己乘 backgroundOpacity（默认 0.35），与终端画布的透出（0.68）双衰减，
+   * 壁纸净贡献只剩 ~11% —— 用户看到的就是「命令行终端（kitty 界面）不透明」。
+   * 「背景可见度」滑杆现在唯一的作用是控制表面/画布透明度（effectiveSurfaceAlpha）：
+   * 拉高 → 界面更透 → 背景更可见；推到 0 → 媒体层彻底隐藏（含 has-* 类，毛玻璃一并撤）。
+   */
+  const mediaHidden = config.backgroundOpacity <= 0.001
+  root.style.setProperty('--t1000-bg-image', url && !mediaHidden ? cssUrlValue(url) : 'none')
+  root.style.setProperty('--t1000-bg-image-opacity', '1')
   // 动态背景（视频/纯色/脚本）生效时收敛静态背景图，两层不叠画
   const dynActive =
-    (config.backgroundType === 'video' && config.backgroundVideo.trim() !== '') ||
-    (config.backgroundType === 'script' && config.backgroundScript.trim() !== '')
-  const colorActive = config.backgroundType === 'color' && config.backgroundColor.trim() !== ''
-  root.style.setProperty('--t1000-dyn-bg-opacity', String(config.backgroundOpacity))
+    !mediaHidden &&
+    ((config.backgroundType === 'video' && config.backgroundVideo.trim() !== '') ||
+      (config.backgroundType === 'script' && config.backgroundScript.trim() !== ''))
+  const colorActive =
+    !mediaHidden && config.backgroundType === 'color' && config.backgroundColor.trim() !== ''
+  root.style.setProperty('--t1000-dyn-bg-opacity', '1')
   root.style.setProperty('--t1000-dyn-bg-color', config.backgroundColor.trim() || '#000000')
   document.body?.classList.toggle('t1000-has-dynbg', dynActive || colorActive)
-  const surfaceHasMedia = Boolean(url) || dynActive || colorActive
+  const surfaceHasMedia = (Boolean(url) && !mediaHidden) || dynActive || colorActive
   root.style.setProperty(
     '--t1000-surface-alpha',
     `${(effectiveSurfaceAlpha(config, surfaceHasMedia) * 100).toFixed(1)}%`,
   )
   root.style.setProperty('--t1000-ui-scale', String(config.scale))
 
-  document.body?.classList.toggle('t1000-has-bg', Boolean(url))
+  document.body?.classList.toggle('t1000-has-bg', Boolean(url) && !mediaHidden)
 
   // 动态背景层（React 组件）监听这个事件换内容；不用把 appearance 塞进全局 store
   window.dispatchEvent(new CustomEvent<AppearanceConfig>('t1000-appearance', { detail: config }))

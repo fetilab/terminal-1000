@@ -437,7 +437,9 @@ async function probeDynbgChain(cdp) {
   const alphaOffOk = alphaOff >= 216
   console.log(`  canvas alpha: 背景开=${alphaOn} (期望≈77) 毛玻璃=${glass} 背景关=${alphaOff} (期望≈224)`)
 
-  // 图片类型：走 body::before（静态层），断言 CSS 变量与 has-bg
+  // 图片类型：走 body::before（静态层），断言 CSS 变量与 has-bg；
+  // 媒体层必须满强度（--t1000-bg-image-opacity=1）——此前它自己乘可见度（默认 0.35），
+  // 与画布透出双衰减，壁纸净贡献 ~11%，用户看到的就是「kitty 界面不透明」
   await set('app.appearance.backgroundType', 'image')
   await set('app.appearance.backgroundImage', '/home/mosfet/dsh1/_tmp/t1000-test-bg.png')
   await sleep(400)
@@ -447,10 +449,40 @@ async function probeDynbgChain(cdp) {
     return {
       hasBgClass: document.body.classList.contains('t1000-has-bg'),
       cssVar: v.startsWith('url("file:///home/mosfet/dsh1/_tmp/t1000-test-bg.png")'),
+      imgOpacity: parseFloat(root.style.getPropertyValue('--t1000-bg-image-opacity')),
       dynGone: document.querySelector('.t1000-dynbg') === null,
     }
   })()`)
-  const imageOk = cImg.hasBgClass && cImg.cssVar && cImg.dynGone
+  const imageOk = cImg.hasBgClass && cImg.cssVar && cImg.dynGone && cImg.imgOpacity === 1
+  await cdp.shot('dynbg-image.png')
+
+  // 可见度回默认 0.35：媒体层**仍然满强度**（滑杆只控制表面透明度），表面 ≈68%
+  await set('app.appearance.backgroundOpacity', 0.35)
+  await sleep(400)
+  const cDef = await cdp.eval(`(() => {
+    const root = document.documentElement
+    return {
+      hasBgClass: document.body.classList.contains('t1000-has-bg'),
+      imgOpacity: parseFloat(root.style.getPropertyValue('--t1000-bg-image-opacity')),
+      surfaceAlpha: parseFloat(root.style.getPropertyValue('--t1000-surface-alpha')),
+    }
+  })()`)
+  const defaultVisOk = cDef.hasBgClass && cDef.imgOpacity === 1 && cDef.surfaceAlpha > 60 && cDef.surfaceAlpha < 75
+  await cdp.shot('dynbg-default-vis.png')
+  // 可见度推到 0：媒体层整体隐藏（has-bg 撤、图片 none、毛玻璃撤）
+  await set('app.appearance.backgroundOpacity', 0)
+  await sleep(400)
+  const cZero = await cdp.eval(`(() => {
+    const root = document.documentElement
+    return {
+      hasBgClass: document.body.classList.contains('t1000-has-bg'),
+      imgNone: root.style.getPropertyValue('--t1000-bg-image') === 'none',
+      surfaceAlpha: root.style.getPropertyValue('--t1000-surface-alpha'),
+    }
+  })()`)
+  const zeroHiddenOk = !cZero.hasBgClass && cZero.imgNone && parseFloat(cZero.surfaceAlpha) > 88
+  // 恢复拉满供后续探针使用
+  await set('app.appearance.backgroundOpacity', 1)
   await set('app.appearance.backgroundImage', '')
   await cdp.shot('dynbg-image.png')
 
@@ -477,12 +509,12 @@ async function probeDynbgChain(cdp) {
   const c3 = await dom()
   const offOk = !c3.hasClass && !c3.layer
 
-  console.log(`DYNBG-CHAIN: ${colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && scriptOk && offOk ? 'PASS' : 'FAIL'} (纯色+30%透出=${colorOk} 画布半透明=${alphaOnOk && alphaOffOk} 毛玻璃=${glassOk} 图片=${imageOk} 脚本=${scriptOk} 关闭=${offOk})`)
+  console.log(`DYNBG-CHAIN: ${colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && defaultVisOk && zeroHiddenOk && scriptOk && offOk ? 'PASS' : 'FAIL'} (纯色+30%透出=${colorOk} 画布半透明=${alphaOnOk && alphaOffOk} 毛玻璃=${glassOk} 图片=${imageOk} 默认可见度满强度=${defaultVisOk} 可见度0隐藏=${zeroHiddenOk} 脚本=${scriptOk} 关闭=${offOk})`)
   console.log('  color dom =', JSON.stringify(c1))
   console.log('  image dom =', JSON.stringify(cImg))
   console.log('  script dom =', JSON.stringify(c2), 'pixels =', JSON.stringify(pixels))
   console.log('  off dom =', JSON.stringify(c3))
-  return colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && scriptOk && offOk
+  return colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && defaultVisOk && zeroHiddenOk && scriptOk && offOk
 }
 
 /* ── 探针 5：真实窗格端到端（主题保持 + 背景可见 + 模拟鼠标） ── */
@@ -587,22 +619,30 @@ async function probeRealPane(cdp) {
     const colorEl = dyn.querySelector('.t1000-dynbg--color')
     const redSet = colorEl && getComputedStyle(colorEl).backgroundColor === 'rgb(192, 57, 43)'
     const dynOpacity = parseFloat(getComputedStyle(dyn).opacity)
-    // 画布 → body 之间不许有不透明层（alpha<1 或全透明）
-    const opaqueLayers = []
+    // 画布 → body 之间的**累积合成 alpha**：1-∏(1-aᵢ)。
+    // 上一版只查单层 a≥0.999 的实色层，漏掉了「画布/term-pane/content/body
+    // 四层各 0.59 叠出 0.97」的级联 —— 终端不透明的真正根因。
+    // 媒体背景激活时这些中间层必须全部透明（合成 ≈0），画布 alpha 直接对背景层。
+    const chainLayers = []
     let p = canvas.parentElement
-    while (p && p !== document.body) {
+    while (p) {
       const bg = getComputedStyle(p).backgroundColor
       const m = bg.match(/rgba?\\(([^)]+)\\)/)
       if (m) {
         const parts = m[1].split(',').map(s => parseFloat(s))
         const a = parts.length === 4 ? parts[3] : 1
-        if (a >= 0.999) opaqueLayers.push(p.tagName + '.' + String(p.className || '').split(' ')[0])
+        chainLayers.push({ el: p.tagName + '.' + String(p.className || '').split(' ')[0], a })
       }
+      if (p === document.body) break
       p = p.parentElement
     }
+    const opaqueLayers = chainLayers.filter(l => l.a >= 0.999)
+    let chainComposite = 1
+    for (const l of chainLayers) chainComposite *= (1 - l.a)
+    chainComposite = 1 - chainComposite
     // DOCUMENT_POSITION_FOLLOWING：canvas 在 dyn 之后 → dyn 在画布之前绘制（在下层）
     const dynBeforeContent = !!(dyn.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING)
-    return { coversViewport, redSet, dynOpacity, opaqueLayers, dynBeforeContent }
+    return { coversViewport, redSet, dynOpacity, opaqueLayers, chainComposite, dynBeforeContent }
   })()`)
   const bgVisibleOk =
     paneAlpha >= 55 &&
@@ -611,6 +651,8 @@ async function probeRealPane(cdp) {
     composite.redSet &&
     composite.dynOpacity > 0.95 &&
     composite.opaqueLayers.length === 0 &&
+    // 中间层累积合成必须接近全透明（画布 alpha 已由 paneAlpha 单独断言）
+    composite.chainComposite < 0.35 &&
     composite.dynBeforeContent
   await cdp.shot('pane-bg-red.png')
 

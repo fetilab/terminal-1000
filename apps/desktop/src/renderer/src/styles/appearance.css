@@ -155,3 +155,28 @@ body.t1000-has-dynbg .kitty-surface {
   backdrop-filter: blur(14px) saturate(1.15);
   -webkit-backdrop-filter: blur(14px) saturate(1.15);
 }
+
+/*
+ * 媒体背景激活时，终端画布 → 背景层之间的**中间容器必须全部透明**。
+ *
+ * 这是最关键的修复（「命令行终端不透明」的根因）：这些容器各自带
+ * --t1000-bg-* 半透明底色，单层看似无害（alpha≈0.59），但画布、
+ * .term-pane、.content、body 四层叠加是 1-(1-0.59)⁴ ≈ 0.97 ——
+ * 终端区域视觉上几乎完全不透明，而侧栏只有单层所以明显透出，
+ * 用户看到的就是「界面毛玻璃有了，唯独终端不透明」。
+ *
+ * 透明后终端画布的 alpha 直接对背景层生效（kitty background_opacity
+ * 同款观感）；没有媒体背景时这些规则不生效，body 的底色照常兜底，
+ * 不会露出 html 实色或窗口默认色。
+ */
+body.t1000-has-bg,
+body.t1000-has-dynbg {
+  background: transparent;
+}
+
+body.t1000-has-bg .content,
+body.t1000-has-dynbg .content,
+body.t1000-has-bg .term-pane,
+body.t1000-has-dynbg .term-pane {
+  background: transparent;
+}
