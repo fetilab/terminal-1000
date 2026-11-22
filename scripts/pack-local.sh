@@ -190,7 +190,10 @@ if [ "$WANT_WIN" -eq 1 ]; then
     say "跳过 Windows 包：挂 tmpfs 需要 root"
   else
     say "打包 Windows NSIS"
-    ABL=$(ls -d "$DESKTOP"/node_modules/.pnpm/app-builder-lib@*/node_modules/app-builder-lib/out 2>/dev/null | head -1)
+    # app-builder-lib 可能被提升到 workspace 根的 .pnpm 下（pnpm 的 hoist 行为随版本变），
+    # 先在根找、再回落到 apps/desktop —— 只查一处会在依赖布局变化时直接失败。
+    ABL=$(ls -d "$ROOT"/node_modules/.pnpm/app-builder-lib@*/node_modules/app-builder-lib/out 2>/dev/null | head -1)
+    [ -n "$ABL" ] || ABL=$(ls -d "$DESKTOP"/node_modules/.pnpm/app-builder-lib@*/node_modules/app-builder-lib/out 2>/dev/null | head -1)
     [ -n "$ABL" ] || die "找不到 app-builder-lib/out"
     (
       mount -t tmpfs -o size=3g,mode=1777 tmpfs /tmp || die "挂载 /tmp 失败"
