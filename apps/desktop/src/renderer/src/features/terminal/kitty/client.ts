@@ -212,10 +212,10 @@ export class KittySession {
   }
 
   selection(
-    kind: 'start' | 'update' | 'clear',
+    kind: 'start' | 'update' | 'clear' | 'word' | 'line',
     x: number,
     y: number,
-    opts?: { rectangle?: boolean; ended?: boolean },
+    opts?: { rectangle?: boolean; ended?: boolean; half?: boolean; extend?: 'word' | 'line' },
   ): Promise<{ text: string | null } | null> {
     return request<{ text: string | null } | null>({
       t: 'selection',
@@ -225,6 +225,8 @@ export class KittySession {
       y,
       rectangle: opts?.rectangle,
       ended: opts?.ended,
+      half: opts?.half,
+      extend: opts?.extend,
     } as never)
   }
 

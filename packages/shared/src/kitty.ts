@@ -167,11 +167,22 @@ export type KittyRequest =
       id: number
       t: 'selection'
       sessionId: string
-      kind: 'start' | 'update' | 'clear'
+      /**
+       * start/update：鼠标按下与拖拽；clear：清空；
+       * word/line：双击选词、三击选行（kitty 的 doublepress / triplepress）。
+       */
+      kind: 'start' | 'update' | 'clear' | 'word' | 'line'
       x: number
       y: number
       rectangle?: boolean
       ended?: boolean
+      /** kitty 的 in_left_half_of_cell：指针在格子左半还是右半 */
+      half?: boolean
+      /**
+       * kitty 的 SelectionExtendMode：双击/三击之后继续拖动，扩展粒度不是
+       * 「格」而是「词」/「行」（screen.c 的 EXTEND_WORD / EXTEND_LINE）。
+       */
+      extend?: 'word' | 'line'
     }
   | { id: number; t: 'search'; sessionId: string; pattern: string; step: 'first' | 'next' | 'prev' }
   | { id: number; t: 'selectAll'; sessionId: string }

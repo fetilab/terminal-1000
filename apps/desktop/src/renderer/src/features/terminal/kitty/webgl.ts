@@ -48,6 +48,17 @@ const F_WIDE_TRAIL = 128
 const F_UNDERLINE_MASK = 7 << 8
 const F_UNDERLINE_SHIFT = 8
 
+/** kitty dim_opacity 默认 0.4：把前景往格子底色上兑，才是「变淡」而不是「变黑」 */
+const DIM_OPACITY = 0.4
+function mixTo(fg: Rgba, bg: Rgba, k: number): Rgba {
+  return {
+    r: bg.r + (fg.r - bg.r) * k,
+    g: bg.g + (fg.g - bg.g) * k,
+    b: bg.b + (fg.b - bg.b) * k,
+    a: fg.a,
+  }
+}
+
 /** attach 到一行的高亮规则（绝对行号） */
 export interface HighlightSpan {
   line: number
@@ -272,9 +283,11 @@ export class WebGLTerminalRenderer {
   /** 光标最后一次被程序移动的时间（kitty position_changed_by_client_at） */
   private cursorChangedAt = 0
   private trailNeedsRender = false
+  /** 上一帧的 needs_render。kitty 的 update_cursor_trail 返回 needs||prev，多跑一帧把残影擦掉 */
+  private trailNeedsRenderPrev = false
   private cursorVisibleMode = true
   /** 上一帧的原始光标位置（检测程序驱动的移动） */
-  private lastRawCursor: { x: number; y: number; sb: number } | null = null
+  private lastRawCursor: { x: number; y: number } | null = null
   private focused = true
   private shapeOverride: 'block' | 'underline' | 'bar' | null = null
   private inactiveStyle: 'outline' | 'block' | 'beam' | 'underline' | 'none' = 'outline'
@@ -457,7 +470,9 @@ export class WebGLTerminalRenderer {
         return true
       }
     }
-    return this.trailNeedsRender || (!this.cursorVisibleMode && this.trailOpacity > 0)
+    return (
+      this.trailNeedsRender || this.trailNeedsRenderPrev || (!this.cursorVisibleMode && this.trailOpacity > 0)
+    )
   }
 
   /** 拖尾立刻贴合光标（关动画/重排时用） */
@@ -499,10 +514,12 @@ export class WebGLTerminalRenderer {
     return [x, x + 1, y, y + 1]
   }
 
-  /** kitty cursor_beam_thickness（pt ≈ css px） */
+  /** kitty cursor_beam_thickness 默认 1.5pt，96dpi 下 = 2px */
   private beamThicknessPx = 2
-  /** kitty cursor_underline_thickness */
-  private underlineThicknessPx = 2
+  /** kitty cursor_underline_thickness 默认 2.0pt，96dpi 下 = 2.67px */
+  private underlineThicknessPx = 2.67
+  /** kitty add_hollow_cursor 用的是 box_drawing 细线（≈1.5pt） */
+  private hollowThicknessPx = 2
 
   setBeamThicknessPx(px: number): void {
     this.beamThicknessPx = Math.max(1, px)
@@ -519,18 +536,18 @@ export class WebGLTerminalRenderer {
     // 光标位置变化（程序驱动）：对比**原始光标位置**而不是拖尾目标——
     // kitty 的 position_changed_by_client_at 在客户端移动光标时置一次，
     // 若每帧对着没跟上来的目标重新计时，门控会死锁（目标永远不更新）。
-    // 回看滚动会改变光标的视口位置，也算一次移动。
+    // 只看光标本身：回看滚动会改变视口坐标，但 kitty 不把它算作客户端移动。
     if (meta) {
-      const raw = { x: meta.cursor.x, y: meta.cursor.y, sb: meta.scrolledBy }
+      const raw = { x: meta.cursor.x, y: meta.cursor.y }
       const last = this.lastRawCursor
-      if (last && (raw.x !== last.x || raw.y !== last.y || raw.sb !== last.sb)) {
-        this.cursorChangedAt = now
-      }
+      if (last && (raw.x !== last.x || raw.y !== last.y)) this.cursorChangedAt = now
       this.lastRawCursor = raw
     }
     // 目标更新门控：光标停稳 trailMs 毫秒后才跟随（kitty update_cursor_trail）
     const gated = this.trailMs > 0 && now - this.cursorChangedAt < this.trailMs
+    this.targetUpdated = false
     if (rect && !gated) this.updateTrailTarget(rect)
+    this.trailNeedsRenderPrev = this.trailNeedsRender
     this.updateTrailCorners(now)
     this.updateTrailOpacity(now)
     this.updateTrailNeedsRender()
@@ -627,17 +644,6 @@ export class WebGLTerminalRenderer {
     }
     for (let i = 0; i < 4; i += 1) {
       if ((dx[i] === 0 && dy[i] === 0) || minDot === Infinity) continue
-      const tix = CORNER_IX[i] as 0 | 1
-      const tiy = CORNER_IY[i] as 0 | 1
-      // 头部角（面向移动方向的角）直接钉在目标角上——拖尾头永远与光标相连。
-      // 纯缓动时长距离跳跃时头部会落后光标几十毫秒，中间空出一段距离，
-      // 屏幕上就是「一个正矩形光标 + 一个变形块」两个光标。钉住头部后
-      // 拖尾以光标为头、向旧位置拉出彗尾，灵动变形效果不变且永不断开。
-      if (dot[i]! > 0.25) {
-        this.cornerX[i] = this.edgeX[tix]
-        this.cornerY[i] = this.edgeY[tiy]
-        continue
-      }
       const decay =
         minDot === maxDot
           ? this.trailDecaySlow
@@ -759,6 +765,34 @@ export class WebGLTerminalRenderer {
     return null
   }
 
+  /**
+   * 块光标所在的单元格（视口坐标）。
+   *
+   * kitty 的块光标**不是**一个盖在文字上的实心矩形：它是把该格的背景换成光标色、
+   * 文字换成原底色（shaders.c：`foreground = if_one_then(has_block_cursor,
+   * final_cursor_text_color, foreground)`）。所以格子里的字符始终可见 —— 反色。
+   * 我们早先是先画字、再往上盖一个实心块，字就被盖没了。
+   */
+  private blockCursorCell(): { x1: number; x2: number; y: number } | null {
+    const meta = this.meta
+    if (!meta || this.blinkOff) return null
+    if (!meta.cursor.visible || meta.cursor.shape === 'none') return null
+    const shape = this.focused ? (this.shapeOverride ?? meta.cursor.shape) : this.cursorInactiveShape()
+    if (shape !== 'block') return null
+    const y = meta.scrolledBy + meta.cursor.y
+    if (y < 0 || y >= this.rows) return null
+    const x = meta.cursor.x
+    if (x < 0 || x >= this.cols) return null
+    /*
+     * 宽字符（CJK / emoji）：kitty 在 shaders.c 里对 multicell 的块光标做
+     * `rd->cursor_x2 += mcd_x_limit(cursor_cell) - 1`，也就是光标要盖满整个
+     * 宽字符的两格。只盖第一格会留下一条没反色的缝，看上去像光标被切了一半。
+     */
+    const flags = this.grid[(y * this.cols + x) * KITTY_CELL_WORDS + 6] ?? 0
+    const span = (flags & F_WIDE) !== 0 ? 2 : 1
+    return { x1: x, x2: Math.min(this.cols - 1, x + span - 1), y }
+  }
+
   private highlightAt(abs: number, x: number): Rgba | null {
     for (const span of this.highlights) {
       if (span.line === abs && x >= span.x1 && x <= span.x2) return span.color
@@ -791,6 +825,8 @@ export class WebGLTerminalRenderer {
     const sel = this.selectionAt(y)
     const zebra = this.opts.zebra && y % 2 === 1
     const blinkOff = this.blinkOff ? 1 : 0
+    // 块光标所在格（视口坐标）：这一格的背景/前景要按 kitty 的规则反色
+    const curCell = this.blockCursorCell()
     // 连字段占多列：段内后续列不再画独立字形
     let glyphSkipUntil = -1
 
@@ -817,7 +853,9 @@ export class WebGLTerminalRenderer {
         fg = { ...bg, a: 1 }
         bg = { ...tmp, a: this.theme.bg.a }
       }
-      if (dim) fg = { ...fg, r: fg.r * 0.62, g: fg.g * 0.62, b: fg.b * 0.62 }
+      // kitty background.slang: displayed_foreground = lerp(cell_bg, fg, dim_opacity)。
+      // 早先是「fg 乘 0.62」——黑字乘完还是黑，浅色主题上 DIM 完全看不出来。
+      if (dim) fg = mixTo(fg, bg, DIM_OPACITY)
       if (zebra && !reverse) bg = { ...bg, r: bg.r + 0.03, g: bg.g + 0.03, b: bg.b + 0.05 }
 
       const selected = sel !== null && x >= sel.x1 && x <= sel.x2
@@ -832,6 +870,14 @@ export class WebGLTerminalRenderer {
       }
       const hi = this.highlightAt(abs, x)
       if (hi) fg = hi
+
+      // 块光标：背景→光标色、文字→原底色（kitty shaders.c 的 has_block_cursor 分支）。
+      // 这样字始终可见且是反色的，而不是被一块实心矩形盖掉。
+      // 宽字符占两格（blockCursorCell 已经按 F_WIDE 伸展）。
+      if (curCell !== null && curCell.y === y && x >= curCell.x1 && x <= curCell.x2) {
+        fg = { ...bg, a: 1 }
+        bg = { ...this.theme.cursor }
+      }
 
       // 背景实例
       const cc = this.rgba(bg)
@@ -1116,7 +1162,16 @@ export class WebGLTerminalRenderer {
    * 片元被遮掉。非实例化绘制：6 个顶点直接来自 corner 数组。
    */
   private drawTrailQuad(): void {
-    if (this.trailOpacity <= 0 || !this.edgeX || !this.edgeY) return
+    /*
+     * kitty 只在 `cursor_trail.needs_render` 为真时画拖尾（shaders.c：
+     * stop_os_window_rendering 的条件是 `OPT(cursor_trail) && needs_render`）。
+     *
+     * 这一条不能省：四个角收敛到 0.5 格以内之后，剩下的那块"变形"其实已经
+     * 与实际光标几乎重合，画不画都看不出来；但如果继续画，它就**一直留在屏幕上**，
+     * 直到下一帧（往往是 500ms 后的闪烁定时器）才被擦掉 —— 观感就是"光标卡在
+     * 变形状态半秒，然后突然弹回去"。
+     */
+    if (!this.trailNeedsRender || this.trailOpacity <= 0 || !this.edgeX || !this.edgeY) return
     const gl = this.gl
     // 角序（kitty corner_index）：0=右上 1=右下 2=左上 3=左下 → 三角形 (0,1,2)(2,1,3)
     const order = [0, 1, 2, 2, 1, 3]
@@ -1185,18 +1240,28 @@ export class WebGLTerminalRenderer {
     this.cursorCount = 0
     // kitty：闪烁的灭相完全不画光标（shaders.c 里 off 相直接跳过 cursor 绘制）
     if (this.blinkOff) return
+    // 块光标已经在单元格里画成「反色格」（见 blockCursorCell），这里不再叠一个实心矩形，
+    // 否则会把字符盖掉。竖线/下划线/空心没有这个问题，仍按四边形画。
+    if (shape === 'block') return
     const c = color
-    if (shape === 'block') build(left, top, right - left, bottom - top, c)
-    else if (shape === 'beam' || shape === 'bar') build(left, top, right - left, bottom - top, c)
+    if (shape === 'beam' || shape === 'bar') build(left, top, right - left, bottom - top, c)
     else if (shape === 'underline') build(left, top, right - left, bottom - top, c)
     else if (shape === 'hollow') {
-      const t2 = 0.08
+      /*
+       * kitty 的 add_hollow_cursor 是「四条 box-drawing 细线」，线宽是绝对
+       * 像素（1.5pt），横边按格高、竖边按格宽换算 —— 早先用 0.08 格近似，
+       * 宽格子上竖边会明显比横边粗。
+       */
+      const cellWcss = this.atlas.cellW / this.dpr
+      const cellHcss = this.atlas.cellH / this.dpr
+      const tx = Math.max(0.02, Math.min(0.5, this.hollowThicknessPx / cellWcss))
+      const ty = Math.max(0.02, Math.min(0.5, this.hollowThicknessPx / cellHcss))
       const w = right - left
       const h = bottom - top
-      build(left, top, w, t2, c)
-      build(left, top + h - t2, w, t2, c)
-      build(left, top, t2, h, c)
-      build(left + w - t2, top, t2, h, c)
+      build(left, top, w, ty, c)
+      build(left, bottom - ty, w, ty, c)
+      build(left, top, tx, h, c)
+      build(right - tx, top, tx, h, c)
     }
     if (this.cursorCount === 0) return
     gl.bindBuffer(gl.ARRAY_BUFFER, this.cursorBuffer)

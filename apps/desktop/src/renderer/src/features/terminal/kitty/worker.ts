@@ -38,6 +38,7 @@ import type {
   KittySelectionSpan,
 } from '@t1000/shared'
 import { KITTY_CELL_WORDS } from '@t1000/shared'
+import { computeSelectionSpans, type SelectionPoint } from './selectionSpans'
 
 /** 功能键名 → kitty 的 GLFW 键码（与 `key_encoding.c` 的输入约定一致） */
 const FUNCTION_KEYS: Record<string, number> = {
@@ -99,8 +100,12 @@ interface Session {
   title: string
   /** OSC 7 报告的工作目录（内核不导出，自己从原始字节里嗅探） */
   cwd: string
-  selectionAnchor: { x: number; y: number } | null
-  selectionCursor: { x: number; y: number } | null
+  /**
+   * 选区锚点/游标。`half` 是 kitty 的 in_left_half_of_cell：同一格里靠左还是靠右，
+   * 决定边界格算不算进选区（也是「按下不动 = 空选区」的判据之一）。
+   */
+  selectionAnchor: SelectionPoint | null
+  selectionCursor: SelectionPoint | null
   rectangle: boolean
   /** 搜索命中（绝对行号空间） */
   searchIndex: number
@@ -334,53 +339,55 @@ function buildMeta(s: Session, term: KittyTerminal, scrolledBy: number): KittyMe
     defaultBg: rgbOf(term.defaultBg),
     cursorColor: rgbOf(term.cursorColor),
     palette,
-    selection: computeSelectionSpans(s, term, scrolledBy),
+    selection: selectionSpansOf(s, term),
   }
 }
 
 /**
- * 选区的可视色块。
- *
- * 内核负责「选了什么字」（`selectionText()` 才是权威），这里只负责「画在哪」。
- * 线性选择跨行时每行都是从行首到行尾（首行从起点开始、末行到终点结束）；
- * 矩形选择每行都是同一列区间。
+ * kitty 的 `select_by_word_characters` 默认值 + Unicode 字母数字。
+ * 双击选词时用来找边界（内核的 selectWord 用的是同一套规则）。
  */
-function computeSelectionSpans(
-  s: Session,
-  term: KittyTerminal,
-  scrolledBy: number,
-): KittySelectionSpan[] | null {
-  const a = s.selectionAnchor
-  const b = s.selectionCursor
-  if (!a || !b) return null
-  const spans: KittySelectionSpan[] = []
-  const y1 = Math.min(a.y, b.y)
-  const y2 = Math.max(a.y, b.y)
+const WORD_EXTRA = new Set([...'@-./_~?&=%+#'])
+function isWordChar(ch: string): boolean {
+  return WORD_EXTRA.has(ch) || /[\p{L}\p{N}]/u.test(ch)
+}
+
+/** 视口行 y 上 x 所在的单词范围（闭区间）；找不到时退化成单个格子 */
+function wordSpanAt(term: KittyTerminal, x: number, y: number): { x1: number; x2: number } {
+  const line = term.viewportLine(y) ?? ''
   const cols = term.columns
-  for (let y = y1; y <= y2; y += 1) {
-    if (y < 0 || y >= term.rows) continue
-    if (s.rectangle) {
-      const x1 = Math.min(a.x, b.x)
-      const x2 = Math.max(a.x, b.x)
-      spans.push({ y, x1, x2 })
-      continue
-    }
-    if (y1 === y2) {
-      spans.push({ y, x1: Math.min(a.x, b.x), x2: Math.max(a.x, b.x) })
-      continue
-    }
-    const fromStart = a.y <= b.y
-    if (y === y1) {
-      spans.push({ y, x1: fromStart ? a.x : 0, x2: cols - 1 })
-    } else if (y === y2) {
-      spans.push({ y, x1: 0, x2: fromStart ? b.x : a.x })
-    } else {
-      spans.push({ y, x1: 0, x2: cols - 1 })
-    }
+  const at = (i: number): string => (i >= 0 && i < cols ? (line[i] ?? ' ') : ' ')
+  let x1 = x
+  let x2 = x
+  if (!isWordChar(at(x))) {
+    // 点空白/标点：kitty 选中这一格本身（连续的同字符也算一段）
+    while (x1 > 0 && at(x1 - 1) === at(x) && at(x) !== ' ') x1 -= 1
+    while (x2 < cols - 1 && at(x2 + 1) === at(x)) x2 += 1
+    return { x1, x2 }
   }
-  // scrolledBy 只影响 y 的映射：kitty 的选区坐标就是视口坐标，直接可用
-  void scrolledBy
-  return spans.length > 0 ? spans : null
+  while (x1 > 0 && isWordChar(at(x1 - 1))) x1 -= 1
+  while (x2 < cols - 1 && isWordChar(at(x2 + 1))) x2 += 1
+  return { x1, x2 }
+}
+
+/** 视口行 y 所属的逻辑行占的视口行范围（自动换行的行会连在一起） */
+function logicalLineRange(term: KittyTerminal, y: number): { first: number; last: number } {
+  let first = y
+  let last = y
+  while (first > 0 && term.viewportLineContinued(first)) first -= 1
+  while (last < term.rows - 1 && term.viewportLineContinued(last + 1)) last += 1
+  return { first, last }
+}
+
+/** 选区可视色块：规则在 selectionSpans.ts（逐条对齐 kitty 的 iteration_data） */
+function selectionSpansOf(s: Session, term: KittyTerminal): KittySelectionSpan[] | null {
+  return computeSelectionSpans({
+    anchor: s.selectionAnchor,
+    cursor: s.selectionCursor,
+    rectangle: s.rectangle,
+    columns: term.columns,
+    rows: term.rows,
+  })
 }
 
 /* ────────────────────────────── OSC 7 嗅探 ────────────────────────────── */
@@ -571,14 +578,61 @@ async function handle(req: KittyRequest): Promise<void> {
         post({ t: 'reply', id: req.id, ok: true, value: null })
         return
       }
+      if (req.kind === 'word' || req.kind === 'line') {
+        /*
+         * kitty 的双击 / 三击（mouse_map left doublepress/triplepress）。
+         * 内核给出权威文本，这里再补上「画在哪」：
+         * - 选词：同一行内按 kitty 的 select_by_word_characters（@-./_~?&=%+# + 字母数字）取边界；
+         * - 选行：逻辑行可能由多行组成（自动换行），把它占的视口行一起涂满。
+         */
+        const text = req.kind === 'word' ? s.term.selectWord(req.x, req.y) : s.term.selectLine(req.y)
+        if (req.kind === 'word') {
+          const span = wordSpanAt(s.term, req.x, req.y)
+          s.selectionAnchor = { x: span.x1, y: req.y, half: false }
+          s.selectionCursor = { x: span.x2, y: req.y, half: true }
+        } else {
+          const range = logicalLineRange(s.term, req.y)
+          s.selectionAnchor = { x: 0, y: range.first, half: false }
+          s.selectionCursor = { x: s.term.columns - 1, y: range.last, half: true }
+        }
+        s.rectangle = false
+        scheduleFlush(req.sessionId, true)
+        post({ t: 'reply', id: req.id, ok: true, value: { text } })
+        return
+      }
       if (req.kind === 'start') {
-        s.selectionAnchor = { x: req.x, y: req.y }
-        s.selectionCursor = { x: req.x, y: req.y }
+        s.selectionAnchor = { x: req.x, y: req.y, half: Boolean(req.half) }
+        s.selectionCursor = { x: req.x, y: req.y, half: Boolean(req.half) }
         s.rectangle = req.rectangle ?? false
-        s.term.selectionStart(req.x, req.y, { rectangle: req.rectangle })
+        s.term.selectionStart(req.x, req.y, { rectangle: req.rectangle, inLeftHalf: req.half })
+      } else if (req.extend) {
+        /*
+         * 双击/三击之后继续拖动：kitty 的 EXTEND_WORD / EXTEND_LINE
+         * （screen.c 的 case EXTEND_WORD / case EXTEND_LINE）。
+         *
+         * 锚点那一端保持「词首 / 行首」，指针这一端吸附到「词尾 / 行尾」；
+         * 方向由指针与锚点的先后决定 —— 往回拖要吸到词首，否则选出来会
+         * 是「锚点词 + 指针词」两段之间的整片，而不是 kitty 那种逐词伸缩。
+         */
+        const anchor = s.selectionAnchor
+        const backward = anchor
+          ? req.y < anchor.y || (req.y === anchor.y && req.x < anchor.x)
+          : false
+        if (req.extend === 'word') {
+          const span = wordSpanAt(s.term, req.x, req.y)
+          const ex = backward ? span.x1 : span.x2
+          s.selectionCursor = { x: ex, y: req.y, half: !backward }
+          s.term.selectionUpdate(ex, req.y, { ended: req.ended, inLeftHalf: !backward })
+        } else {
+          const range = logicalLineRange(s.term, req.y)
+          const ny = backward ? range.first : range.last
+          const nx = backward ? 0 : s.term.columns - 1
+          s.selectionCursor = { x: nx, y: ny, half: !backward }
+          s.term.selectionUpdate(nx, ny, { ended: req.ended, inLeftHalf: !backward })
+        }
       } else {
-        s.selectionCursor = { x: req.x, y: req.y }
-        s.term.selectionUpdate(req.x, req.y, { ended: req.ended })
+        s.selectionCursor = { x: req.x, y: req.y, half: Boolean(req.half) }
+        s.term.selectionUpdate(req.x, req.y, { ended: req.ended, inLeftHalf: req.half })
       }
       scheduleFlush(req.sessionId, true)
       const text = s.term.selectionText({ stripTrailingWhitespace: true })
@@ -610,8 +664,8 @@ async function handle(req: KittyRequest): Promise<void> {
       if (!s) throw new Error('会话不存在')
       s.term.selectionStart(0, 0)
       s.term.selectionUpdate(s.term.columns - 1, s.term.rows - 1, { ended: true })
-      s.selectionAnchor = { x: 0, y: 0 }
-      s.selectionCursor = { x: s.term.columns - 1, y: s.term.rows - 1 }
+      s.selectionAnchor = { x: 0, y: 0, half: false }
+      s.selectionCursor = { x: s.term.columns - 1, y: s.term.rows - 1, half: true }
       scheduleFlush(req.sessionId, true)
       post({ t: 'reply', id: req.id, ok: true, value: { text: s.term.selectionText() } })
       return

@@ -30,6 +30,17 @@ const F_WIDE_TRAIL = 128
 const F_UNDERLINE_MASK = 7 << 8
 const F_UNDERLINE_SHIFT = 8
 
+/** kitty dim_opacity 默认 0.4：把前景往格子底色上兑，才是「变淡」而不是「变黑」 */
+const DIM_OPACITY = 0.4
+function mixTo(fg: Rgba, bg: Rgba, k: number): Rgba {
+  return {
+    r: bg.r + (fg.r - bg.r) * k,
+    g: bg.g + (fg.g - bg.g) * k,
+    b: bg.b + (fg.b - bg.b) * k,
+    a: fg.a,
+  }
+}
+
 function css(c: Rgba): string {
   return `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${c.a})`
 }
@@ -105,6 +116,15 @@ export class CanvasTerminalRenderer {
     const cw = this.atlas.cellW
     const ch = this.atlas.cellH
     const abs0 = meta.scrollbackLength - meta.scrolledBy
+    // 块光标：跟 WebGL 路径一样画成「反色格」，而不是最后盖一个实心块把字盖掉
+    const cur = meta.cursor
+    // 宽字符占两格（对齐 WebGL 路径的 blockCursorCell）：只反色第一格会留一条缝
+    const curIdx = (meta.scrolledBy + cur.y) * this.cols + cur.x
+    const curSpan = ((this.grid[curIdx * KITTY_CELL_WORDS + 6] ?? 0) & F_WIDE) !== 0 ? 2 : 1
+    const cursorCell =
+      !this.blinkOff && cur.visible && cur.shape === 'block'
+        ? { x1: cur.x, x2: Math.min(this.cols - 1, cur.x + curSpan - 1), y: meta.scrolledBy + cur.y }
+        : null
     for (const p of this.images) {
       if ((layer === 'below') !== (p.z < 0)) continue
       const vy = p.absLine - abs0
@@ -188,6 +208,15 @@ export class CanvasTerminalRenderer {
     this.drawImages(meta, 'below')
 
     const abs0 = meta.scrollbackLength - meta.scrolledBy
+    // 块光标：跟 WebGL 路径一样画成「反色格」，而不是最后盖一个实心块把字盖掉
+    const cur = meta.cursor
+    // 宽字符占两格（对齐 WebGL 路径的 blockCursorCell）：只反色第一格会留一条缝
+    const curIdx = (meta.scrolledBy + cur.y) * this.cols + cur.x
+    const curSpan = ((this.grid[curIdx * KITTY_CELL_WORDS + 6] ?? 0) & F_WIDE) !== 0 ? 2 : 1
+    const cursorCell =
+      !this.blinkOff && cur.visible && cur.shape === 'block'
+        ? { x1: cur.x, x2: Math.min(this.cols - 1, cur.x + curSpan - 1), y: meta.scrolledBy + cur.y }
+        : null
     for (let y = 0; y < this.rows; y += 1) {
       const abs = abs0 + y
       const sel = meta.selection?.find((s) => s.y === y) ?? null
@@ -203,7 +232,8 @@ export class CanvasTerminalRenderer {
           fg = { ...bg, a: 1 }
           bg = { ...tmp, a: this.theme.bg.a }
         }
-        if ((flags & F_DIM) !== 0) fg = { ...fg, r: fg.r * 0.62, g: fg.g * 0.62, b: fg.b * 0.62 }
+        // 与 WebGL 路径同源：kitty dim_opacity 是把前景往格子底色上兑（lerp(bg, fg, 0.4)）
+        if ((flags & F_DIM) !== 0) fg = mixTo(fg, bg, DIM_OPACITY)
         const selected = sel !== null && x >= sel.x1 && x <= sel.x2
         if (selected) {
           bg = this.theme.selectionBg
@@ -217,10 +247,16 @@ export class CanvasTerminalRenderer {
         const hi = this.highlights.find((s) => s.line === abs && x >= s.x1 && x <= s.x2)
         if (hi) fg = hi.color
 
+        const isCursorCell = cursorCell !== null && cursorCell.y === y && x >= cursorCell.x1 && x <= cursorCell.x2
+        if (isCursorCell) {
+          fg = { ...bg, a: 1 }
+          bg = { ...this.theme.cursor }
+        }
+
         const px = x * cw
         const py = y * ch
         // 背景只在非默认色时画，省掉绝大多数 fillRect
-        if (bg.a > 0 && (selected || hit >= 0 || reverse || (this.grid[i + 4] ?? 0) !== 0)) {
+        if (bg.a > 0 && (selected || hit >= 0 || reverse || isCursorCell || (this.grid[i + 4] ?? 0) !== 0)) {
           ctx.fillStyle = css(bg)
           ctx.fillRect(px, py, cw, ch)
         }
@@ -300,6 +336,9 @@ export class CanvasTerminalRenderer {
     const c = this.theme.cursor
     ctx.fillStyle = css(c)
     switch (meta.cursor.shape) {
+      case 'block':
+        // 已作为单元格底色的反色块画过（见 render()），这里不能再盖一次
+        break
       case 'beam':
         ctx.fillRect(x, y, Math.max(1, cw * 0.14), ch)
         break

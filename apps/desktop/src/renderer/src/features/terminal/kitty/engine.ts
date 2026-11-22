@@ -166,6 +166,8 @@ export class KittyEngine {
   private blinkOff = false
   /** 是否处于闪烁模式（cursorBlink=true）；false = 常亮 */
   private blinking = false
+  /** 窗格是否持有输入焦点（kitty 只在聚焦窗口上闪光标） */
+  private focused = true
   private selectionText = ''
   private markers: Marker[] = []
   private decorations: DecorationImpl[] = []
@@ -178,7 +180,29 @@ export class KittyEngine {
   private bellListeners = new Set<() => void>()
   private selectionListeners = new Set<() => void>()
   private renderListeners = new Set<() => void>()
-  private dragging = false
+  /** kitty drag_threshold（css px）：位移不超过它算「点击」，不启动拖拽 */
+  private static readonly DRAG_THRESHOLD = 5
+  /** kitty click_interval（ms）：双击/三击判定窗口 */
+  private static readonly CLICK_INTERVAL = 500
+  /**
+   * 当前这次按下的手势。kitty 把「按下」拆成 press / drag / click 三种语义，
+   * 全靠这份状态区分（见 mouse.c 的 handle_button_event / handle_potential_drag）。
+   */
+  private gesture: {
+    button: number
+    x: number
+    y: number
+    half: boolean
+    clientX: number
+    clientY: number
+    dragging: boolean
+    /** 转发给程序（程序抓了鼠标），不参与本地选择 */
+    forwarded: boolean
+    /** 第几次连续点击（1/2/3） */
+    count: number
+  } | null = null
+  /** 最近几次按下的时间与位置（双击/三击判定） */
+  private clickHistory: { at: number; x: number; y: number }[] = []
   private composing = false
   private visible = true
   private lastCwd = ''
@@ -253,6 +277,8 @@ export class KittyEngine {
     // 回看徽标：滚离底部时提示「回看了多少行」，点击回底（等价 xterm 的 scrollToBottom）
     this.review = document.createElement('div')
     this.review.className = 'kitty-review'
+    // 点徽标回底：同时挡掉 mousedown，避免顺带起一个选区
+    this.review.addEventListener('mousedown', (e) => e.stopPropagation())
     this.review.addEventListener('click', () => this.scrollToBottom())
     this.wrap.appendChild(this.review)
 
@@ -332,15 +358,15 @@ export class KittyEngine {
     // 关掉自动换行（用户在设置里关了的话）；必须在任何输出前下发
     if (!this.options.wrapLines) this.session.write(new TextEncoder().encode('\x1b[?7l'))
     // 光标观感（kitty cursor_trail / cursor_shape / cursor_inactive_style）
-    // 全部对齐用户 kitty.conf：cursor_trail 3（毫秒）、decay 0.1 0.4、
-    // start_threshold 2、beam 2.0pt、underline 2.0pt
+    // 全部对齐 kitty 默认值：cursor_trail 3（毫秒）、decay 0.1 0.4、
+    // start_threshold 2 格、beam 1.5pt、underline 2.0pt（96dpi 下 2px / 2.67px）
     this.renderer.setCursorTrail(this.options.cursorTrail)
     if (typeof (this.renderer as WebGLTerminalRenderer).setTrailDecay === 'function') {
       const glr = this.renderer as WebGLTerminalRenderer
       glr.setTrailDecay(0.1, 0.4)
       glr.setTrailThreshold(2, 2)
-      glr.setBeamThicknessPx(2)
-      glr.setUnderlineThicknessPx(2)
+      glr.setBeamThicknessPx(2) // 1.5pt @96dpi
+      glr.setUnderlineThicknessPx(2.67) // 2.0pt @96dpi
     }
     this.renderer.setCursorShapeOverride(this.options.cursorStyle)
     this.renderer.setCursorInactiveStyle(this.options.cursorInactiveStyle)
@@ -662,6 +688,8 @@ export class KittyEngine {
     // 点轨道空白 = 翻页（与 xterm/常见终端一致）
     this.scrollbar.addEventListener('mousedown', (e) => {
       if (e.target !== this.scrollbar) return
+      // 别让它冒泡到 .kitty-surface —— 否则点轨道会顺带起一个选区
+      e.stopPropagation()
       const rect = this.scrollbar.getBoundingClientRect()
       this.session?.scroll(e.clientY < rect.top + rect.height / 2 ? 'page-up' : 'page-down')
     })
@@ -821,12 +849,21 @@ export class KittyEngine {
       this.session?.paste(text)
     })
     this.ime.addEventListener('focus', () => {
+      this.focused = true
       this.renderer.setFocused(true)
       this.session?.focus(true)
+      /*
+       * kitty 的闪烁判据是 `cursor_blinking = !cursor->non_blinking && os_window->is_focused`
+       * —— 只有聚焦的窗口才闪。失焦时光标常亮（形状换成 cursor_shape_unfocused），
+       * 所以重新聚焦才需要起表；否则一个没在用的窗格也在那里闪，很吵。
+       */
+      if (this.options.cursorBlink !== false && !this.blinking) this.startBlink()
     })
     this.ime.addEventListener('blur', () => {
+      this.focused = false
       this.renderer.setFocused(false)
       this.session?.focus(false)
+      this.stopBlink()
     })
   }
 
@@ -868,21 +905,63 @@ export class KittyEngine {
     for (const ch of text) this.session.key(ch, 0, 'press')
   }
 
-  private cellAt(clientX: number, clientY: number): { x: number; y: number } {
+  /**
+   * 指针所在的格子 + **格内左右半**。
+   *
+   * 半格不是花活：kitty 的选区端点记 `in_left_half_of_cell`，它同时决定
+   * 边界格算不算进选区、以及「按下没动」时选区的空/非空
+   * （`is_selection_empty()` 要求同一格**同一半格**）。
+   */
+  private cellAtEx(clientX: number, clientY: number): { x: number; y: number; half: boolean } {
     const rect = this.canvas.getBoundingClientRect()
     const dpr = Math.max(1, window.devicePixelRatio || 1)
     const cw = this.atlas.cellW / dpr
     const ch = this.atlas.cellH / dpr
-    const x = Math.floor((clientX - rect.left) / cw)
-    const y = Math.floor((clientY - rect.top) / ch)
-    return {
-      x: Math.max(0, Math.min(this.cols - 1, x)),
-      y: Math.max(0, Math.min(this.rows - 1, y)),
+    const fx = (clientX - rect.left) / cw
+    const fy = (clientY - rect.top) / ch
+    const cx = Math.floor(fx)
+    const cy = Math.floor(fy)
+    const x = Math.max(0, Math.min(this.cols - 1, cx))
+    const y = Math.max(0, Math.min(this.rows - 1, cy))
+    // 越界到左边按"左半"、右边按"右半"，这样拖到窗口外仍能选到行首/行尾
+    const half = cx < 0 ? true : cx >= this.cols ? false : fx - cx < 0.5
+    return { x, y, half }
+  }
+
+  private cellAt(clientX: number, clientY: number): { x: number; y: number } {
+    const { x, y } = this.cellAtEx(clientX, clientY)
+    return { x, y }
+  }
+
+  /** 连续点击计数：kitty 的 click_interval（默认 0.5s）+ 半格半径 */
+  private clickCount(clientX: number, clientY: number): number {
+    const now = performance.now()
+    const dpr = Math.max(1, window.devicePixelRatio || 1)
+    const radius = (this.atlas.cellH / dpr) * 0.5
+    const near = (a: { x: number; y: number }, b: { x: number; y: number }): boolean =>
+      Math.hypot(a.x - b.x, a.y - b.y) <= radius
+    const h = this.clickHistory
+    const last = h[h.length - 1]
+    if (!last || now - last.at > KittyEngine.CLICK_INTERVAL || !near(last, { x: clientX, y: clientY })) {
+      h.length = 0
     }
+    h.push({ at: now, x: clientX, y: clientY })
+    if (h.length > 3) h.shift()
+    let count = 1
+    if (h.length >= 3) {
+      const [a, , c] = h
+      if (a && c && c.at - a.at <= KittyEngine.CLICK_INTERVAL * 2 && near(a, c)) count = 3
+    } else if (h.length === 2) {
+      const [a, c] = h
+      if (a && c && c.at - a.at <= KittyEngine.CLICK_INTERVAL && near(a, c)) count = 2
+    }
+    if (count === 3) h.length = 0
+    return count
   }
 
   private onMouseDown = (e: MouseEvent): void => {
     this.focus()
+    this.noteActivity()
     if (e.button === 2) {
       if (this.options.rightClickPaste) {
         e.preventDefault()
@@ -895,60 +974,197 @@ export class KittyEngine {
       }
       return
     }
-    if (e.button !== 0) return
-    const { x, y } = this.cellAt(e.clientX, e.clientY)
-    if (this.meta?.modes.mouseTracking) {
-      this.session?.mouse({ x, y, button: 'left', action: 'press', mods: this.modsOf(e) })
+    if (e.button !== 0 && e.button !== 1) return
+    const cell = this.cellAtEx(e.clientX, e.clientY)
+    const mods = this.modsOf(e)
+    const tracking = Boolean(this.meta?.modes.mouseTracking)
+    const openGesture = (forwarded: boolean, count: number): void => {
+      this.gesture = {
+        button: e.button,
+        x: cell.x,
+        y: cell.y,
+        half: cell.half,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        dragging: false,
+        forwarded,
+        count,
+      }
+      window.addEventListener('mousemove', this.onMouseMove)
+      window.addEventListener('mouseup', this.onMouseUp, { once: true })
+    }
+
+    if (e.button === 1) {
+      // 中键：程序抓了鼠标就转发；否则是 kitty 的 `middle release ungrabbed paste_from_selection`
+      openGesture(tracking, 1)
+      if (tracking) {
+        this.session?.mouse({ x: cell.x, y: cell.y, button: 'middle', action: 'press', mods })
+      } else {
+        void navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text) this.session?.paste(text)
+          })
+          .catch(() => undefined)
+      }
       return
     }
-    this.dragging = true
-    void this.session?.selection('start', x, y, { rectangle: e.altKey })
-    window.addEventListener('mousemove', this.onMouseMove)
-    window.addEventListener('mouseup', this.onMouseUp, { once: true })
+    /*
+     * 三种情况分开处理，对应 kitty 的三条默认映射：
+     * - 程序抓了鼠标且没按 Shift → 全部转发给程序（`left press grabbed`），
+     *   本地不做任何选择；
+     * - 程序抓了鼠标 + Shift → `shift+left press grabbed mouse_selection normal`，
+     *   绕过程序做本地选择（vim/htop 里选文本就靠它）；
+     * - 没抓鼠标 → 本地选择。
+     */
+    const localSelect = !tracking || e.shiftKey
+    const count = this.clickCount(e.clientX, e.clientY)
+    openGesture(!localSelect, count)
+
+    if (!localSelect) {
+      // 1000/1002/1003 的模式过滤在核心里做，这里只管把事件按次序送进去
+      this.session?.mouse({ x: cell.x, y: cell.y, button: 'left', action: 'press', mods })
+      return
+    }
+    /*
+     * 按下只**起锚点**，不画任何东西：此时 anchor 与 cursor 是同一格的同一半格，
+     * 内核算空选区（见 computeSelectionSpans），屏幕上不会出现色块。
+     * 拖出去之后才变成可见的选区 —— 与 kitty 「按下并拖拽才出选区」一致。
+     */
+    if (count >= 3) {
+      // 三击：选整行（kitty 的 triplepress）
+      void this.session?.selection('line', cell.x, cell.y).then((res) => this.finishSelection(res))
+    } else if (count === 2) {
+      // 双击：选词（kitty 的 doublepress）
+      void this.session?.selection('word', cell.x, cell.y).then((res) => this.finishSelection(res))
+    } else {
+      void this.session?.selection('start', cell.x, cell.y, {
+        // kitty 默认是 ctrl+alt 矩形选择
+        rectangle: e.ctrlKey && e.altKey,
+        half: cell.half,
+      })
+    }
   }
 
   private onMouseMove = (e: MouseEvent): void => {
-    if (!this.dragging) return
-    const { x, y } = this.cellAt(e.clientX, e.clientY)
-    if (this.meta?.modes.mouseTracking) {
-      this.session?.mouse({ x, y, button: 'none', action: 'move', mods: this.modsOf(e) })
+    const g = this.gesture
+    if (!g) return
+    const cell = this.cellAtEx(e.clientX, e.clientY)
+    if (g.forwarded) {
+      /*
+       * 这一行是「vim 里拖不动、像卡死」的修复点。
+       *
+       * 早先按下就 return，move/up 监听根本没挂上：程序只收到 press，
+       * 永远等不到 release，于是它认为鼠标一直被按着 —— 选中、拖拽全都不响应。
+       */
+      this.session?.mouse({
+        x: cell.x,
+        y: cell.y,
+        button: 'left',
+        action: 'move',
+        mods: this.modsOf(e),
+      })
       return
     }
-    void this.session?.selection('update', x, y, {});
+    if (!g.dragging) {
+      const dist = Math.hypot(e.clientX - g.clientX, e.clientY - g.clientY)
+      if (dist <= KittyEngine.DRAG_THRESHOLD) return
+      g.dragging = true
+    }
+    if (cell.x === g.x && cell.y === g.y && cell.half === g.half) return
+    /*
+     * 双击/三击之后接着拖：扩展粒度要跟着点击次数走（kitty 的
+     * SelectionExtendMode）。只发 'update' 会把按词的选区立刻降级成按格，
+     * 与「别人的 kitty」手感不一样。
+     */
+    const extend = g.count >= 3 ? 'line' : g.count === 2 ? 'word' : undefined
+    void this.session?.selection('update', cell.x, cell.y, extend ? { half: cell.half, extend } : { half: cell.half })
   }
 
   private onMouseUp = (e: MouseEvent): void => {
-    this.dragging = false
+    const g = this.gesture
+    this.gesture = null
     window.removeEventListener('mousemove', this.onMouseMove)
-    if (this.meta?.modes.mouseTracking) {
-      const { x, y } = this.cellAt(e.clientX, e.clientY)
-      this.session?.mouse({ x, y, button: 'left', action: 'release', mods: this.modsOf(e) })
+    if (!g) return
+    const cell = this.cellAtEx(e.clientX, e.clientY)
+    if (g.forwarded) {
+      this.session?.mouse({
+        x: cell.x,
+        y: cell.y,
+        button: g.button === 1 ? 'middle' : 'left',
+        action: 'release',
+        mods: this.modsOf(e),
+      })
       return
     }
-    void this.session
-      ?.selection('update', this.cellAt(e.clientX, e.clientY).x, this.cellAt(e.clientX, e.clientY).y, {
-        ended: true,
-      })
-      .then((res) => {
-        this.selectionText = res?.text ?? ''
-        for (const cb of this.selectionListeners) cb()
-        this.opts.onSelectionChange?.()
-        if (this.options.copyOnSelect && this.selectionText) {
-          void navigator.clipboard.writeText(this.selectionText).catch(() => undefined)
-        }
-      })
+    if (g.button === 1) return
+    if (g.dragging) {
+      const extend = g.count >= 3 ? 'line' : g.count === 2 ? 'word' : undefined
+      void this.session
+        ?.selection('update', cell.x, cell.y, extend ? { half: cell.half, ended: true, extend } : { half: cell.half, ended: true })
+        .then((res) => this.finishSelection(res))
+      return
+    }
+    if (g.count === 1 && !e.shiftKey) {
+      /*
+       * 单击（没拖动）：清掉选区。
+       *
+       * kitty 的 `left click` 动作是 `mouse_handle_click selection link prompt`，
+       * 「已有选区就什么都不做」—— 那是靠 shell 集成把点击变成"移动光标"才有意义。
+       * 我们没有 shell 集成，照搬的结果就是选区永远消不掉，所以这里做成点击即清空。
+       */
+      this.clearSelection()
+      return
+    }
+  }
+
+  /** 选区定稿：更新文本、通知订阅者、按设置自动复制 */
+  private finishSelection(res: { text: string | null } | null): void {
+    this.selectionText = res?.text ?? ''
+    for (const cb of this.selectionListeners) cb()
+    this.opts.onSelectionChange?.()
+    if (this.options.copyOnSelect && this.selectionText) {
+      void navigator.clipboard.writeText(this.selectionText).catch(() => undefined)
+    }
+  }
+
+  /** 清空选区（单击、Esc） */
+  clearSelection(): void {
+    this.selectionText = ''
+    void this.session?.selection('clear', 0, 0).then(() => this.finishSelection(null))
+  }
+
+  get hasSelection(): boolean {
+    return this.selectionText.length > 0
   }
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault()
     const mode = this.meta?.modes
-    if (mode?.mouseTracking && mode.altScreen) {
-      const { x, y } = this.cellAt(e.clientX, e.clientY)
+    const { x, y } = this.cellAtEx(e.clientX, e.clientY)
+    if (mode?.mouseTracking) {
+      // 程序在听鼠标：滚轮就是鼠标按钮 4/5，主屏备用屏都一样（kitty mouse.c）
       const button = e.deltaY < 0 ? 'wheel-up' : 'wheel-down'
-      this.session?.mouse({ x, y, button, action: 'press', mods: this.modsOf(e) })
+      const times = Math.max(1, Math.round(Math.abs(e.deltaY) / 40))
+      for (let i = 0; i < times; i += 1) {
+        this.session?.mouse({ x, y, button, action: 'press', mods: this.modsOf(e) })
+      }
       return
     }
     const lines = Math.max(1, Math.round((Math.abs(e.deltaY) / 40) * this.options.wheelMultiplier))
+    if (mode?.altScreen) {
+      /*
+       * 备用屏没有回看区。kitty 的 fake_scroll 把滚轮翻译成 ↑/↓ 按键发给程序，
+       * 这样 less/vim 这类全屏程序才能滚动；早先我们在这里去滚 scrollback，
+       * 在备用屏上等于什么都没发生。
+       */
+      const key = e.deltaY < 0 ? 'ArrowUp' : 'ArrowDown'
+      for (let i = 0; i < lines; i += 1) {
+        this.session?.key(key, 0, 'press')
+        this.session?.key(key, 0, 'release')
+      }
+      return
+    }
     this.session?.scroll(e.deltaY < 0 ? lines : -lines)
   }
 
@@ -1191,7 +1407,7 @@ export class KittyEngine {
        * 早先这里无条件 startBlink()，等于每来一次就把 500ms 的计时清零 ——
        * 定时器永远也走不到触发点，光标看上去就是常亮，"闪烁"开关形同虚设。
        */
-      const want = Boolean(settings.cursorBlink)
+      const want = Boolean(settings.cursorBlink) && this.focused
       if (want !== this.blinking) {
         if (want) this.startBlink()
         else this.stopBlink()
