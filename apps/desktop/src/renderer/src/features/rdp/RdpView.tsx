@@ -19,6 +19,7 @@ import { Icon } from '../../components/Icon'
 import { toast } from '../../components/Toast'
 import { invoke, subscribe } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
+import { copyText } from '../../lib/clipboard'
 
 export interface RdpViewProps {
   sessionId: string | undefined
@@ -105,7 +106,7 @@ export function RdpView({
                   variant="outline"
                   icon="copy"
                   onClick={() => {
-                    void navigator.clipboard.writeText(errorMessage)
+                    void copyText(errorMessage)
                     toast.ok('已复制错误信息（含安装命令）')
                   }}
                 >

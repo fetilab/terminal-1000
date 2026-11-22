@@ -37,6 +37,7 @@ export const IPC_DOMAINS = [
   'system',
   'update',
   'shellIntegration',
+  'clipboard',
 ] as const
 
 export type IpcDomain = (typeof IPC_DOMAINS)[number]
@@ -278,6 +279,29 @@ export const Actions = {
    * 不需要在 ssh 与 pty 里各放一份（那样迟早会不一致）。
    */
   shellIntegration: ['listCommandBlocks'] as const,
+
+  /**
+   * 系统剪贴板。
+   *
+   * 为什么不让渲染层直接用 `navigator.clipboard`：那是 HTML 剪贴板 API，
+   * 在 Electron 里有两条硬限制 ——
+   * 1. `writeText`/`readText` 都要求 **document 有焦点**，否则直接
+   *    `NotAllowedError: Document is not focused`（切走窗口、点开右键菜单、
+   *    拖选后失焦的瞬间就会失败）；
+   * 2. `readText` 还要 `clipboard-read` 权限，而 Electron 默认不授予。
+   * 主进程的 `clipboard` 模块直接对接系统剪贴板，不受这两条限制，
+   * 行为也与系统里别的程序完全一致（X11 上还能正确成为 selection owner）。
+   */
+  clipboard: [
+    /** 读系统剪贴板文本（读不到返回空串） */
+    'read',
+    /** 写系统剪贴板文本 */
+    'write',
+    /** 读 X11 PRIMARY 选择（中键粘贴用；其它平台回退到普通剪贴板） */
+    'readSelection',
+    /** 写 X11 PRIMARY 选择（选中即复制到 selection） */
+    'writeSelection',
+  ] as const,
 
   settings: ['getAll', 'get', 'set', 'reset'] as const,
 

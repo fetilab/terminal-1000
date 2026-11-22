@@ -23,6 +23,7 @@ import { KittySession, ensureKittyCore } from './client'
 import { buildTheme, type RenderTheme } from './theme'
 import { WebGLTerminalRenderer, type HighlightSpan, type ImagePlacement, type SearchSpan } from './webgl'
 import { parseHex } from './theme'
+import { copyText, copyToSelection, readClipboardText, readSelectionText } from '../../../lib/clipboard'
 
 type Kind = 'local' | 'ssh' | 'telnet'
 
@@ -448,7 +449,12 @@ export class KittyEngine {
         this.notifyOsc(7, `file://localhost${ev.path}`)
         return
       case 'clipboard':
-        if (!ev.query && ev.data) void navigator.clipboard.writeText(ev.data).catch(() => undefined)
+        /*
+         * OSC 52：程序要求写系统剪贴板（tmux/vim 的 yank 会用）。
+         * 必须走主进程 —— 渲染层的 navigator.clipboard 要求 document 有焦点，
+         * 而 OSC 52 往往是在后台/失焦时触发的。
+         */
+        if (!ev.query && ev.data) void copyText(ev.data).catch(() => undefined)
         return
       case 'graphics':
         // 图形协议：解码 + 摆放交给渲染器画出来；解码失败不能影响文本
@@ -965,12 +971,9 @@ export class KittyEngine {
     if (e.button === 2) {
       if (this.options.rightClickPaste) {
         e.preventDefault()
-        void navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) this.session?.paste(text)
-          })
-          .catch(() => undefined)
+        void readClipboardText().then((text) => {
+          if (text) this.session?.paste(text)
+        })
       }
       return
     }
@@ -1000,12 +1003,10 @@ export class KittyEngine {
       if (tracking) {
         this.session?.mouse({ x: cell.x, y: cell.y, button: 'middle', action: 'press', mods })
       } else {
-        void navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) this.session?.paste(text)
-          })
-          .catch(() => undefined)
+        // kitty 的 `middle release ungrabbed paste_from_selection`：X11 上是 PRIMARY
+        void readSelectionText().then((text) => {
+          if (text) this.session?.paste(text)
+        })
       }
       return
     }
@@ -1123,8 +1124,16 @@ export class KittyEngine {
     this.selectionText = res?.text ?? ''
     for (const cb of this.selectionListeners) cb()
     this.opts.onSelectionChange?.()
-    if (this.options.copyOnSelect && this.selectionText) {
-      void navigator.clipboard.writeText(this.selectionText).catch(() => undefined)
+    /*
+     * 选中即复制。
+     *
+     * 除了系统剪贴板，X11 上还要写 PRIMARY selection —— 那是「选中就能用中键
+     * 粘出来」的约定，也正是我们中键粘贴读的那一块。只写 CLIPBOARD 的话，
+     * 用户选中后去 xterm/别的程序里按中键会粘到旧内容。
+     */
+    if (this.selectionText) {
+      void copyToSelection(this.selectionText)
+      if (this.options.copyOnSelect) void copyText(this.selectionText).catch(() => undefined)
     }
   }
 

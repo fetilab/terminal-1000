@@ -31,6 +31,7 @@ import { invoke, subscribe } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
 import { useStoreShallow } from '../../lib/store'
 import './vnc.css'
+import { copyText } from '../../lib/clipboard'
 
 interface FrameRect {
   x: number
@@ -376,8 +377,7 @@ export function VncViewer({
             icon="copy"
             title={clipboard.slice(0, 120)}
             onClick={() => {
-              void navigator.clipboard.writeText(clipboard)
-              toast.ok('已复制远端剪贴板内容')
+              void copyText(clipboard).then(() => toast.ok('已复制远端剪贴板内容'))
             }}
           >
             取回剪贴板

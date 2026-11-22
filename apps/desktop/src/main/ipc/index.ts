@@ -56,6 +56,11 @@ export function registerAllHandlers(): void {
     async () => (await import('../services/session-cwd')).shellIntegrationHandlers,
   )
   registerLazyDomain('update', async () => (await import('../services/update')).updateHandlers)
+  // 剪贴板：极轻（只包一层 electron.clipboard），但首屏不一定用得上，仍走懒加载
+  registerLazyDomain(
+    'clipboard',
+    async () => (await import('../services/clipboard')).clipboardHandlers,
+  )
 
   // 分两段报：否则"动作数变少"会让人误以为有域没挂上
   log.info(

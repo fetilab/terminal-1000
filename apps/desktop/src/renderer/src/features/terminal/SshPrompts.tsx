@@ -26,6 +26,7 @@ import { Modal } from '../../components/Modal'
 import { toast } from '../../components/Toast'
 import { invoke, subscribe } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
+import { copyText } from '../../lib/clipboard'
 
 interface HostKeyAsk {
   requestId: string
@@ -168,7 +169,7 @@ export function SshPrompts(): React.JSX.Element | null {
             variant="outline"
             icon="copy"
             onClick={() => {
-              void navigator.clipboard.writeText(hostKey.fingerprint)
+              void copyText(hostKey.fingerprint)
               toast.ok('指纹已复制')
             }}
           >

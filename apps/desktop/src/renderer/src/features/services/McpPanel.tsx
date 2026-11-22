@@ -29,6 +29,7 @@ import type {
   McpToolView,
   PublicMcpClient,
 } from '@t1000/shared'
+import { copyText } from '../../lib/clipboard'
 
 /** 新建令牌时主进程会**只在这一次**回传明文 token，之后只有摘要 */
 interface CreatedClientResponse {
@@ -219,7 +220,7 @@ export default function McpPanel(): React.JSX.Element {
           icon="copy"
           label="复制端点地址"
           onClick={() => {
-            void navigator.clipboard.writeText(status.endpoint)
+            void copyText(status.endpoint)
             toast.ok('已复制端点地址')
           }}
         />
@@ -474,7 +475,7 @@ export default function McpPanel(): React.JSX.Element {
               icon="copy"
               onClick={() => {
                 if (!issued) return
-                void navigator.clipboard.writeText(issued.token)
+                void copyText(issued.token)
                 toast.ok('已复制令牌')
               }}
             >

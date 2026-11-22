@@ -91,6 +91,7 @@ import {
 } from './treeModel'
 import { SftpTree } from './SftpTree'
 import './sftp.css'
+import { copyText } from '../../lib/clipboard'
 
 const LOCAL_DIR_KEY = 't1000:sftp-local-dir'
 const VIEW_KEY = 't1000:sftp-view'
@@ -1192,12 +1193,7 @@ export default function SftpBrowser({ sessionId, title }: SftpBrowserProps): Rea
       icon: 'copy',
       separatorBefore: true,
       onSelect: () => {
-        if (!navigator.clipboard) {
-          toast.error('当前环境不支持剪贴板')
-          return
-        }
-        void navigator.clipboard
-          .writeText(menuTargets.map((e) => e.path).join('\n'))
+        void copyText(menuTargets.map((e) => e.path).join('\n'))
           .then(() => toast.ok('已复制路径'))
           .catch(() => toast.error('复制路径失败'))
       },

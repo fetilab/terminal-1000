@@ -23,6 +23,7 @@ import { toast } from '../../components/Toast'
 import { invoke } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
 import './tools.css'
+import { copyText } from '../../lib/clipboard'
 
 const SEARCH_LIMIT = 40
 const DEBOUNCE_MS = 220
@@ -34,7 +35,7 @@ function CopyButton({ text, label }: { text: string; label: string }): React.JSX
       label={label}
       size={12}
       onClick={() => {
-        void navigator.clipboard.writeText(text).then(
+        void copyText(text).then(
           () => toast.ok('已复制到剪贴板（不会发送到终端）'),
           () => toast.error('复制失败'),
         )
@@ -323,7 +324,7 @@ export function CommandManual(): React.JSX.Element {
                     variant="outline"
                     icon="copy"
                     onClick={() => {
-                      void navigator.clipboard.writeText(`${selected.name} — ${selected.summary ?? ''}`)
+                      void copyText(`${selected.name} — ${selected.summary ?? ''}`)
                       toast.ok('已复制命令名与用途')
                     }}
                   >

@@ -30,6 +30,7 @@ import { Icon } from '../../components/Icon'
 import { Badge } from '../../components/Feedback'
 import { IconButton } from '../../components/Button'
 import { invoke, subscribe } from '../../lib/ipc'
+import { copyText, readClipboardText } from '../../lib/clipboard'
 import type { TabKind } from '../../lib/store'
 import {
   actions,
@@ -173,13 +174,10 @@ function sessionPayload(
  * 那会让用户以为"右键/快捷键坏了"（跟之前 pty 载荷被空 catch 吞掉是同一类坑）。
  */
 function pasteFromClipboard(target: Terminal | null): void {
-  void navigator.clipboard
-    .readText()
-    .then((text) => {
-      if (text) target?.paste(text)
-      else toast.info('剪贴板是空的，没有可粘贴的内容')
-    })
-    .catch(() => toast.warn('读取剪贴板失败：系统可能未授予剪贴板权限'))
+  void readClipboardText().then((text) => {
+    if (text) target?.paste(text)
+    else toast.info('剪贴板是空的，没有可粘贴的内容')
+  })
 }
 
 const TERMINAL_THEME = {
@@ -284,6 +282,8 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const paneRef = useRef<HTMLDivElement | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
+  /** 宿主平台：决定 Ctrl+V 是否当粘贴（仅 Windows，其它平台留给程序） */
+  const platform = window.t1000?.platform ?? 'linux'
   const fitRef = useRef<FitAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
   const writerRef = useRef<BackpressureWriter>(new BackpressureWriter())
@@ -734,7 +734,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         const selSub = term.onSelectionChange(() => {
           if (!termSettingsRef.current.copyOnSelect) return
           const sel = term.getSelection()
-          if (sel) void navigator.clipboard.writeText(sel).catch(() => undefined)
+          if (sel) void copyText(sel).catch(() => undefined)
         })
         cleanups.push(() => selSub.dispose())
 
@@ -995,34 +995,91 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   // 捕获阶段处理：这些键必须先被弹窗消费掉，否则会被 xterm 送进远端 shell
   const onKeyDownCapture = useCallback(
     (e: React.KeyboardEvent) => {
-      if (!completion) return
-      const count = completion.candidates.length
-      switch (e.key) {
-        case 'ArrowDown':
-          e.preventDefault()
-          e.stopPropagation()
-          setSelected((i) => (count === 0 ? 0 : (i + 1) % count))
-          return
-        case 'ArrowUp':
-          e.preventDefault()
-          e.stopPropagation()
-          setSelected((i) => (count === 0 ? 0 : (i - 1 + count) % count))
-          return
-        case 'Tab':
-          e.preventDefault()
-          e.stopPropagation()
-          acceptCandidate(selected)
-          return
-        case 'Escape':
-          e.preventDefault()
-          e.stopPropagation()
-          closeCompletion()
-          return
-        default:
-          return
+      // ── 补全弹窗优先 ──
+      if (completion) {
+        const count = completion.candidates.length
+        switch (e.key) {
+          case 'ArrowDown':
+            e.preventDefault()
+            e.stopPropagation()
+            setSelected((i) => (count === 0 ? 0 : (i + 1) % count))
+            return
+          case 'ArrowUp':
+            e.preventDefault()
+            e.stopPropagation()
+            setSelected((i) => (count === 0 ? 0 : (i - 1 + count) % count))
+            return
+          case 'Tab':
+            e.preventDefault()
+            e.stopPropagation()
+            acceptCandidate(selected)
+            return
+          case 'Escape':
+            e.preventDefault()
+            e.stopPropagation()
+            closeCompletion()
+            return
+          default:
+            break
+        }
+      }
+
+      /*
+       * ── 剪贴板快捷键必须在 **捕获阶段** 拦 ──
+       *
+       * 引擎（`KittyEngine`）在隐藏 textarea 上挂了 keydown，会把 Ctrl+V 这类
+       * 组合编码成控制字符（`\x16`）送进 PTY。React 的冒泡 onKeyDown 跑在它后面，
+       * 那时已经晚了 —— 用户看到的就是"按了粘贴，结果终端里多了个怪字符"。
+       * 捕获阶段在祖先上先触发，`stopPropagation` 一拦，引擎根本收不到。
+       *
+       * 键位取三家习惯的并集：
+       * - `Ctrl+Shift+C/V`：kitty / GNOME Terminal / VS Code；
+       * - `Ctrl+Insert / Shift+Insert`：X11 与 Windows 传统终端；
+       * - `Ctrl+C`（**有选区时**才复制）：Windows Terminal 与 VS Code 的默认，
+       *   没选区时放行，仍然是 SIGINT，vim 用户不受影响；
+       * - `Ctrl+V`：仅 Windows（Windows Terminal 默认），其它平台留给程序
+       *   （vim 的块选择、emacs 的 quoted-insert 都要它）。
+       */
+      const term = termRef.current
+      if (!term) return
+      const mod = e.ctrlKey || e.metaKey
+      const key = e.key.toLowerCase()
+      const isInsert = e.key === 'Insert'
+
+      const wantCopy =
+        (mod && e.shiftKey && key === 'c') ||
+        (e.ctrlKey && !e.shiftKey && !e.altKey && isInsert) ||
+        (mod && !e.shiftKey && !e.altKey && key === 'c' && term.getSelection().length > 0)
+      if (wantCopy) {
+        e.preventDefault()
+        e.stopPropagation()
+        const sel = term.getSelection()
+        if (!sel) {
+          toast.info('没有选中内容：先在终端里拖选，或双击取词')
+        } else {
+          void copyText(sel).then(() => toast.ok(`已复制 ${sel.length} 个字符`))
+          // 有选区时的 Ctrl+C：复制后清选区（Windows Terminal 行为），
+          // 否则用户会看到"复制完了选区还在、再按一次就变成中断"的怪状态
+          if (!e.shiftKey) (term as unknown as KittyEngine).clearSelection?.()
+        }
+        return
+      }
+
+      // Windows / macOS 上 Ctrl+V、Cmd+V 就是粘贴（Windows Terminal 与 Terminal.app
+      // 的默认）；Linux 留给程序（vim 的块选择、emacs 的 quoted-insert）
+      const barePasteAllowed = platform === 'win32' || platform === 'darwin'
+      const wantPaste =
+        (mod && e.shiftKey && key === 'v') ||
+        (isInsert && e.shiftKey) ||
+        (mod && !e.shiftKey && !e.altKey && key === 'v' && barePasteAllowed)
+      if (wantPaste) {
+        e.preventDefault()
+        e.stopPropagation()
+        pasteFromClipboard(term)
+        return
       }
     },
-    [completion, selected, acceptCandidate, closeCompletion],
+    [completion, selected, acceptCandidate, closeCompletion, platform],
   )
 
   const onKeyDown = useCallback(
@@ -1038,19 +1095,6 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       if (e.ctrlKey && e.key === ' ') {
         e.preventDefault()
         void requestCompletion()
-        return
-      }
-      if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
-        const sel = term.getSelection()
-        if (sel) {
-          e.preventDefault()
-          void navigator.clipboard.writeText(sel)
-        }
-        return
-      }
-      if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
-        e.preventDefault()
-        pasteFromClipboard(term)
         return
       }
       if (e.ctrlKey && !e.shiftKey && (e.key === 'l' || e.key === 'L')) {
@@ -1081,7 +1125,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     const NO_SEL = '先在终端里选中文本（拖选或双击词）'
 
     const copySelection = (): void => {
-      if (selection) void navigator.clipboard.writeText(selection)
+      if (selection) void copyText(selection)
     }
 
     /** 重新连接：关掉旧标签再连一次，复用既有的标签/事件管线（不自己造会话） */
@@ -1460,7 +1504,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
           size={12}
           onClick={() => {
             const sel = termRef.current?.getSelection()
-            if (sel) void navigator.clipboard.writeText(sel)
+            if (sel) void copyText(sel).then(() => toast.ok(`已复制 ${sel.length} 个字符`))
           }}
         />
         <IconButton icon="close" label="清屏" size={12} onClick={() => termRef.current?.clear()} />

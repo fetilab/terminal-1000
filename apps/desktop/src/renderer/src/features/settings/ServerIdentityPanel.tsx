@@ -27,6 +27,7 @@ import { toast } from '../../components/Toast'
 import { invoke } from '../../lib/ipc'
 import { classifySyncError, formatFingerprint, type SyncErrorInfo } from './syncError'
 import './settings.css'
+import { copyText } from '../../lib/clipboard'
 
 // 外部服务面板从这里取分类器与类型，保持既有引用路径稳定
 export { classifySyncError, formatFingerprint }
@@ -315,7 +316,7 @@ export function ServerIdentityPanel({
                 variant="ghost"
                 icon="copy"
                 onClick={() => {
-                  void navigator.clipboard.writeText(formatFingerprint(probed.fingerprint))
+                  void copyText(formatFingerprint(probed.fingerprint))
                   toast.ok('指纹已复制')
                 }}
               >

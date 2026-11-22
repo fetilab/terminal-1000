@@ -19,6 +19,7 @@ import { toast } from '../../components/Toast'
 import { actions, useStoreShallow } from '../../lib/store'
 import { CommandManual } from './CommandManual'
 import './tools.css'
+import { copyText } from '../../lib/clipboard'
 
 type ToolId = 'password' | 'manual'
 
@@ -123,7 +124,7 @@ function PasswordTool(): React.JSX.Element {
           label="复制"
           onClick={() => {
             if (!value) return
-            void navigator.clipboard.writeText(value).then(() => toast.ok('已复制到剪贴板'))
+            void copyText(value).then(() => toast.ok('已复制到剪贴板'))
           }}
         />
       </div>

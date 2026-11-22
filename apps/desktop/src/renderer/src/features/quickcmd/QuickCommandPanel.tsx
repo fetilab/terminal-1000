@@ -35,6 +35,7 @@ import type {
 import { QuickCommandEditor } from './QuickCommandEditor'
 import { ParamDialog } from './ParamDialog'
 import './quickcmd.css'
+import { copyText } from '../../lib/clipboard'
 
 interface DropTarget {
   kind: 'command' | 'group'
@@ -219,8 +220,7 @@ export function QuickCommandPanel(): React.JSX.Element {
         label: '复制命令',
         icon: 'copy',
         onSelect: () => {
-          void navigator.clipboard.writeText(node.command)
-          toast.ok('命令已复制到剪贴板')
+          void copyText(node.command).then(() => toast.ok('命令已复制到剪贴板'))
         },
       },
       {
