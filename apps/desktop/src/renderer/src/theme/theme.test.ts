@@ -121,7 +121,19 @@ describe('resolveAppearance（脏值容错）', () => {
     const cfg = resolveAppearance({
       app: { appearance: { preset: 'ember', backgroundImage: '/tmp/wall.png', backgroundOpacity: 0.5, opacity: 0.9, scale: 1.2 } },
     })
-    expect(cfg).toEqual({ preset: 'ember', backgroundImage: '/tmp/wall.png', backgroundOpacity: 0.5, opacity: 0.9, scale: 1.2 })
+    expect(cfg).toEqual({
+      preset: 'ember',
+      backgroundImage: '/tmp/wall.png',
+      backgroundOpacity: 0.5,
+      opacity: 0.9,
+      scale: 1.2,
+      // backgroundImage 非空且未显式给 backgroundType → 兼容旧文档视为图片背景
+      backgroundType: 'image',
+      backgroundColor: APPEARANCE_DEFAULTS.backgroundColor,
+      backgroundVideo: '',
+      backgroundScript: '',
+      backgroundFps: APPEARANCE_DEFAULTS.backgroundFps,
+    })
   })
 })
 

@@ -1,11 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <!--
-    托盘图标：与应用图标同源的 `>_`，但去掉底板、加粗笔画。
-    托盘背景色不可控（浅色面板 / 深色面板 / 彩色），所以只留单色字形；
-    圆角深色方块在深色面板上会直接消失。
+    托盘图标：青色实心圆角方块 + 镂空 `>_`（应用图标的「反色」版本）。
+    与窗口内的细描边品牌标刻意区分开，避免桌面面板上出现两个长得一样的图标；
+    实心色块在深色/浅色面板上都可见（纯描边字形在花色壁纸上会糊掉）。
   -->
-  <g fill="none" stroke="#3ec9d6" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M18 17 L33 32 L18 47"/>
-    <path d="M38 47 L50 47"/>
-  </g>
+  <defs>
+    <mask id="knockout">
+      <rect width="64" height="64" fill="white"/>
+      <g stroke="black" stroke-width="8.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 18 L33 32 L19 46"/>
+        <path d="M38 46 L49 46"/>
+      </g>
+    </mask>
+  </defs>
+  <rect x="3" y="3" width="58" height="58" rx="15" fill="#3ec9d6" mask="url(#knockout)"/>
 </svg>

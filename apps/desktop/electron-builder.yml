@@ -47,6 +47,11 @@ files:
   - '!**/node_modules/node-pty/prebuilds/darwin-*/**'
   - '!**/node_modules/node-pty/prebuilds/win32-*/**'
 
+  # typescript 只为「动态背景 TS 脚本」在主进程做类型剥离（transpileModule 不做类型检查），
+  # 70MB 的 lib/*.d.ts 与各 ES 版本 lib 全都用不上 —— 只保留 typescript.js 本体。
+  - '!**/node_modules/typescript/lib/**'
+  - '**/node_modules/typescript/lib/typescript.js'
+
 # 原生模块必须解出 asar：.node 文件无法从 asar 内加载
 asarUnpack:
   - '**/node_modules/better-sqlite3/**'
@@ -69,6 +74,9 @@ extraResources:
   # 打包后页面是 file://，Worker 里的 fetch 会被同源策略挡掉。
   - from: vendor/kitty-vt-wasm/dist/kitty-vt.wasm
     to: kitty-vt.wasm
+  # 动态背景内置脚本（TS 源码）：运行时由主进程读取并转译
+  - from: resources/background-scripts
+    to: background-scripts
 
 # 不做 npm rebuild：原生模块已由 scripts/rebuild-native.mjs 针对 Electron ABI 重建过，
 # 让 electron-builder 再跑一遍既慢又可能因为 pnpm 的符号链接布局失败

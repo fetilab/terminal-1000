@@ -13,7 +13,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Server, type Connection, type ServerConfig } from 'ssh2'
 import { generateKeyPairSync } from 'node:crypto'
 import type { SshConnection } from '@t1000/shared'
-import { SshSession, fingerprintOf, type HostKeyAskInfo, type SshSessionEvents } from './session'
+import {
+  SshSession,
+  assertSshSecretsUsable,
+  fingerprintOf,
+  type HostKeyAskInfo,
+  type SshSessionEvents,
+} from './session'
 
 /** 测试用服务端私钥（一次性生成，仅存在于内存） */
 function makeHostKey(): string {
@@ -398,5 +404,86 @@ describe('fingerprintOf', () => {
 
   it('不同输入产生不同指纹', () => {
     expect(fingerprintOf(Buffer.from('a'))).not.toBe(fingerprintOf(Buffer.from('b')))
+  })
+})
+
+/**
+ * 凭据预检：掩码缓存 / 非法私钥格式必须在 ssh2 之前被拦下，
+ * 否则用户看到的是 "Cannot parse privateKey: Unsupported key format"。
+ * 这组用例直接对应「重启后私钥连接失败」的线上回归。
+ */
+describe('assertSshSecretsUsable（凭据预检）', () => {
+  const OPENSSH_KEY = [
+    '-----BEGIN OPENSSH PRIVATE KEY-----',
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmV0ZAAAAAAAAAEAAAABAAAABg==',
+    '-----END OPENSSH PRIVATE KEY-----',
+  ].join('\n')
+
+  const baseConn = (): SshConnection =>
+    ({
+      id: 'c1',
+      kind: 'ssh',
+      name: 't',
+      host: 'h',
+      port: 22,
+      username: 'u',
+      authType: 'privateKey',
+      state: 'idle',
+      createdAt: '',
+      updatedAt: '',
+    }) as SshConnection
+
+  it('锁定掩码私钥被拦下（提示先解锁，而不是 ssh2 的解析错误）', () => {
+    const conn = { ...baseConn(), privateKey: '__LOCKED__' }
+    expect(() => assertSshSecretsUsable(conn)).toThrow(/解锁主密码/)
+  })
+
+  it('历史上被污染的记录（掩码作为子串出现）同样拦截', () => {
+    const conn = { ...baseConn(), privateKey: 'v1:xx\n__LOCKED__\n' }
+    expect(() => assertSshSecretsUsable(conn)).toThrow(/解锁主密码/)
+  })
+
+  it('PuTTY .ppk 私钥被拦下并给出转换指引', () => {
+    const conn = {
+      ...baseConn(),
+      privateKey: 'PuTTY-User-Key-File-3: EdDSA\nEncryption: none\nPublic-Lines: 4\n',
+    }
+    expect(() => assertSshSecretsUsable(conn)).toThrow(/PuTTY/)
+  })
+
+  it('需要私钥但一个都取不到 → 明确提示重新粘贴', () => {
+    const savedSock = process.env['SSH_AUTH_SOCK']
+    delete process.env['SSH_AUTH_SOCK']
+    try {
+      expect(() => assertSshSecretsUsable(baseConn())).toThrow(/重新粘贴私钥/)
+    } finally {
+      if (savedSock !== undefined) process.env['SSH_AUTH_SOCK'] = savedSock
+    }
+  })
+
+  it('合法 OpenSSH 私钥不拦截', () => {
+    expect(() => assertSshSecretsUsable({ ...baseConn(), privateKey: OPENSSH_KEY })).not.toThrow()
+  })
+
+  it('跳板链里的掩码私钥同样拦截', () => {
+    const conn = {
+      ...baseConn(),
+      privateKey: OPENSSH_KEY,
+      jumpChain: [{ id: 'j1', host: 'jump', port: 22, username: 'j', privateKey: '__LOCKED__' }],
+    } as SshConnection
+    expect(() => assertSshSecretsUsable(conn)).toThrow(/解锁主密码/)
+  })
+
+  it('密码认证 + 键盘交互兜底时不因缺私钥拦截', () => {
+    const savedSock = process.env['SSH_AUTH_SOCK']
+    delete process.env['SSH_AUTH_SOCK']
+    try {
+      expect(() => assertSshSecretsUsable({ ...baseConn(), password: 'p' })).not.toThrow()
+      expect(() =>
+        assertSshSecretsUsable({ ...baseConn(), authOrder: ['keyboard'] }),
+      ).not.toThrow()
+    } finally {
+      if (savedSock !== undefined) process.env['SSH_AUTH_SOCK'] = savedSock
+    }
   })
 })

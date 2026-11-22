@@ -899,6 +899,14 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     return () => cancelAnimationFrame(raf)
   }, [visible, ready])
 
+  // kitty 引擎的渲染暂停/恢复：切页隐藏时停掉 rAF（内核会话照常收数据），
+  // 切回来时 fit + 全帧重发恢复画面（App 层的工作区常驻依赖这条链路）
+  useEffect(() => {
+    const kitty = kittyRef.current
+    if (!kitty || !ready) return
+    kitty.setVisible(visible)
+  }, [visible, ready])
+
   /* ── 数据订阅（高频路径，不进 store） ──────────── */
   useEffect(() => {
     const sessionId = tab.sessionId

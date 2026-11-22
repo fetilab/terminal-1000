@@ -28,11 +28,13 @@ export interface FieldDef {
   path: string
   label: string
   hint?: string
-  kind: 'text' | 'number' | 'switch' | 'select'
+  kind: 'text' | 'number' | 'switch' | 'select' | 'path'
   options?: readonly SelectOption[]
   min?: number
   max?: number
   step?: number
+  /** kind=path 时的文件过滤（pickLocalPath 的 filters 由这里生成） */
+  pick?: 'image' | 'video' | 'script'
   /** 占满两列（长文本、字体名这类） */
   wide?: boolean
   /** 危险/需要强调说明的项 */
@@ -75,20 +77,65 @@ export const SETTINGS_FIELDS: Record<
       hint: '在明暗之上再叠一套自研配色；默认「冷青」与历史观感一致',
     },
     {
-      path: 'app.appearance.backgroundImage',
-      label: '背景图',
+      path: 'app.appearance.backgroundType',
+      label: '动态背景',
+      kind: 'select',
+      options: [
+        { value: 'none', label: '无' },
+        { value: 'color', label: '纯色' },
+        { value: 'image', label: '图片' },
+        { value: 'video', label: '视频' },
+        { value: 'script', label: 'TS 脚本' },
+      ],
+      hint: '任意界面播放；脚本可选内置（matrix 代码雨 / donut 甜甜圈 / snow 下雪），开发文档见 docs/background-scripts.md',
+    },
+    {
+      path: 'app.appearance.backgroundColor',
+      label: '纯色背景色',
       kind: 'text',
+      hint: '十六进制颜色，如 #10141a 或 #10141acc；类型为「纯色」时生效',
+    },
+    {
+      path: 'app.appearance.backgroundImage',
+      label: '背景图片',
+      kind: 'path',
+      pick: 'image',
       wide: true,
-      hint: '本地图片绝对路径（也可用 file:/data: 链接）。刻意不支持 http(s)：背景图不应发起外部请求',
+      hint: '本地图片路径（也可用 file:/data: 链接）。刻意不支持 http(s)：背景图不应发起外部请求',
+    },
+    {
+      path: 'app.appearance.backgroundVideo',
+      label: '背景视频',
+      kind: 'path',
+      pick: 'video',
+      wide: true,
+      hint: '本地视频路径；循环静音播放，比例不一致时裁边铺满',
+    },
+    {
+      path: 'app.appearance.backgroundScript',
+      label: '背景脚本',
+      kind: 'path',
+      pick: 'script',
+      wide: true,
+      hint: '内置脚本名（matrix / donut / snow）或自定义 .ts 脚本绝对路径；开发文档见 docs/background-scripts.md',
+    },
+    {
+      path: 'app.appearance.backgroundFps',
+      label: '背景帧率上限',
+      kind: 'number',
+      min: 10,
+      max: 60,
+      step: 5,
+      hint: '脚本背景的渲染帧率上限；越低越省电',
     },
     {
       path: 'app.appearance.backgroundOpacity',
-      label: '背景图可见度',
+      label: '背景可见度',
       kind: 'number',
       min: 0,
       max: 1,
       step: 0.05,
-      hint: '仅在设置了背景图时生效',
+      hint: '背景媒体/纯色的整体可见度',
     },
     {
       path: 'app.appearance.opacity',
@@ -97,7 +144,7 @@ export const SETTINGS_FIELDS: Record<
       min: 0.5,
       max: 1,
       step: 0.05,
-      hint: '越低，背景图透出越多；1 = 实心',
+      hint: '越低，背景透出越多；1 = 实心',
     },
     {
       path: 'app.appearance.scale',
@@ -231,7 +278,7 @@ export const SETTINGS_FIELDS: Record<
       ],
     },
     { path: 'terminal.cursorBlink', label: '光标闪烁', kind: 'switch', hint: '静止 15 秒后自动停止闪烁（同 kitty）' },
-    { path: 'terminal.cursorTrail', label: '光标拖尾', kind: 'number', min: 0, max: 8, step: 1, hint: '光标平滑滑动 + 残影渐隐（kitty cursor_trail）；0 关闭' },
+    { path: 'terminal.cursorTrail', label: '光标拖尾', kind: 'number', min: 0, max: 200, step: 1, hint: 'kitty cursor_trail：光标停留 N 毫秒后拖尾开始追赶；0 关闭' },
     { path: 'terminal.cursorOpacity', label: '光标不透明度', kind: 'number', min: 0.1, max: 1, step: 0.05 },
     {
       path: 'terminal.colorScheme',

@@ -113,6 +113,10 @@ export const Actions = {
     'openPath',
     // kitty 内核的 wasm 字节（渲染层 Worker 需要它才能实例化；打包后不在 node_modules 里）
     'kittyWasm',
+    // 动态背景 TS 脚本：读源码并转译成 JS（内置脚本按名字取，自定义脚本按路径取）
+    'compileBackgroundScript',
+    // 动态背景：列出内置脚本名（设置下拉用）
+    'listBackgroundScripts',
   ] as const,
 
   store: [

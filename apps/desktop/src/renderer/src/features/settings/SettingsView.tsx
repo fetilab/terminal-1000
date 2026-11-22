@@ -168,6 +168,13 @@ function useDebounced<T>(value: T, commit: (v: T) => void, delay = 450): [T, (v:
 
 /* ── 通用字段渲染 ──────────────────────────────── */
 
+/** kind=path 的文件过滤器 */
+const PICK_FILTERS: Record<NonNullable<FieldDef['pick']>, { name: string; extensions: string[] }> = {
+  image: { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'] },
+  video: { name: '视频', extensions: ['mp4', 'webm', 'mkv', 'mov', 'avi'] },
+  script: { name: '背景脚本', extensions: ['ts'] },
+}
+
 function FieldControl({
   def,
   value,
@@ -186,6 +193,7 @@ function FieldControl({
       onChange(v)
     }
   })
+  const num = Number(text)
 
   switch (def.kind) {
     case 'switch':
@@ -193,6 +201,26 @@ function FieldControl({
     case 'select':
       return <Select value={str} options={def.options ?? []} onChange={(e) => onChange(e.target.value)} />
     case 'number':
+      // 有上下限的数字 = 滑动条（用户要求：可调数字且有上限的条目一律滑动设置）
+      if (def.min !== undefined && def.max !== undefined && Number.isFinite(num)) {
+        return (
+          <div className="settings-slider">
+            <input
+              type="range"
+              className="settings-slider__track"
+              min={def.min}
+              max={def.max}
+              step={def.step ?? 1}
+              value={num}
+              onChange={(e) => {
+                setText(e.target.value)
+              }}
+              aria-label={def.label}
+            />
+            <span className="settings-slider__value">{num}</span>
+          </div>
+        )
+      }
       return (
         <TextInput
           type="number"
@@ -203,6 +231,38 @@ function FieldControl({
           step={def.step}
           onChange={(e) => setText(e.target.value)}
         />
+      )
+    case 'path':
+      return (
+        <div className="settings-path">
+          <TextInput
+            mono
+            value={text}
+            placeholder={def.pick === 'script' ? '内置脚本名（matrix / donut / snow）或 .ts 路径' : '本地文件路径'}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <IconButton
+            icon="folder-open"
+            label="选择文件"
+            onClick={() => {
+              void invoke<
+                'app',
+                'pickLocalPath',
+                { mode: 'file'; title: string; filters: Array<{ name: string; extensions: string[] }> },
+                { canceled: boolean; paths: string[] }
+              >('app', 'pickLocalPath', {
+                mode: 'file',
+                title: `选择${def.pick === 'video' ? '视频' : def.pick === 'script' ? '背景脚本' : '图片'}`,
+                filters: [PICK_FILTERS[def.pick ?? 'image']],
+              })
+                .then((res) => {
+                  const picked = res.paths[0] ?? ''
+                  if (picked) setText(picked)
+                })
+                .catch(() => toast.error('无法打开文件对话框'))
+            }}
+          />
+        </div>
       )
     default:
       return <TextInput value={text} mono={def.path.includes('font')} onChange={(e) => setText(e.target.value)} />

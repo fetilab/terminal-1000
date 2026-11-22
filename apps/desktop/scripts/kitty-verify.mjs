@@ -274,38 +274,96 @@ try {
   const scrollOk = scrollOk1 && scrollOk2 && scrollOk3
   console.log(`SCROLL: ${scrollOk ? 'PASS' : 'FAIL'} (滚屏=${scrollOk1} 回看=${scrollOk2} 跳底=${scrollOk3})`)
 
-  /* ── 光标特效：拖尾参数下发 + 主题（Catppuccin Mocha） ── */
+  /* ── 光标拖尾（kitty cursor_trail.c 移植）：跨格跳转 → 角落后 → 收敛 ── */
+  // 触发一次跨屏跳转（光标从底部行跳到左上角，≥3 格才越过 start_threshold 2）
   await cdp.send('Runtime.evaluate', {
-    expression: `(() => {
-      const eng = window.__kittyDemoEngine
-      // 触发一次跨格移动：把光标挪到别的行（写几行新内容）
-      eng.write('\\r\\n\\r\\n\\r\\ntrail-probe\\r\\n')
-    })()`,
+    expression: `window.__kittyDemoEngine.write('\\x1b[Htrail-probe\\r\\n')`,
   })
-  await sleep(600)
+  await sleep(60)
   const s4 = await cdp.send('Runtime.evaluate', {
     expression: `(() => {
       const eng = window.__kittyDemoEngine
-      const r = eng.renderer
+      const d = eng.trailDebug()
+      // 每个角到它自己的目标角的距离（角目标 x=[x1,x1,x0,x0]，y=[y0,y1,y1,y0]）
+      const dist = (d) => Math.max(
+        Math.abs(d.edgeX[1] - d.cornerX[0]), Math.abs(d.edgeY[0] - d.cornerY[0]),
+        Math.abs(d.edgeX[1] - d.cornerX[1]), Math.abs(d.edgeY[1] - d.cornerY[1]),
+        Math.abs(d.edgeX[0] - d.cornerX[2]), Math.abs(d.edgeY[1] - d.cornerY[2]),
+        Math.abs(d.edgeX[0] - d.cornerX[3]), Math.abs(d.edgeY[0] - d.cornerY[3]))
       return {
-        trailDepth: r.trailDepth,
-        animIdle: r.animActive === false,
-        bg: [r.theme.bg.r, r.theme.bg.g, r.theme.bg.b].map(v => Math.round(v * 255)),
-        fg: [r.theme.fg.r, r.theme.fg.g, r.theme.fg.b].map(v => Math.round(v * 255)),
-        cursorStyleOverride: r.shapeOverride,
+        d,
+        maxCornerDist: d.edgeX && d.edgeY ? dist(d) : null,
+        animating: eng.renderer.animActive,
+        bg: [eng.renderer.theme.bg.r, eng.renderer.theme.bg.g, eng.renderer.theme.bg.b].map(v => Math.round(v * 255)),
+        fg: [eng.renderer.theme.fg.r, eng.renderer.theme.fg.g, eng.renderer.theme.fg.b].map(v => Math.round(v * 255)),
+        cursorStyleOverride: eng.renderer.shapeOverride,
       }
     })()`,
     returnByValue: true,
   })
-  console.log('cursor-fx =', JSON.stringify(s4?.result?.value))
-  const f = s4?.result?.value ?? {}
-  // Catppuccin Mocha base #1E1E2E（30,30,46）、text #CDD6F4（205,214,244）
-  const fxOk = f.trailDepth === 3 && f.animIdle === true &&
-    f.bg?.[0] === 30 && f.bg?.[1] === 30 && f.bg?.[2] === 46 &&
-    f.fg?.[0] === 205 && f.fg?.[1] === 214 && f.fg?.[2] === 244 &&
-    f.cursorStyleOverride === 'bar'
-  console.log(`CURSOR-FX: ${fxOk ? 'PASS' : 'FAIL'}`)
-  process.exitCode = ok && scrollOk && fxOk ? 0 : 1
+  console.log('trail-mid =', JSON.stringify(s4?.result?.value))
+  const t1 = s4?.result?.value ?? {}
+  // 跳转后立刻：拖尾角还落在后面（>0.3 格）、动画在跑、光标矩形 = 目标（单光标在真实位置）
+  const trailOk1 =
+    t1.d && t1.maxCornerDist !== null && t1.maxCornerDist > 0.3 && t1.animating === true &&
+    t1.d.cursorRect && t1.d.edgeX && t1.d.cursorRect[0] === t1.d.edgeX[0]
+
+  // 1.2s 后收敛：needsRender=false、四角贴合（<0.05 格）、opacity≈1、光标 quad 只有 1 个
+  await sleep(1200)
+  const s5 = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      const d = eng.trailDebug()
+      // 角目标：x=[x1,x1,x0,x0]，y=[y0,y1,y1,y0]（kitty corner_index）
+      const maxDelta = Math.max(
+        Math.abs(d.edgeX[1] - d.cornerX[0]), Math.abs(d.edgeY[0] - d.cornerY[0]),
+        Math.abs(d.edgeX[1] - d.cornerX[1]), Math.abs(d.edgeY[1] - d.cornerY[1]),
+        Math.abs(d.edgeX[0] - d.cornerX[2]), Math.abs(d.edgeY[1] - d.cornerY[2]),
+        Math.abs(d.edgeX[0] - d.cornerX[3]), Math.abs(d.edgeY[0] - d.cornerY[3]))
+      return { d, maxDelta, animIdle: eng.renderer.animActive === false }
+    })()`,
+    returnByValue: true,
+  })
+  console.log('trail-end =', JSON.stringify(s5?.result?.value))
+  const t2 = s5?.result?.value ?? {}
+  const trailOk2 =
+    t2.d && t2.maxDelta < 0.05 && t2.d.needsRender === false && t2.animIdle === true &&
+    t2.d.opacity > 0.9 && t2.d.cursorQuads === 1
+
+  // Catppuccin Mocha base #1E1E2E（30,30,46）、text #CDD6F4（205,214,244）。
+  // cursorStyleOverride 是用户自己的设置值（bar/block 都合法），只断言形状生效
+  const fxOk =
+    t1.bg?.[0] === 30 && t1.bg?.[1] === 30 && t1.bg?.[2] === 46 &&
+    t1.fg?.[0] === 205 && t1.fg?.[1] === 214 && t1.fg?.[2] === 244 &&
+    (t1.cursorStyleOverride === 'bar' || t1.cursorStyleOverride === 'block')
+  console.log(`CURSOR-TRAIL: ${(trailOk1 && trailOk2 && fxOk) ? 'PASS' : 'FAIL'} (跳跃滞后=${trailOk1} 收敛单光标=${trailOk2} 主题=${fxOk})`)
+
+  /* ── 页面切换保真：隐藏 → 显示，内核会话与历史必须原样保留 ── */
+  const s6a = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      const before = { text: eng.viewportText(), sb: eng.meta?.scrollbackLength, cur: { ...eng.meta?.cursor } }
+      eng.setVisible(false)
+      eng.setVisible(true)
+      return before
+    })()`,
+    returnByValue: true,
+  })
+  await sleep(600)
+  const s6b = await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const eng = window.__kittyDemoEngine
+      return { text: eng.viewportText(), sb: eng.meta?.scrollbackLength, hasProbe: eng.viewportText().includes('trail-probe') }
+    })()`,
+    returnByValue: true,
+  })
+  const before = s6a?.result?.value ?? {}
+  const after = s6b?.result?.value ?? {}
+  const pageOk = before.sb > 0 && after.sb === before.sb && after.text === before.text && after.hasProbe
+  console.log(`PAGE-RESTORE: ${pageOk ? 'PASS' : 'FAIL'} (scrollback=${before.sb}→${after.sb} 内容一致=${after.text === before.text})`)
+  const shot3 = await cdp.send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync('/home/mosfet/dsh1/_shots/kitty-cursor-trail.png', Buffer.from(shot3.data, 'base64'))
+  process.exitCode = ok && scrollOk && trailOk1 && trailOk2 && fxOk && pageOk ? 0 : 1
 } catch (err) {
   console.error('RESULT: ERROR', err.message)
   console.error(appLog.slice(-1500))

@@ -1817,6 +1817,17 @@ export async function connectTo(connection: UiConnection): Promise<void> {
     return
   }
 
+  // 带机密的连接必须先解锁：重启后库是锁定态，连接列表里机密字段是掩码缓存，
+  // 直接发起连接会把 `__LOCKED__` 当凭据喂给 ssh2（报 Cannot parse privateKey 等）。
+  // 主进程会按 id 取权威解密记录，但前提是库已解锁 —— 这里就地弹窗引导。
+  if (hasCredential(connection as unknown as Record<string, unknown>)) {
+    const unlocked = await ensureUnlocked('这条连接使用口令/私钥认证，需要先解锁本地库读取凭据。')
+    if (!unlocked) {
+      toast.warn('本地库未解锁，已取消连接')
+      return
+    }
+  }
+
   const kind: TabKind =
     connection.kind === 'telnet'
       ? 'telnet'

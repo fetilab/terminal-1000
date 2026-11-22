@@ -77,7 +77,7 @@ const STATE_LABEL: Record<string, string> = {
   failed: '失败',
 }
 
-export default function TerminalWorkspace(): React.JSX.Element {
+export default function TerminalWorkspace({ suspended = false }: { suspended?: boolean } = {}): React.JSX.Element {
   const { tabs, activeTabId, recordings, groups, lastSend, bcErrors } = useStoreShallow((s) => ({
     tabs: s.tabs,
     activeTabId: s.activeTabId,
@@ -486,8 +486,10 @@ export default function TerminalWorkspace(): React.JSX.Element {
                       {...(tab.message === undefined ? {} : { message: tab.message })}
                     />
                   ) : (
-                    /* 从未可见过的标签不创建 xterm，切过去时才初始化 */
-                    <TerminalPane tab={tab} visible={visible} />
+                    /* 从未可见过的标签不创建 xterm，切过去时才初始化；
+                       suspended = 整个工作区被切到别的页面（此时内核会话保留、
+                       渲染暂停，切回来 fit + 全帧重发即可恢复画面） */
+                    <TerminalPane tab={tab} visible={visible && !suspended} />
                   )}
                 </Suspense>
               </div>

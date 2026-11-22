@@ -100,12 +100,13 @@ export class Repository {
 
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveKey(k) && typeof v === 'string' && v.length > 0) {
-        // 空串视为「未设置」，不加密也不落密文
-        out[k] = isCiphertext(v) ? v : encryptWithKey(key, v)
-      } else if (isSensitiveKey(k) && isLockedMask(v)) {
-        // 掩码是「渲染层没改过这个字段」的信号，绝不能把掩码当明文存下去
+      if (isSensitiveKey(k) && isLockedMask(v)) {
+        // 掩码：正常路径已在 dehydrate 里用 previous 还原过原密文；走到这里
+        // 说明 previous 里也没有。宁缺毋假——掩码绝不能当明文加密落库。
         continue
+      } else if (isSensitiveKey(k) && typeof v === 'string' && v.length > 0) {
+        // 非空串才是机密：加密或保留已有密文（空串视为「未设置」，原样落库）
+        out[k] = isCiphertext(v) ? v : encryptWithKey(key, v)
       } else {
         out[k] = this.encryptSensitive(v, key)
       }
@@ -167,8 +168,15 @@ export class Repository {
    */
   private dehydrate(payload: unknown, previous?: unknown): string {
     const key = this.key()
-    if (key) return JSON.stringify(this.encryptSensitive(payload, key))
-    return JSON.stringify(preserveMaskedCiphertext(payload, previous))
+    // 第一步（锁定/解锁两种状态都要做）：掩码 = "渲染层没改过这个字段"，
+    // 先把 previous 里的原密文搬回来。
+    // 此前只在锁定态做这一步——解锁态直接 encryptSensitive 会把 `__LOCKED__`
+    // 字面量当明文加密落库：用户重启后（列表是锁定态加载的掩码缓存）打开
+    // 编辑框再保存，凭据就被永久污染，表现为「连接重启后报错、改配置也没用、
+    // 只能删掉重来」。
+    const restored = preserveMaskedCiphertext(payload, previous)
+    if (key) return JSON.stringify(this.encryptSensitive(restored, key))
+    return JSON.stringify(restored)
   }
 
   /** 取出磁盘上某行已解析的原始 payload（密文态）；不存在返回 undefined */

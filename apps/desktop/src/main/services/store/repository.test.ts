@@ -501,3 +501,99 @@ describe('Repository 密钥轮换（reencryptAll）', () => {
     expect((repo.getConnection('c1') as SshConnection).note).toBe('keep-me')
   })
 })
+
+// ---------------------------------------------------------------------------
+// 掩码回存污染回归（issue：重启后连接报 Cannot parse privateKey、改配置也没用）
+//
+// 场景：应用重启 → 库锁定 → 渲染层拿到的是掩码缓存 → 用户打开编辑框保存
+// （保存流程会就地弹窗引导解锁）→ 主进程此时**已解锁**。修复前的解锁写路径
+// 会把 `__LOCKED__` 字面量当明文加密落库，凭据被永久污染。
+describe('Repository（解锁态下掩码回存——凭据不得被污染）', () => {
+  let db: StoreDb
+  let vault: Vault
+  let repo: Repository
+  const key = (): Buffer => deriveKey('test-master-password', Buffer.alloc(16, 7))
+
+  beforeEach(() => {
+    db = new StoreDb(':memory:')
+    vault = unlockedVault()
+    repo = new Repository(db, () => vault.currentKey())
+    repo.saveConnection(
+      sshConn({
+        authType: 'privateKey',
+        privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nrealkey\n-----END OPENSSH PRIVATE KEY-----',
+        passphrase: 'key-pass',
+        password: undefined,
+      }),
+      NOW,
+    )
+    // 模拟重启：锁定
+    vault.lock()
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  it('解锁后保存掩码缓存，私钥与口令原样保留（不被掩码字面量覆盖）', () => {
+    // 锁定态读出掩码缓存（渲染层列表就是这个）
+    const masked = repo.getConnection('c1') as SshConnection
+    expect(masked.privateKey).toBe(LOCKED_MASK)
+    expect(masked.passphrase).toBe(LOCKED_MASK)
+
+    // 用户解锁后（编辑框触发的解锁）原样回存，只改了备注
+    vault.unlockWithKey(key())
+    repo.saveConnection({ ...masked, note: 'edited-while-unlocked' }, LATER)
+
+    const got = repo.getConnection('c1') as SshConnection
+    expect(got.note).toBe('edited-while-unlocked')
+    expect(got.privateKey).toContain('realkey')
+    expect(got.passphrase).toBe('key-pass')
+
+    // 库里也绝不能出现掩码字面量
+    const raw = repo.readRow(STORE_KEYS.server, 'c1')!
+    expect(raw.payload).not.toContain(LOCKED_MASK)
+  })
+
+  it('解锁后保存掩码缓存，密码字段同样保留', () => {
+    vault.unlockWithKey(key())
+    repo.saveConnection(sshConn({ password: 'pw-1' }), NOW)
+    vault.lock()
+
+    const masked = repo.getConnection('c1') as SshConnection
+    vault.unlockWithKey(key())
+    repo.saveConnection({ ...masked, name: 'renamed' }, LATER)
+
+    const got = repo.getConnection('c1') as SshConnection
+    expect(got.name).toBe('renamed')
+    expect(got.password).toBe('pw-1')
+  })
+
+  it('解锁后用户输入了新口令，则覆盖旧值（掩码只在未修改时生效）', () => {
+    const masked = repo.getConnection('c1') as SshConnection
+    vault.unlockWithKey(key())
+    repo.saveConnection({ ...masked, passphrase: 'new-pass' }, LATER)
+
+    const got = repo.getConnection('c1') as SshConnection
+    expect(got.passphrase).toBe('new-pass')
+  })
+
+  it('嵌套跳板的掩码在解锁态回存时同样沿用原密文', () => {
+    vault.unlockWithKey(key())
+    repo.saveConnection(
+      sshConn({
+        jumpChain: [{ id: 'j1', host: 'b', port: 22, username: 'j', authType: 'password', password: 'jump-pw' }],
+      }),
+      NOW,
+    )
+    vault.lock()
+
+    const masked = repo.getConnection('c1') as SshConnection
+    expect(masked.jumpChain![0]!.password).toBe(LOCKED_MASK)
+
+    vault.unlockWithKey(key())
+    repo.saveConnection(masked, LATER)
+    const got = repo.getConnection('c1') as SshConnection
+    expect(got.jumpChain![0]!.password).toBe('jump-pw')
+  })
+})

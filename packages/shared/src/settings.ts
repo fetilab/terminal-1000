@@ -121,6 +121,7 @@ export interface TerminalSettings {
    * 光标平滑滑向新位置，跨格移动（≥2 格）时在途经位置留下一串渐隐残影。
    * 0 = 关闭；推荐 3（kitty 默认也是 3 档深度）。仅 kitty 渲染器生效。
    */
+  /** kitty cursor_trail：光标停留 N 毫秒后拖尾开始追赶（0 关闭） */
   cursorTrail: number
   /** 16 色调色板，`#RRGGBB` × 16（顺序同 ANSI：black,red,green,yellow,blue,magenta,cyan,white, bright×8） */
   palette: string[]

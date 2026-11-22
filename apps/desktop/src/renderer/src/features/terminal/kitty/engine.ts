@@ -15,13 +15,13 @@
  *  parser.registerOscHandler/registerMarker/registerDecoration/loadAddon/buffer`
  */
 
-import type { KittyHostEvent, KittyMeta, TerminalSettings } from '@t1000/shared'
+import type { KittyGraphicsCommand, KittyHostEvent, KittyMeta, TerminalSettings } from '@t1000/shared'
 import { KITTY_CELL_WORDS } from '@t1000/shared'
 import { GlyphAtlas } from './atlas'
 import { CanvasTerminalRenderer } from './canvas'
 import { KittySession, ensureKittyCore } from './client'
 import { buildTheme, type RenderTheme } from './theme'
-import { WebGLTerminalRenderer, type HighlightSpan, type SearchSpan } from './webgl'
+import { WebGLTerminalRenderer, type HighlightSpan, type ImagePlacement, type SearchSpan } from './webgl'
 import { parseHex } from './theme'
 
 type Kind = 'local' | 'ssh' | 'telnet'
@@ -68,6 +68,30 @@ class DecorationImpl {
     this.disposed = true
     this.onDisposeCb?.()
   }
+}
+
+/* ── kitty 图形协议（graphics.c 的客户端侧）──
+ * 内核只解析命令并上报；解码、分块重组、摆放生命周期由引擎负责。
+ * 摆放钉在绝对行号上：内容滚动时图片跟着内容走（与 kitty 一致），
+ * z<0 画在文字下、z>=0 画在文字上（kitty 图形协议的 z 语义）。
+ */
+interface DecodedImage {
+  source: CanvasImageSource
+  w: number
+  h: number
+  rev: number
+}
+
+function decodeBase64(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+async function inflateZlib(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
 interface Marker {
@@ -161,6 +185,13 @@ export class KittyEngine {
   private lastCursorKey = ''
   private customThemeBase: { fg: number | null; bg: number | null; cursor: number | null; palette: number[] } | null =
     null
+  /** 已解码图片（imageNumber → 位图）；重传时 rev 递增驱动纹理重传 */
+  private graphicsImages = new Map<number, DecodedImage>()
+  /** 分块传输的重组桶（imageNumber → 已收到的段） */
+  private graphicsChunks = new Map<number, { parts: string[]; cmd: KittyGraphicsCommand }>()
+  /** 生效的摆放（key = placementId 或 imageNumber） */
+  private graphicsPlacements = new Map<string, ImagePlacement>()
+  private graphicsRev = 0
 
   constructor(opts: KittyEngineOptions) {
     this.opts = opts
@@ -275,11 +306,14 @@ export class KittyEngine {
           this.meta = frame.meta
           this.applyRows(frame.rows, frame.full)
           this.refreshThemeBase(frame.meta)
-          // 光标位置变化：重置「静止计时」（停止闪烁用）
+          // 光标位置变化：重置「静止计时」（停止闪烁用），并告知渲染器
+          // 拖尾的数据侧移动时刻（kitty position_changed_by_client_at）
           const ck = `${frame.meta.cursor.x},${frame.meta.cursor.y}`
           if (ck !== this.lastCursorKey) {
             this.lastCursorKey = ck
             this.lastCursorMoveAt = Date.now()
+            // canvas 回退渲染器没有拖尾状态机，安全跳过
+            ;(this.renderer as { noteCursorMoved?: () => void }).noteCursorMoved?.()
           }
           this.scheduleRender()
           if (frame.meta.title && this.opts.onTitle) this.opts.onTitle(frame.meta.title)
@@ -294,7 +328,16 @@ export class KittyEngine {
     // 关掉自动换行（用户在设置里关了的话）；必须在任何输出前下发
     if (!this.options.wrapLines) this.session.write(new TextEncoder().encode('\x1b[?7l'))
     // 光标观感（kitty cursor_trail / cursor_shape / cursor_inactive_style）
+    // 全部对齐用户 kitty.conf：cursor_trail 3（毫秒）、decay 0.1 0.4、
+    // start_threshold 2、beam 2.0pt、underline 2.0pt
     this.renderer.setCursorTrail(this.options.cursorTrail)
+    if (typeof (this.renderer as WebGLTerminalRenderer).setTrailDecay === 'function') {
+      const glr = this.renderer as WebGLTerminalRenderer
+      glr.setTrailDecay(0.1, 0.4)
+      glr.setTrailThreshold(2, 2)
+      glr.setBeamThicknessPx(2)
+      glr.setUnderlineThicknessPx(2)
+    }
     this.renderer.setCursorShapeOverride(this.options.cursorStyle)
     this.renderer.setCursorInactiveStyle(this.options.cursorInactiveStyle)
     this.renderer.setFocused(true)
@@ -376,11 +419,13 @@ export class KittyEngine {
         if (!ev.query && ev.data) void navigator.clipboard.writeText(ev.data).catch(() => undefined)
         return
       case 'graphics':
-        // 图形协议：解码成纹理由渲染器负责；解码失败不能影响文本
+        // 图形协议：解码 + 摆放交给渲染器画出来；解码失败不能影响文本
+        this.onGraphics(ev.command)
         return
       case 'reset':
         this.decorations = []
         this.markers = []
+        this.clearGraphics()
         return
       default:
         return
@@ -390,6 +435,144 @@ export class KittyEngine {
   private notifyOsc(code: number, data: string): void {
     const handler = this.oscHandlers.get(code)
     if (handler) handler(data)
+  }
+
+  /* ───────────────────── kitty 图形协议 ───────────────────── */
+
+  private onGraphics(cmd: KittyGraphicsCommand): void {
+    if (this.options.kittyGraphics === false) return // 设置里关了图形协议
+    if (cmd.unicodePlacement) return // Unicode 占位：暂不支持，忽略
+    if (cmd.action === 'd') {
+      this.deleteGraphics(cmd)
+      return
+    }
+    if (cmd.action === 't' || cmd.action === 'T' || cmd.action === 'p') {
+      this.displayGraphics(cmd)
+    }
+    // 'a'（动画）/ 'f'（帧）/ 'q'（查询）超出静态图片范围，忽略
+  }
+
+  /** 传输（'t'/'T'）与摆放（'p'/'T'）：分块重组后解码 */
+  private displayGraphics(cmd: KittyGraphicsCommand): void {
+    if (cmd.action === 'p') {
+      // 只摆放：复用已解码的图片
+      const img = this.graphicsImages.get(cmd.imageNumber)
+      if (img) {
+        this.placeGraphics(cmd, img)
+        this.syncGraphics()
+      }
+      return
+    }
+    if (cmd.more === 1 || this.graphicsChunks.has(cmd.imageNumber)) {
+      let bucket = this.graphicsChunks.get(cmd.imageNumber)
+      if (!bucket) {
+        bucket = { parts: [], cmd }
+        this.graphicsChunks.set(cmd.imageNumber, bucket)
+      }
+      bucket.cmd = cmd
+      if (cmd.payload) bucket.parts.push(cmd.payload)
+      if (cmd.more === 1) return // 还有后续块
+      this.graphicsChunks.delete(cmd.imageNumber)
+      void this.decodeAndPlace(bucket.parts.join(''), bucket.cmd)
+      return
+    }
+    void this.decodeAndPlace(cmd.payload, cmd)
+  }
+
+  private async decodeAndPlace(payload: string, cmd: KittyGraphicsCommand): Promise<void> {
+    try {
+      let bytes = decodeBase64(payload)
+      if (cmd.compressed === 1) bytes = await inflateZlib(bytes)
+      let source: CanvasImageSource
+      let w: number
+      let h: number
+      if (cmd.format === 100 || cmd.format === 200) {
+        const bmp = await createImageBitmap(new Blob([bytes as BlobPart], { type: 'image/png' }))
+        source = bmp
+        w = bmp.width
+        h = bmp.height
+      } else if (cmd.format === 32 || cmd.format === 24) {
+        // 原始像素：32 = RGBA，24 = RGB
+        const iw = cmd.dataWidth || cmd.width
+        const ih = cmd.dataHeight || cmd.height
+        if (!iw || !ih) return
+        const bpp = cmd.format === 32 ? 4 : 3
+        if (bytes.length < iw * ih * bpp) return
+        const data = new Uint8ClampedArray(iw * ih * 4)
+        for (let i = 0, j = 0; i < iw * ih; i += 1, j += bpp) {
+          data[i * 4] = bytes[j] as number
+          data[i * 4 + 1] = bytes[j + 1] as number
+          data[i * 4 + 2] = bytes[j + 2] as number
+          data[i * 4 + 3] = cmd.format === 32 ? (bytes[j + 3] as number) : 255
+        }
+        const bmp = await createImageBitmap(new ImageData(data, iw, ih))
+        source = bmp
+        w = iw
+        h = ih
+      } else {
+        return // 200 级 PNG 走 format===200；其余（SBIR 等）不支持
+      }
+      const img: DecodedImage = { source, w, h, rev: ++this.graphicsRev }
+      this.graphicsImages.set(cmd.imageNumber, img)
+      if (cmd.action === 't' || cmd.action === 'T' || cmd.action === 'p') this.placeGraphics(cmd, img)
+      this.syncGraphics()
+    } catch {
+      // 解码失败：静默（kitty 对坏图同样只丢弃）
+    }
+  }
+
+  /** 在当前光标位置落一个摆放（kitty 默认把图放到光标处） */
+  private placeGraphics(cmd: KittyGraphicsCommand, img: DecodedImage): void {
+    const meta = this.meta
+    if (!meta) return
+    const key = cmd.placementId > 0 ? `p${cmd.placementId}` : `i${cmd.imageNumber}`
+    this.graphicsPlacements.set(key, {
+      imageNumber: cmd.imageNumber,
+      revision: img.rev,
+      absLine: meta.scrollbackLength - meta.scrolledBy + meta.cursor.y,
+      col: meta.cursor.x,
+      yOffsetPx: cmd.yOffset,
+      z: cmd.zIndex,
+      source: img.source,
+      pxW: img.w,
+      pxH: img.h,
+    })
+  }
+
+  /** a=d 删除：A=全部、i=按图片号、I=按摆放号（与 kitty deleteGraphics 对齐的子集） */
+  private deleteGraphics(cmd: KittyGraphicsCommand): void {
+    const q = cmd.deleteAction
+    if (!q) return
+    if (q === 'A') {
+      this.clearGraphics()
+      return
+    }
+    let touched = false
+    if (q === 'i') {
+      for (const [k, p] of this.graphicsPlacements) {
+        if (p.imageNumber === cmd.imageNumber) {
+          this.graphicsPlacements.delete(k)
+          touched = true
+        }
+      }
+      this.graphicsImages.delete(cmd.imageNumber)
+    } else if (q === 'I' && cmd.placementId > 0) {
+      touched = this.graphicsPlacements.delete(`p${cmd.placementId}`)
+    }
+    if (touched) this.syncGraphics()
+  }
+
+  private clearGraphics(): void {
+    if (this.graphicsPlacements.size === 0 && this.graphicsImages.size === 0) return
+    this.graphicsPlacements.clear()
+    this.graphicsImages.clear()
+    this.graphicsChunks.clear()
+    this.syncGraphics()
+  }
+
+  private syncGraphics(): void {
+    this.renderer.setImages([...this.graphicsPlacements.values()])
+    this.scheduleRender()
   }
 
   /* ─────────────────────────── 渲染 ─────────────────────────── */
@@ -969,6 +1152,14 @@ export class KittyEngine {
     return this.rowsText.join('\n')
   }
 
+  /** 拖尾内部状态（验收脚本用；canvas 回退渲染器返回 null） */
+  trailDebug():
+    | ReturnType<WebGLTerminalRenderer['trailDebug']>
+    | null {
+    const r = this.renderer
+    return r instanceof WebGLTerminalRenderer ? r.trailDebug() : null
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
@@ -977,6 +1168,7 @@ export class KittyEngine {
     if (this.raf !== 0) cancelAnimationFrame(this.raf)
     window.removeEventListener('mousemove', this.onMouseMove)
     this.ime.removeEventListener('keydown', this.onKeyDown)
+    this.clearGraphics()
     this.session?.dispose()
     this.session = null
     this.renderer.dispose()

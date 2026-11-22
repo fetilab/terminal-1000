@@ -25,11 +25,24 @@ import {
   type TerminalEncoding,
 } from '@t1000/shared'
 import { Button, Section } from '../../components/Button'
-import { Badge } from '../../components/Feedback'
+import { Badge, Banner } from '../../components/Feedback'
 import { Checkbox, Field, Select, Switch, TextArea, TextInput } from '../../components/Form'
 import { Icon } from '../../components/Icon'
 import { Modal } from '../../components/Modal'
 import { toast } from '../../components/Toast'
+
+/**
+ * 主进程在本地库锁定时返回的掩码值：代表"该机密字段已加密保存、本次未修改"。
+ *
+ * 处理纪律（缺一不可，否则就是"连接重启后报错、只能删掉重来"那个 bug）：
+ * - **state 里必须原样保留掩码**：保存时主进程靠它识别"未修改"并沿用原密文；
+ *   如果把掩码清成空串，一次无关的编辑就会把已存的凭据抹掉。
+ * - **输入框显示成空**：掩码不是真实凭据，显示出来只会让用户困惑。
+ *   用户不碰 → 掩码原样保存；输入新值 → 覆盖；清空 → 显式删除语义。
+ */
+const LOCKED_MASK = '__LOCKED__'
+const isLockedMaskValue = (v: string | undefined): boolean => v === LOCKED_MASK
+const displaySecret = (v: string): string => (isLockedMaskValue(v) ? '' : v)
 import { invoke } from '../../lib/ipc'
 import { errorText } from '../../lib/format'
 import {
@@ -556,6 +569,20 @@ export default function ConnectionForm(): React.JSX.Element {
         </>
       }
     >
+      {/* 编辑已存连接时，掩码代表"已加密保存、未修改"——给用户明确预期 */}
+      {existing &&
+      (isLockedMaskValue(draft.password) ||
+        isLockedMaskValue(draft.privateKey) ||
+        isLockedMaskValue(draft.passphrase) ||
+        isLockedMaskValue(draft.proxyPassword) ||
+        draft.jumps.some(
+          (j) => isLockedMaskValue(j.password) || isLockedMaskValue(j.privateKey) || isLockedMaskValue(j.passphrase),
+        )) ? (
+        <Banner tone="info">
+          已保存的凭据处于加密状态：对应输入框显示为空表示<b>保持不变</b>，输入新值则覆盖。
+        </Banner>
+      ) : null}
+
       {/* ── 1. 基本信息 ───────────────────────── */}
       <Section>基本信息</Section>
       <div className="t-grid t-grid--2 form-section-body">
@@ -617,10 +644,15 @@ export default function ConnectionForm(): React.JSX.Element {
         </Field>
 
         {showPassword ? (
-          <Field label="密码" className="t-grid__span2" hint="保存在本地库中，由主密码加密">
+          <Field
+            label="密码"
+            className="t-grid__span2"
+            hint={isLockedMaskValue(draft.password) ? '已加密保存——留空保持不变，输入新值则覆盖' : '保存在本地库中，由主密码加密'}
+          >
             <TextInput
               type="password"
-              value={draft.password}
+              value={displaySecret(draft.password)}
+              placeholder={isLockedMaskValue(draft.password) ? '••••••••（已保存）' : ''}
               autoComplete="off"
               onChange={(e) => patch('password', e.target.value)}
             />
@@ -629,12 +661,22 @@ export default function ConnectionForm(): React.JSX.Element {
 
         {showKey ? (
           <>
-            <Field label="私钥" required error={errors.privateKey} className="t-grid__span2" hint="PEM 或 OpenSSH 格式文本">
+            <Field
+              label="私钥"
+              required
+              error={errors.privateKey}
+              className="t-grid__span2"
+              hint={isLockedMaskValue(draft.privateKey) ? '已加密保存——保持空白即沿用已存的私钥' : 'PEM 或 OpenSSH 格式文本'}
+            >
               <TextArea
-                value={draft.privateKey}
+                value={displaySecret(draft.privateKey)}
                 mono
                 rows={5}
-                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                placeholder={
+                  isLockedMaskValue(draft.privateKey)
+                    ? '••••••（私钥已加密保存，保持空白即沿用）'
+                    : '-----BEGIN OPENSSH PRIVATE KEY-----'
+                }
                 invalid={Boolean(errors.privateKey)}
                 onChange={(e) => patch('privateKey', e.target.value)}
               />
@@ -642,7 +684,8 @@ export default function ConnectionForm(): React.JSX.Element {
             <Field label="私钥口令" className="t-grid__span2">
               <TextInput
                 type="password"
-                value={draft.passphrase}
+                value={displaySecret(draft.passphrase)}
+                placeholder={isLockedMaskValue(draft.passphrase) ? '••••••••（已保存）' : ''}
                 autoComplete="off"
                 onChange={(e) => patch('passphrase', e.target.value)}
               />
@@ -840,8 +883,14 @@ export default function ConnectionForm(): React.JSX.Element {
               />
               <TextInput
                 type="password"
-                value={hop.authType === 'privateKey' ? hop.passphrase : hop.password}
-                placeholder={hop.authType === 'privateKey' ? '私钥口令（可选）' : '密码（可选）'}
+                value={displaySecret(hop.authType === 'privateKey' ? hop.passphrase : hop.password)}
+                placeholder={
+                  isLockedMaskValue(hop.authType === 'privateKey' ? hop.passphrase : hop.password)
+                    ? '••••（已保存）'
+                    : hop.authType === 'privateKey'
+                      ? '私钥口令（可选）'
+                      : '密码（可选）'
+                }
                 onChange={(e) =>
                   patch(
                     'jumps',
@@ -989,7 +1038,8 @@ export default function ConnectionForm(): React.JSX.Element {
         <Field label="代理密码">
           <TextInput
             type="password"
-            value={draft.proxyPassword}
+            value={displaySecret(draft.proxyPassword)}
+            placeholder={isLockedMaskValue(draft.proxyPassword) ? '••••••••（已保存）' : ''}
             autoComplete="off"
             onChange={(e) => patch('proxyPassword', e.target.value)}
           />

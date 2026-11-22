@@ -78,6 +78,10 @@ export type IconName =
   | 'network'
   | 'list'
   | 'eye'
+  // 外观
+  | 'palette'
+  | 'image'
+  | 'video'
 
 const S = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' } as const
 const F = { fill: 'currentColor', stroke: 'none' } as const
@@ -104,8 +108,11 @@ const GLYPHS: Record<IconName, JSX.Element> = {
   ),
   tools: (
     <>
-      <path {...S} d="M15.1 5.6a3.9 3.9 0 0 0 4.9 5.2l-8.6 8.6-3.7 1.2 1.2-3.7z" />
-      <path {...S} d="M6.2 6.2l3.1 3.1" />
+      {/* 开口扳手：C 形头部 + 斜握把，几何全部由圆弧与直线构成 */}
+      <path
+        {...S}
+        d="M15.1 6.9a1.1 1.1 0 0 0 0 1.5l1.5 1.5a1.1 1.1 0 0 0 1.5 0l3.6-3.6a5.7 5.7 0 0 1-7.6 7.6l-6.8 6.8a2.1 2.1 0 0 1-3-3l6.8-6.8a5.7 5.7 0 0 1 7.6-7.6l-3.6 3.6z"
+      />
     </>
   ),
   settings: (
@@ -380,6 +387,34 @@ const GLYPHS: Record<IconName, JSX.Element> = {
     <>
       <path {...S} d="M2.8 12S6.6 6.6 12 6.6 21.2 12 21.2 12 17.4 17.4 12 17.4 2.8 12 2.8 12z" />
       <circle {...S} cx="12" cy="12" r="2.8" />
+    </>
+  ),
+
+  // ── 外观 ────────────────────────────────────────────
+  palette: (
+    <>
+      {/* 调色板：缺角椭圆盘 + 四个颜料孔 */}
+      <path
+        {...S}
+        d="M12 3.6c4.7 0 8.4 3.3 8.4 7.5 0 2.2-1.6 3.9-3.7 3.9h-1.9c-1.2 0-2.2.9-2.2 2.1 0 .8.6 1.4.6 2.2 0 1.2-.9 2.1-2.3 2.1A8.4 8.4 0 1 1 12 3.6z"
+      />
+      <circle {...F} cx="8" cy="9.8" r="1.1" />
+      <circle {...F} cx="11.4" cy="7.4" r="1.1" />
+      <circle {...F} cx="15.2" cy="8.4" r="1.1" />
+      <circle {...F} cx="7.2" cy="13.6" r="1.1" />
+    </>
+  ),
+  image: (
+    <>
+      <rect {...S} x="3.6" y="5" width="16.8" height="14" rx="2.2" />
+      <circle {...S} cx="9" cy="10" r="1.6" />
+      <path {...S} d="M5.6 17.2l4.2-4.2 3 3 2.6-2.6 3 3" />
+    </>
+  ),
+  video: (
+    <>
+      <rect {...S} x="3.4" y="6.6" width="12.8" height="10.8" rx="2.2" />
+      <path {...S} d="M16.2 10.8l4.4-2.8v8l-4.4-2.8" />
     </>
   ),
 }

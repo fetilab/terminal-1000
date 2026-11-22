@@ -91,6 +91,74 @@ function disableNagle(client: { setNoDelay?: (v: boolean) => void }): void {
   }
 }
 
+const PEM_PRIVATE_KEY_RE = /^-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----/m
+
+/**
+ * ssh2 真正消费凭据前的**最后一道预检**。
+ *
+ * 背景：重启后渲染层可能拿着锁定态的 `__LOCKED__` 掩码缓存发起连接，
+ * 旧版本直接把掩码喂给 ssh2 —— parseKey 对掩码字面量报的正是
+ * "Cannot parse privateKey: Unsupported key format"，用户无从下手。
+ * 这里把所有"必然失败"的凭据形态拦在 ssh2 之前，换成可行动的错误信息：
+ * - 掩码/含掩码子串 → 提示先解锁主密码；
+ * - 私钥不是 PEM 形态（如 PuTTY 的 .ppk）→ 列出支持的格式与转换办法；
+ * - 需要私钥认证但一个都取不到 → 提示已保存私钥缺失/损坏，重新粘贴。
+ *
+ * 跳板链每一跳同样过这道检查（跳板私钥同样可能带着掩码缓存）。
+ */
+export function assertSshSecretsUsable(conn: SshConnection): void {
+  const maskHit = (v: string | undefined): boolean =>
+    typeof v === 'string' && v.includes('__LOCKED__')
+
+  const check = (
+    owner: string,
+    secrets: { password?: string; privateKey?: string; passphrase?: string },
+  ): void => {
+    for (const [field, value] of Object.entries(secrets)) {
+      if (maskHit(value)) {
+        throw AppError.unauthorized(
+          `${owner}的${field === 'privateKey' ? '私钥' : field === 'passphrase' ? '私钥口令' : '密码'}仍是锁定掩码，请先解锁主密码再连接`,
+        )
+      }
+    }
+    if (secrets.privateKey && !PEM_PRIVATE_KEY_RE.test(secrets.privateKey)) {
+      throw AppError.badRequest(
+        `${owner}的私钥格式无法识别：需要 OpenSSH / PEM / PKCS#8 格式（-----BEGIN ... PRIVATE KEY-----）。` +
+          'PuTTY 的 .ppk 不受支持，请先用 puttygen 导出为 OpenSSH 格式。',
+      )
+    }
+  }
+
+  check('连接', {
+    ...(conn.password !== undefined ? { password: conn.password } : {}),
+    ...(conn.privateKey !== undefined ? { privateKey: conn.privateKey } : {}),
+    ...(conn.passphrase !== undefined ? { passphrase: conn.passphrase } : {}),
+  })
+  for (const hop of conn.jumpChain ?? []) {
+    check(`跳板 ${hop.host}`, {
+      ...(hop.password !== undefined ? { password: hop.password } : {}),
+      ...(hop.privateKey !== undefined ? { privateKey: hop.privateKey } : {}),
+      ...(hop.passphrase !== undefined ? { passphrase: hop.passphrase } : {}),
+    })
+  }
+
+  // 私钥认证却拿不到任何私钥（也没有 agent 可用）且没有密码/键盘交互兜底：
+  // 典型成因是已保存的私钥损坏/丢失 —— 与其让 ssh2 报
+  // "All configured authentication methods failed"，不如直接告诉用户去哪里修
+  const needKey = conn.authType === 'privateKey' || conn.authType === 'identity'
+  const hasKey = Boolean(conn.privateKey) || Boolean(process.env['SSH_AUTH_SOCK'])
+  const order = conn.authOrder ?? []
+  const hasFallback =
+    Boolean(conn.password) ||
+    order.some((m) => m === 'keyboardInteractive' || m === 'keyboard')
+  if (needKey && !hasKey && !hasFallback) {
+    throw AppError.badRequest(
+      '没有可用的私钥：已保存的私钥缺失或已损坏，请编辑这条连接重新粘贴私钥' +
+        '（保存前先解锁主密码）',
+    )
+  }
+}
+
 export class SshSession {
   readonly sessionId: string
   readonly connection: SshConnection
@@ -154,6 +222,9 @@ export class SshSession {
     const conn = this.connection
 
     try {
+      // ssh2 之前先拦掉"必然失败"的凭据形态（掩码缓存 / 非法私钥格式）——
+      // 否则用户看到的是 ssh2 的 "Cannot parse privateKey: Unsupported key format"
+      assertSshSecretsUsable(conn)
       const socket = await this.buildSocket()
 
       const config: ConnectConfig = {

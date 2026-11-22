@@ -63,6 +63,25 @@ export interface SearchSpan {
   x2: number
 }
 
+/** 一条图形协议图片摆放（引擎解码后的渲染输入） */
+export interface ImagePlacement {
+  imageNumber: number
+  /** 内容变化时递增，驱动纹理重传 */
+  revision: number
+  /** 钉住的绝对行号（随内容滚动，回看时跟着移动） */
+  absLine: number
+  /** 起始列 */
+  col: number
+  /** 单元格内的像素纵向偏移 */
+  yOffsetPx: number
+  /** z<0 文字下、z>=0 文字上（kitty 图形协议语义） */
+  z: number
+  source: CanvasImageSource
+  /** 图片像素尺寸（换算成格数用） */
+  pxW: number
+  pxH: number
+}
+
 export interface RendererOptions {
   ligatures: boolean
   /** 行间斑马纹（这个渲染器能真正画出来） */
@@ -78,12 +97,13 @@ layout(location=3) in vec4 a_flags;
 
 uniform vec2 u_res;
 uniform vec2 u_cell;
-uniform float u_pass;   // 0 = 背景/实心, 1 = 字形, 2 = 装饰线
+uniform float u_pass;   // 0 = 背景/实心, 1 = 字形, 2 = 装饰线, 3 = 图形协议图片
 
 out vec2 v_uv;
 out vec4 v_color;
 out vec4 v_flags;
 out vec2 v_local;
+out vec2 v_cellPos;
 
 const vec2 QUAD[6] = vec2[6](
   vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),
@@ -95,7 +115,9 @@ void main() {
   // pass 0（背景/光标）用 flags.xy 当尺寸倍数：背景是 1×1，光标可以是细条；
   // pass 1（字形）用 flags.z 当列数倍数：连字/宽字符的 quad 要横跨 span 格
   vec2 size = vec2(1.0);
-  if (u_pass < 0.5) size = a_flags.xy;
+  // pass 0（背景/光标/拖尾顶点）与 pass 3（图片）都用 flags.xy 当尺寸倍数；
+  // pass 1（字形）用 flags.z 当列数倍数：连字/宽字符的 quad 要横跨 span 格
+  if (u_pass < 0.5 || u_pass > 2.5) size = a_flags.xy;
   else if (u_pass < 1.5) size = vec2(max(a_flags.z, 1.0), 1.0);
   vec2 px = (a_cell + corner * size) * u_cell;
   vec2 clip = vec2(px.x / u_res.x * 2.0 - 1.0, 1.0 - px.y / u_res.y * 2.0);
@@ -104,6 +126,7 @@ void main() {
   v_color = a_color;
   v_flags = a_flags;
   v_local = corner;
+  v_cellPos = a_cell + corner * size;
 }`
 
 const FRAG = `#version 300 es
@@ -112,17 +135,29 @@ in vec2 v_uv;
 in vec4 v_color;
 in vec4 v_flags;
 in vec2 v_local;
+in vec2 v_cellPos;
 
 uniform sampler2D u_atlas;
+uniform sampler2D u_img;
 uniform float u_pass;
 uniform float u_blinkOff;
+// 拖尾遮罩：光标包围盒（cell 坐标 x0,x1,y0,y1）。只在画拖尾四边形时开启——
+// kitty shaders/trail.slang：拖尾在光标包围盒内的部分直接乘掉 alpha。
+uniform vec4 u_maskRect;
+uniform float u_maskOn;
 
 out vec4 outColor;
 
 void main() {
   if (u_pass < 0.5) {
     // 背景/光标/图片：纯色，alpha 由 CPU 侧算好
-    outColor = v_color;
+    vec4 c = v_color;
+    if (u_maskOn > 0.5) {
+      float inX = step(u_maskRect.x, v_cellPos.x) * step(v_cellPos.x, u_maskRect.y);
+      float inY = step(u_maskRect.z, v_cellPos.y) * step(v_cellPos.y, u_maskRect.w);
+      c.a *= 1.0 - inX * inY;
+    }
+    outColor = c;
     return;
   }
   if (u_pass < 1.5) {
@@ -131,6 +166,11 @@ void main() {
     if (tex.a < 0.02) discard;
     vec3 rgb = mix(v_color.rgb, tex.rgb, step(0.5, v_flags.x));
     outColor = vec4(rgb, tex.a * v_color.a);
+    return;
+  }
+  if (u_pass > 2.5) {
+    // kitty 图形协议：图片四边形，uv 是 0..1 全图
+    outColor = texture(u_img, v_uv) * vec4(1.0, 1.0, 1.0, v_color.a);
     return;
   }
   // 装饰线：u_flags.z 是样式（1 直/2 双/3 波浪/4 点/5 虚/9 删除线）
@@ -169,6 +209,10 @@ export class WebGLTerminalRenderer {
   private readonly buffer: WebGLBuffer
   private readonly cursorBuffer: WebGLBuffer
   private readonly cursorVao: WebGLVertexArrayObject
+  private readonly trailBuffer: WebGLBuffer
+  private readonly trailVao: WebGLVertexArrayObject
+  private readonly imageBuffer: WebGLBuffer
+  private readonly imageVao: WebGLVertexArrayObject
   private atlasTex: WebGLTexture | null = null
   private theme: RenderTheme
   private opts: RendererOptions
@@ -188,19 +232,53 @@ export class WebGLTerminalRenderer {
   private disposed = false
   private dpr: number
 
-  /* ── 光标动画（kitty cursor_trail 同款观感） ──
-   * 光标位置用指数插值滑向目标（快速启动、柔和停靠）；跨格移动（≥2 格）
-   * 时把当前展示位置压入拖尾队列，残影逐帧衰减。全部在格坐标系插值，
-   * 与 DPR/缩放无关。 */
-  private trailDepth = 3
-  private animInit = false
-  private animX = 0
-  private animY = 0
-  private lastTx = -1
-  private lastTy = -1
-  private trail: { x: number; y: number; a: number }[] = []
+  /* ── kitty 图形协议（graphics.c 的渲染端）──
+   * 引擎负责解码/增量/删除逻辑，渲染器只管纹理上传与摆放。
+   * 图片以「摆放槽」为单位：absLine 让图片钉在内容行上（随回看滚动移动，
+   * 与 kitty 图片跟随滚动一致）；z<0 画在文字下，z>=0 画在文字上。
+   */
+  private imagePlacements: ImagePlacement[] = []
+  private imageTextures = new Map<number, { tex: WebGLTexture; w: number; h: number; rev: number }>()
+
+  /* ── 光标拖尾：kitty cursor_trail.c 的逐行移植 ──
+   *
+   * kitty 的拖尾**不是**残影序列，而是一个四边形：它的 4 个角各自独立地
+   * 指数缓动追赶光标矩形的 4 个角（每角的衰减时间按「角相对光标中心的
+   * 方向点积」在 decay_fast/slow 之间插值）。光标本体永远画在真实位置，
+   * 拖尾四边形在光标包围盒内的部分由片元着色器遮掉 —— 所以原版任何
+   * 时刻都只有一个光标，拖尾看起来是「拉着光标跑的彩色拖布」。
+   */
+  /** kitty cursor_trail：光标停留多少毫秒后才更新拖尾目标（0 = 整体关闭） */
+  private trailMs = 3
+  /** kitty cursor_trail_decay 的两个值（秒）：贴近光标中心的角衰减快 */
+  private trailDecayFast = 0.1
+  private trailDecaySlow = 0.4
+  /** kitty cursor_trail_start_threshold：两轴位移都小于阈值则不启动拖尾 */
+  private trailThresholdX = 2
+  private trailThresholdY = 2
+
+  /** 光标目标矩形（cell 坐标；x0=left x1=right y0=top y1=bottom） */
+  private edgeX: [number, number] | null = null
+  private edgeY: [number, number] | null = null
+  private prevEdgeX: [number, number] = [0, 0]
+  private prevEdgeY: [number, number] = [0, 0]
+  private prevEdgeValid = false
+  private targetUpdated = false
+  /** 拖尾四边形的 4 个角（角序：0=右上 1=右下 2=左上 3=左下，与 kitty 一致） */
+  private cornerX: [number, number, number, number] = [0, 0, 0, 0]
+  private cornerY: [number, number, number, number] = [0, 0, 0, 0]
+  private trailOpacity = 0
+  private trailUpdatedAt = 0
+  /** 光标最后一次被程序移动的时间（kitty position_changed_by_client_at） */
+  private cursorChangedAt = 0
+  private trailNeedsRender = false
+  private cursorVisibleMode = true
+  /** 上一帧的原始光标位置（检测程序驱动的移动） */
+  private lastRawCursor: { x: number; y: number; sb: number } | null = null
   private focused = true
   private shapeOverride: 'block' | 'underline' | 'bar' | null = null
+  private inactiveStyle: 'outline' | 'block' | 'beam' | 'underline' | 'none' = 'outline'
+  private cursorCount = 0
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -230,13 +308,24 @@ export class WebGLTerminalRenderer {
     const buffer = gl.createBuffer()
     const cursorBuffer = gl.createBuffer()
     const cursorVao = gl.createVertexArray()
-    if (!vao || !buffer || !cursorBuffer || !cursorVao) throw new Error('WebGL 资源分配失败')
+    const trailBuffer = gl.createBuffer()
+    const trailVao = gl.createVertexArray()
+    const imageBuffer = gl.createBuffer()
+    const imageVao = gl.createVertexArray()
+    if (!vao || !buffer || !cursorBuffer || !cursorVao || !trailBuffer || !trailVao || !imageBuffer || !imageVao)
+      throw new Error('WebGL 资源分配失败')
     this.vao = vao
     this.buffer = buffer
     this.cursorBuffer = cursorBuffer
     this.cursorVao = cursorVao
+    this.trailBuffer = trailBuffer
+    this.trailVao = trailVao
+    this.imageBuffer = imageBuffer
+    this.imageVao = imageVao
     this.setupVao(this.vao, this.buffer)
     this.setupVao(this.cursorVao, this.cursorBuffer)
+    this.setupVao(this.trailVao, this.trailBuffer, true)
+    this.setupVao(this.imageVao, this.imageBuffer, true)
     gl.disable(gl.DEPTH_TEST)
     gl.enable(gl.BLEND)
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
@@ -266,23 +355,24 @@ export class WebGLTerminalRenderer {
     return prog
   }
 
-  private setupVao(vao: WebGLVertexArrayObject, buffer: WebGLBuffer): void {
+  private setupVao(vao: WebGLVertexArrayObject, buffer: WebGLBuffer, nonInstanced = false): void {
     const gl = this.gl
     gl.bindVertexArray(vao)
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
     const loc = (name: string): number => gl.getAttribLocation(this.program, name)
+    const divisor = nonInstanced ? 0 : 1
     gl.enableVertexAttribArray(loc('a_cell'))
     gl.vertexAttribPointer(loc('a_cell'), 2, gl.FLOAT, false, STRIDE, 0)
-    gl.vertexAttribDivisor(loc('a_cell'), 1)
+    gl.vertexAttribDivisor(loc('a_cell'), divisor)
     gl.enableVertexAttribArray(loc('a_uv'))
     gl.vertexAttribPointer(loc('a_uv'), 4, gl.FLOAT, false, STRIDE, 2 * 4)
-    gl.vertexAttribDivisor(loc('a_uv'), 1)
+    gl.vertexAttribDivisor(loc('a_uv'), divisor)
     gl.enableVertexAttribArray(loc('a_color'))
     gl.vertexAttribPointer(loc('a_color'), 4, gl.FLOAT, false, STRIDE, 6 * 4)
-    gl.vertexAttribDivisor(loc('a_color'), 1)
+    gl.vertexAttribDivisor(loc('a_color'), divisor)
     gl.enableVertexAttribArray(loc('a_flags'))
     gl.vertexAttribPointer(loc('a_flags'), 4, gl.FLOAT, false, STRIDE, 10 * 4)
-    gl.vertexAttribDivisor(loc('a_flags'), 1)
+    gl.vertexAttribDivisor(loc('a_flags'), divisor)
     gl.bindVertexArray(null)
   }
 
@@ -307,19 +397,34 @@ export class WebGLTerminalRenderer {
     for (let y = 0; y < this.rows; y += 1) this.dirty.add(y)
   }
 
+  /** kitty 图形协议：同步图片摆放（引擎每次变更全量下发） */
+  setImages(placements: ImagePlacement[]): void {
+    this.imagePlacements = placements
+  }
+
   setBlinkOff(off: boolean): boolean {
     if (this.blinkOff === off) return false
     this.blinkOff = off
     return true
   }
 
-  /** 拖尾深度（kitty cursor_trail；0 = 关闭，动画直接贴目标） */
-  setCursorTrail(depth: number): void {
-    this.trailDepth = Math.max(0, Math.min(8, Math.round(depth)))
-    if (this.trailDepth === 0) {
-      this.trail = []
-      this.animInit = false
-    }
+  /** 光标拖尾阈值（kitty cursor_trail，毫秒；0 = 关闭） */
+  setCursorTrail(ms: number): void {
+    this.trailMs = Math.max(0, Math.min(1000, ms))
+    if (this.trailMs === 0) this.snapTrail()
+  }
+
+  /** kitty cursor_trail_decay：贴近光标的角衰减快、远端角衰减慢 */
+  setTrailDecay(fastSeconds: number, slowSeconds: number): void {
+    const fast = Math.max(0.01, fastSeconds)
+    this.trailDecayFast = fast
+    this.trailDecaySlow = Math.max(fast, slowSeconds)
+  }
+
+  /** kitty cursor_trail_start_threshold（x/y 两轴，格数） */
+  setTrailThreshold(x: number, y: number): void {
+    this.trailThresholdX = Math.max(0, Math.round(x))
+    this.trailThresholdY = Math.max(0, Math.round(y))
   }
 
   /** 光标形状覆盖（设置项 cursorStyle；null = 跟随内核上报） */
@@ -331,18 +436,237 @@ export class WebGLTerminalRenderer {
     this.focused = focused
   }
 
-  /** 动画是否还在跑（引擎据此决定要不要继续排下一帧） */
-  get animActive(): boolean {
-    const meta = this.meta
-    if (!meta || !meta.cursor.visible || meta.cursor.shape === 'none') return this.trail.length > 0
-    const t = this.animTarget()
-    const moving = Math.abs(t.x - this.animX) > 0.02 || Math.abs(t.y - this.animY) > 0.02
-    return moving || this.trail.length > 0
+  /** 光标被程序移动（kitty position_changed_by_client_at 的数据侧时刻） */
+  noteCursorMoved(): void {
+    this.cursorChangedAt = performance.now()
   }
 
-  private animTarget(): { x: number; y: number } {
-    const meta = this.meta as KittyMeta
-    return { x: meta.cursor.x, y: meta.scrolledBy + meta.cursor.y }
+  /** 动画是否还在跑（引擎据此决定要不要继续排下一帧） */
+  get animActive(): boolean {
+    // 目标还没跟上真实光标（trailMs 门控期内/目标尚未更新）：必须继续排帧，
+    // 否则门控打开后没有渲染机会，拖尾永远不动
+    const rect = this.cursorRect()
+    if (rect && (!this.edgeX || !this.edgeY)) return true
+    if (rect && this.edgeX && this.edgeY) {
+      if (
+        rect[0] !== this.edgeX[0] ||
+        rect[1] !== this.edgeX[1] ||
+        rect[2] !== this.edgeY[0] ||
+        rect[3] !== this.edgeY[1]
+      ) {
+        return true
+      }
+    }
+    return this.trailNeedsRender || (!this.cursorVisibleMode && this.trailOpacity > 0)
+  }
+
+  /** 拖尾立刻贴合光标（关动画/重排时用） */
+  private snapTrail(): void {
+    if (this.edgeX && this.edgeY) {
+      this.cornerX = [this.edgeX[1], this.edgeX[1], this.edgeX[0], this.edgeX[0]]
+      this.cornerY = [this.edgeY[0], this.edgeY[1], this.edgeY[0], this.edgeY[1]]
+    }
+    this.trailNeedsRender = false
+  }
+
+  /* ─────────────── kitty cursor_trail.c 移植（几何与推进） ─────────────── */
+
+  /** 当前光标的真实矩形（cell 坐标）。光标不可见/在视口外 → null */
+  private cursorRect(): [number, number, number, number] | null {
+    const meta = this.meta
+    if (!meta || !meta.cursor.visible || meta.cursor.shape === 'none') return null
+    // 光标住在 live 区（绝对行 = scrollbackLength + cursor.y）；回看时换算成
+    // 视口行，落到视口外就不画（kitty 同样不画视口外的光标）
+    const y = meta.scrolledBy + meta.cursor.y
+    if (y < 0 || y >= this.rows) return null
+    const x = meta.cursor.x
+    // 形状：设置项覆盖 > 内核上报；失焦按 cursorInactiveStyle 降级。
+    // 设置项里的 'bar' 与内核上报的 'beam' 是同一种形状（kitty 叫 bar）
+    const shape = this.focused ? (this.shapeOverride ?? meta.cursor.shape) : this.cursorInactiveShape()
+    if (shape === 'none') return null
+    // kitty：beam/underline 的粗细是绝对 pt，按单元格像素尺寸换算成格数
+    const cellWcss = this.atlas.cellW / this.dpr
+    const cellHcss = this.atlas.cellH / this.dpr
+    if (shape === 'beam' || shape === 'bar') {
+      const w = Math.max(0.02, Math.min(1, this.beamThicknessPx / cellWcss))
+      return [x, x + w, y, y + 1]
+    }
+    if (shape === 'underline') {
+      const h = Math.max(0.02, Math.min(1, this.underlineThicknessPx / cellHcss))
+      return [x, x + 1, y + 1 - h, y + 1]
+    }
+    // block / hollow 都是整格
+    return [x, x + 1, y, y + 1]
+  }
+
+  /** kitty cursor_beam_thickness（pt ≈ css px） */
+  private beamThicknessPx = 2
+  /** kitty cursor_underline_thickness */
+  private underlineThicknessPx = 2
+
+  setBeamThicknessPx(px: number): void {
+    this.beamThicknessPx = Math.max(1, px)
+  }
+
+  setUnderlineThicknessPx(px: number): void {
+    this.underlineThicknessPx = Math.max(1, px)
+  }
+
+  private updateTrail(now: number): void {
+    const meta = this.meta
+    this.cursorVisibleMode = Boolean(meta && meta.cursor.visible && meta.cursor.shape !== 'none')
+    const rect = this.cursorRect()
+    // 光标位置变化（程序驱动）：对比**原始光标位置**而不是拖尾目标——
+    // kitty 的 position_changed_by_client_at 在客户端移动光标时置一次，
+    // 若每帧对着没跟上来的目标重新计时，门控会死锁（目标永远不更新）。
+    // 回看滚动会改变光标的视口位置，也算一次移动。
+    if (meta) {
+      const raw = { x: meta.cursor.x, y: meta.cursor.y, sb: meta.scrolledBy }
+      const last = this.lastRawCursor
+      if (last && (raw.x !== last.x || raw.y !== last.y || raw.sb !== last.sb)) {
+        this.cursorChangedAt = now
+      }
+      this.lastRawCursor = raw
+    }
+    // 目标更新门控：光标停稳 trailMs 毫秒后才跟随（kitty update_cursor_trail）
+    const gated = this.trailMs > 0 && now - this.cursorChangedAt < this.trailMs
+    if (rect && !gated) this.updateTrailTarget(rect)
+    this.updateTrailCorners(now)
+    this.updateTrailOpacity(now)
+    this.updateTrailNeedsRender()
+    this.trailUpdatedAt = now
+  }
+
+  /** kitty update_cursor_trail_target：目标边变化时记录上一位置 */
+  private updateTrailTarget(rect: [number, number, number, number]): void {
+    const [left, right, top, bottom] = rect
+    const changed =
+      this.edgeX !== null &&
+      (this.edgeX[0] !== left ||
+        this.edgeX[1] !== right ||
+        (this.edgeY !== null && (this.edgeY[0] !== top || this.edgeY[1] !== bottom)))
+    if (changed && this.prevEdgeValid) {
+      this.prevEdgeX = [this.edgeX![0], this.edgeX![1]]
+      this.prevEdgeY = [this.edgeY![0], this.edgeY![1]]
+    }
+    if (changed || this.edgeX === null || this.edgeY === null) {
+      this.targetUpdated = true
+      this.prevEdgeValid = true
+      this.edgeX = [left, right]
+      this.edgeY = [top, bottom]
+    }
+  }
+
+  /**
+   * kitty update_cursor_trail_corners + should_skip_cursor_trail_update。
+   * 每个角以 `step = 1 - 2^(-10·dt/decay)` 追赶目标角；decay 按「角相对
+   * 光标中心的方向点积」在 fast/slow 之间插值（面向移动方向的角快）。
+   */
+  private updateTrailCorners(now: number): void {
+    const CORNER_IX = [1, 1, 0, 0] as const
+    const CORNER_IY = [0, 1, 1, 0] as const
+    if (!this.edgeX || !this.edgeY) return
+
+    // 起始阈值：拖尾四边形离目标已经够近（小移动）就不启动
+    let skip = false
+    if ((this.trailThresholdX > 0 || this.trailThresholdY > 0) && !this.trailNeedsRender) {
+      const dx = Math.round(this.cornerX[0] - this.edgeX[1])
+      const dy = Math.round(this.cornerY[0] - this.edgeY[0])
+      if (Math.abs(dx) <= this.trailThresholdX && Math.abs(dy) <= this.trailThresholdY) skip = true
+    }
+    // 光标隐藏且拖尾已淡出：直接贴合
+    if (!this.cursorVisibleMode && this.trailOpacity <= 0) skip = true
+
+    if (skip) {
+      this.targetUpdated = false
+      this.cornerX = [
+        this.edgeX[CORNER_IX[0]],
+        this.edgeX[CORNER_IX[1]],
+        this.edgeX[CORNER_IX[2]],
+        this.edgeX[CORNER_IX[3]],
+      ]
+      this.cornerY = [
+        this.edgeY[CORNER_IY[0]],
+        this.edgeY[CORNER_IY[1]],
+        this.edgeY[CORNER_IY[2]],
+        this.edgeY[CORNER_IY[3]],
+      ]
+      return
+    }
+    if (this.trailUpdatedAt >= now) return
+    const dt = Math.min(0.1, (now - this.trailUpdatedAt) / 1000)
+
+    const centerX = (this.edgeX[0] + this.edgeX[1]) * 0.5
+    const centerY = (this.edgeY[0] + this.edgeY[1]) * 0.5
+    const diag2 = Math.hypot(this.edgeX[1] - this.edgeX[0], this.edgeY[1] - this.edgeY[0]) * 0.5
+    const dx: number[] = [0, 0, 0, 0]
+    const dy: number[] = [0, 0, 0, 0]
+    const dot: number[] = [0, 0, 0, 0]
+    for (let i = 0; i < 4; i += 1) {
+      const tix = CORNER_IX[i] as 0 | 1
+      const tiy = CORNER_IY[i] as 0 | 1
+      dx[i] = this.edgeX[tix] - this.cornerX[i]!
+      dy[i] = this.edgeY[tiy] - this.cornerY[i]!
+      if (Math.abs(dx[i]!) < 1e-6 && Math.abs(dy[i]!) < 1e-6) {
+        dx[i] = 0
+        dy[i] = 0
+        dot[i] = 0
+        continue
+      }
+      // 方向向量与「光标中心到角」的点积归一化：角越面向光标移动方向越快
+      dot[i] =
+        (dx[i]! * (this.edgeX[tix] - centerX) + dy[i]! * (this.edgeY[tiy] - centerY)) /
+        diag2 /
+        Math.hypot(dx[i]!, dy[i]!)
+    }
+    let minDot = Infinity
+    let maxDot = -Infinity
+    for (let i = 0; i < 4; i += 1) {
+      minDot = Math.min(minDot, dot[i]!)
+      maxDot = Math.max(maxDot, dot[i]!)
+    }
+    for (let i = 0; i < 4; i += 1) {
+      if ((dx[i] === 0 && dy[i] === 0) || minDot === Infinity) continue
+      const decay =
+        minDot === maxDot
+          ? this.trailDecaySlow
+          : this.trailDecaySlow +
+            (this.trailDecayFast - this.trailDecaySlow) * ((dot[i]! - minDot) / (maxDot - minDot))
+      const step = 1 - Math.pow(2, (-10 * dt) / decay)
+      this.cornerX[i] = this.cornerX[i]! + dx[i]! * step
+      this.cornerY[i] = this.cornerY[i]! + dy[i]! * step
+    }
+  }
+
+  /** kitty update_cursor_trail_opacity：光标可见时淡入到 1，隐藏时淡出 */
+  private updateTrailOpacity(now: number): void {
+    if (this.trailUpdatedAt >= now) return
+    const dt = Math.min(0.1, (now - this.trailUpdatedAt) / 1000)
+    if (this.cursorVisibleMode) {
+      this.trailOpacity = Math.min(1, this.trailOpacity + dt / this.trailDecaySlow)
+    } else {
+      this.trailOpacity = Math.max(0, this.trailOpacity - dt / this.trailDecaySlow)
+    }
+  }
+
+  /** kitty update_cursor_trail_needs_render：任一角离目标 ≥ 半格就继续动画 */
+  private updateTrailNeedsRender(): void {
+    if (!this.edgeX || !this.edgeY) {
+      this.trailNeedsRender = false
+      return
+    }
+    const CORNER_IX = [1, 1, 0, 0] as const
+    const CORNER_IY = [0, 1, 1, 0] as const
+    let needed = false
+    for (let i = 0; i < 4; i += 1) {
+      const dx = Math.abs(this.edgeX[CORNER_IX[i] as 0 | 1] - this.cornerX[i]!)
+      const dy = Math.abs(this.edgeY[CORNER_IY[i] as 0 | 1] - this.cornerY[i]!)
+      if (0.5 <= dx || 0.5 <= dy) {
+        needed = true
+        break
+      }
+    }
+    this.trailNeedsRender = needed
   }
 
   /** 画布尺寸（CSS 像素）；返回是否需要重排 */
@@ -369,6 +693,10 @@ export class WebGLTerminalRenderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer)
     gl.bufferData(gl.ARRAY_BUFFER, this.instances.byteLength, gl.DYNAMIC_DRAW)
     for (let y = 0; y < rows; y += 1) this.dirty.add(y)
+    // 重排后拖尾几何可能落在旧网格空间里，直接贴合光标（kitty 在 live resize
+    // 期间跳过拖尾更新，观感等价）
+    this.snapTrail()
+    this.prevEdgeValid = false
   }
 
   applyFrame(meta: KittyMeta, rows: KittyRow[], full: boolean): void {
@@ -552,7 +880,9 @@ export class WebGLTerminalRenderer {
 
       // 装饰线
       const od = decoBase + x * FLOATS
-      const decoColor = this.theme.underline ?? fg
+      // SGR 58：SGR 4:3 附带的下划线颜色（word 5），0 = 默认色
+      const decoWord = grid[i + 5] ?? 0
+      const decoColor = decoWord !== 0 ? this.packed(decoWord, false) : (this.theme.underline ?? fg)
       if (underline > 0 || strike) {
         const dc = this.rgba(decoColor)
         inst[od] = x
@@ -606,6 +936,10 @@ export class WebGLTerminalRenderer {
     const gl = this.gl
     const N = this.cols * this.rows
     if (N === 0) return
+
+    // 拖尾推进每帧一次（kitty 在 draw_cells 里做同样的事）；
+    // 光标不可见时也要跑——拖尾 opacity 还在淡出。
+    this.updateTrail(performance.now())
 
     if (!this.atlasTex) {
       const tex = gl.createTexture()
@@ -661,56 +995,165 @@ export class WebGLTerminalRenderer {
     }
 
     drawPass(0)
+    this.drawImages('below')
     drawPass(1)
     drawPass(2)
-    this.drawCursor()
+    this.drawImages('above')
+    this.drawTrailQuad()
+    this.drawCursorQuad()
     gl.bindVertexArray(null)
   }
 
-  private drawCursor(): void {
+  /**
+   * kitty graphics.c 的绘制端：图片按 zIndex 分两层（below=文字下/above=文字上）。
+   * 视口行 = absLine - (scrollbackLength - scrolledBy)，回看时图片跟着内容走。
+   */
+  private drawImages(layer: 'below' | 'above'): void {
+    if (this.imagePlacements.length === 0) return
     const meta = this.meta
-    if (!meta || !meta.cursor.visible || meta.cursor.shape === 'none') return
-    const t = this.animTarget()
-    if (t.y < 0 || t.y >= this.rows) return
+    if (!meta) return
     const gl = this.gl
-
-    // ── 动画推进（每帧一次，由引擎在 animActive 时持续排帧） ──
-    if (!this.animInit || this.trailDepth === 0) {
-      this.animX = t.x
-      this.animY = t.y
-      this.animInit = true
-    } else {
-      // 跨格移动（≥2 格）且开了拖尾：把当前展示位置留在原地渐隐
-      if (t.x !== this.lastTx || t.y !== this.lastTy) {
-        if (Math.abs(t.x - this.animX) + Math.abs(t.y - this.animY) >= 2) {
-          this.trail.push({ x: this.animX, y: this.animY, a: 0.8 })
-          while (this.trail.length > this.trailDepth) this.trail.shift()
-        }
-        this.animInit = true
+    const abs0 = meta.scrollbackLength - meta.scrolledBy
+    const cellW = this.atlas.cellW
+    const cellH = this.atlas.cellH
+    // 1) 纹理同步：只增不删（删除统一在 setImages 不成立时由下次全量同步清理）
+    for (const p of this.imagePlacements) {
+      let t = this.imageTextures.get(p.imageNumber)
+      if (!t) {
+        const tex = gl.createTexture()
+        if (!tex) continue
+        t = { tex, w: 0, h: 0, rev: -1 }
+        this.imageTextures.set(p.imageNumber, t)
       }
-      this.animX += (t.x - this.animX) * 0.38
-      this.animY += (t.y - this.animY) * 0.38
-      if (Math.abs(t.x - this.animX) < 0.02) this.animX = t.x
-      if (Math.abs(t.y - this.animY) < 0.02) this.animY = t.y
+      if (t.rev !== p.revision || t.w !== p.pxW || t.h !== p.pxH) {
+        gl.bindTexture(gl.TEXTURE_2D, t.tex)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, p.source as TexImageSource)
+        t.w = p.pxW
+        t.h = p.pxH
+        t.rev = p.revision
+      }
     }
-    this.lastTx = t.x
-    this.lastTy = t.y
-    // 残影衰减（kitty cursor_trail_decay 0.1–0.4 的观感：半衰约 3–4 帧）
-    for (const p of this.trail) p.a *= 0.62
-    this.trail = this.trail.filter((p) => p.a > 0.06)
+    const wanted = new Set(this.imagePlacements.map((p) => p.imageNumber))
+    for (const [num, t] of this.imageTextures) {
+      if (!wanted.has(num)) {
+        gl.deleteTexture(t.tex)
+        this.imageTextures.delete(num)
+      }
+    }
 
+    // 2) 逐摆放画四边形（图片少，逐个 bufferData 成本可忽略）
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_pass'), 3)
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_maskOn'), 0)
+    gl.uniform1i(gl.getUniformLocation(this.program, 'u_img'), 1)
+    gl.bindVertexArray(this.imageVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.imageBuffer)
+    for (const p of this.imagePlacements) {
+      if ((layer === 'below') !== (p.z < 0)) continue
+      const t = this.imageTextures.get(p.imageNumber)
+      if (!t) continue
+      const vy = p.absLine - abs0
+      const h = p.pxH / cellH
+      if (vy + h <= 0 || vy >= this.rows) continue
+      const wCells = p.pxW / cellW
+      const yOff = p.yOffsetPx / cellH
+      const verts = new Float32Array(6 * FLOATS)
+      // 角序与 VERT 的 QUAD 一致：先两个三角形，uv 左上 (0,0) 右下 (1,1)
+      const corners: Array<[number, number, number, number]> = [
+        [0, 0, 0, 0],
+        [1, 0, 1, 0],
+        [0, 1, 0, 1],
+        [0, 1, 0, 1],
+        [1, 0, 1, 0],
+        [1, 1, 1, 1],
+      ]
+      for (let v = 0; v < 6; v += 1) {
+        const [cx, cy, u, vv] = corners[v] as [number, number, number, number]
+        const b = v * FLOATS
+        verts[b] = p.col + cx * wCells
+        verts[b + 1] = vy + yOff + cy * h
+        verts[b + 2] = u
+        verts[b + 3] = vv
+        verts[b + 4] = u
+        verts[b + 5] = vv
+        verts[b + 6] = 0
+        verts[b + 7] = 0
+        verts[b + 8] = 0
+        verts[b + 9] = 1
+        verts[b + 10] = wCells
+        verts[b + 11] = h
+      }
+      gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_2D, t.tex)
+      gl.drawArrays(gl.TRIANGLES, 0, 6)
+    }
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindVertexArray(null)
+  }
+
+  /**
+   * 拖尾四边形（kitty shaders.c draw_cursor_trail + shaders/trail.slang）。
+   * 4 个角独立缓动 → 一个可能拉伸变形的实心四边形；在光标包围盒内的
+   * 片元被遮掉。非实例化绘制：6 个顶点直接来自 corner 数组。
+   */
+  private drawTrailQuad(): void {
+    if (this.trailOpacity <= 0 || !this.edgeX || !this.edgeY) return
+    const gl = this.gl
+    // 角序（kitty corner_index）：0=右上 1=右下 2=左上 3=左下 → 三角形 (0,1,2)(2,1,3)
+    const order = [0, 1, 2, 2, 1, 3]
+    const verts = new Float32Array(order.length * FLOATS)
     const color = this.theme.cursor
-    // 形状：设置项覆盖 > 内核上报；失焦按 cursorInactiveStyle 降级（outline=空心）
-    let shape: string
-    if (!this.focused) shape = this.cursorInactiveShape()
-    else shape = this.shapeOverride ?? meta.cursor.shape
-    if (shape === 'none') return
+    for (let v = 0; v < order.length; v += 1) {
+      const ci = order[v] as 0 | 1 | 2 | 3
+      const base = v * FLOATS
+      // a_cell 直接是角的格坐标；flags.xy = 尺寸 0 → 顶点正好落在角上
+      verts[base] = this.cornerX[ci]
+      verts[base + 1] = this.cornerY[ci]
+      verts[base + 6] = color.r
+      verts[base + 7] = color.g
+      verts[base + 8] = color.b
+      verts[base + 9] = color.a * this.trailOpacity
+      // flags 全 0
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.trailBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
+    gl.bindVertexArray(this.trailVao)
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_pass'), 0)
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_maskOn'), 1)
+    gl.uniform4f(
+      gl.getUniformLocation(this.program, 'u_maskRect'),
+      this.edgeX[0],
+      this.edgeX[1],
+      this.edgeY[0],
+      this.edgeY[1],
+    )
+    gl.drawArrays(gl.TRIANGLES, 0, order.length)
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_maskOn'), 0)
+    gl.bindVertexArray(null)
+  }
 
-    const build = (px: number, py: number, ox: number, oy: number, w: number, h: number, c: Rgba): void => {
+  /**
+   * 光标本体：永远画在真实位置（kitty 的 cursor 由 cell 渲染管线在真实
+   * 位置绘制，拖尾是独立四边形）——任何时刻屏幕上只有一个光标。
+   */
+  private drawCursorQuad(): void {
+    const rect = this.cursorRect()
+    if (!rect) return
+    const [left, right, top, bottom] = rect
+    const gl = this.gl
+    const color = this.theme.cursor
+    const shape = this.focused ? (this.shapeOverride ?? this.meta!.cursor.shape) : this.cursorInactiveShape()
+
+    const build = (px: number, py: number, w: number, h: number, c: Rgba): void => {
       const base = this.cursorCount * FLOATS
       const inst = this.cursorInstances
-      inst[base] = px + ox
-      inst[base + 1] = py + oy
+      inst[base] = px
+      inst[base + 1] = py
       inst[base + 2] = 0
       inst[base + 3] = 0
       inst[base + 4] = 0
@@ -719,7 +1162,6 @@ export class WebGLTerminalRenderer {
       inst[base + 7] = c.g
       inst[base + 8] = c.b
       inst[base + 9] = c.a
-      // 用 flags.z 之外的两个通道传尺寸缩放（w/h 相对单元格）
       inst[base + 10] = w
       inst[base + 11] = h
       inst[base + 12] = 0
@@ -727,30 +1169,29 @@ export class WebGLTerminalRenderer {
       this.cursorCount += 1
     }
     this.cursorCount = 0
-    const c = { ...color, a: this.blinkOff ? color.a * 0.35 : color.a }
-    const drawShape = (px: number, py: number, alphaScale: number): void => {
-      const s = { ...color, a: c.a * alphaScale }
-      if (shape === 'block') build(px, py, 0, 0, 1, 1, s)
-      else if (shape === 'beam') build(px, py, 0, 0, 0.2, 1, s) // kitty cursor_beam_thickness 2px
-      else if (shape === 'underline') build(px, py, 0, 0.88, 1, 0.12, s)
-      else if (shape === 'hollow') {
-        const t2 = 0.08
-        build(px, py, 0, 0, 1, t2, s)
-        build(px, py, 0, 1 - t2, 1, t2, s)
-        build(px, py, 0, 0, t2, 1, s)
-        build(px, py, 1 - t2, 0, t2, 1, s)
-      }
+    // kitty：闪烁的灭相完全不画光标（shaders.c 里 off 相直接跳过 cursor 绘制）
+    if (this.blinkOff) return
+    const c = color
+    if (shape === 'block') build(left, top, right - left, bottom - top, c)
+    else if (shape === 'beam' || shape === 'bar') build(left, top, right - left, bottom - top, c)
+    else if (shape === 'underline') build(left, top, right - left, bottom - top, c)
+    else if (shape === 'hollow') {
+      const t2 = 0.08
+      const w = right - left
+      const h = bottom - top
+      build(left, top, w, t2, c)
+      build(left, top + h - t2, w, t2, c)
+      build(left, top, t2, h, c)
+      build(left + w - t2, top, t2, h, c)
     }
-    // 拖尾残影（在主光标下层）：位置 = 残影快照，形状与主光标一致
-    for (const p of this.trail) drawShape(p.x, p.y, p.a * 0.5)
-    drawShape(this.animX, this.animY, 1)
     if (this.cursorCount === 0) return
     gl.bindBuffer(gl.ARRAY_BUFFER, this.cursorBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, this.cursorInstances.subarray(0, this.cursorCount * FLOATS), gl.DYNAMIC_DRAW)
     gl.bindVertexArray(this.cursorVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.cursorBuffer)
     gl.uniform1f(gl.getUniformLocation(this.program, 'u_pass'), 0)
-    // 光标用独立缓冲，逐实例偏移指针后各画 1 个实例（残影/块/竖线/下划线/空心）
+    gl.uniform1f(gl.getUniformLocation(this.program, 'u_maskOn'), 0)
+    // 光标用独立缓冲，逐实例偏移指针后各画 1 个实例（块/竖线/下划线/空心）
     for (let i = 0; i < this.cursorCount; i += 1) {
       const off = i * STRIDE
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, STRIDE, off)
@@ -767,13 +1208,32 @@ export class WebGLTerminalRenderer {
     return this.inactiveStyle === 'none' ? 'none' : this.inactiveStyle === 'outline' ? 'hollow' : this.inactiveStyle
   }
 
-  private inactiveStyle: 'outline' | 'block' | 'beam' | 'underline' | 'none' = 'outline'
-
   setCursorInactiveStyle(style: 'outline' | 'block' | 'beam' | 'underline' | 'none'): void {
     this.inactiveStyle = style
   }
 
-  private cursorCount = 0
+  /** 供验收脚本读取拖尾内部状态 */
+  trailDebug(): {
+    edgeX: [number, number] | null
+    edgeY: [number, number] | null
+    cornerX: number[]
+    cornerY: number[]
+    opacity: number
+    needsRender: boolean
+    cursorRect: [number, number, number, number] | null
+    cursorQuads: number
+  } {
+    return {
+      edgeX: this.edgeX ? [...this.edgeX] : null,
+      edgeY: this.edgeY ? [...this.edgeY] : null,
+      cornerX: [...this.cornerX],
+      cornerY: [...this.cornerY],
+      opacity: this.trailOpacity,
+      needsRender: this.trailNeedsRender,
+      cursorRect: this.cursorRect(),
+      cursorQuads: this.cursorCount,
+    }
+  }
 
   dispose(): void {
     if (this.disposed) return
@@ -782,8 +1242,14 @@ export class WebGLTerminalRenderer {
     gl.deleteProgram(this.program)
     gl.deleteBuffer(this.buffer)
     gl.deleteBuffer(this.cursorBuffer)
+    gl.deleteBuffer(this.trailBuffer)
+    gl.deleteBuffer(this.imageBuffer)
     gl.deleteVertexArray(this.vao)
     gl.deleteVertexArray(this.cursorVao)
+    gl.deleteVertexArray(this.trailVao)
+    gl.deleteVertexArray(this.imageVao)
     if (this.atlasTex) gl.deleteTexture(this.atlasTex)
+    for (const t of this.imageTextures.values()) gl.deleteTexture(t.tex)
+    this.imageTextures.clear()
   }
 }

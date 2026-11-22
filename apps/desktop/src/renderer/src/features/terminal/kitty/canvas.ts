@@ -16,7 +16,7 @@ import type { KittyMeta, KittyRow } from '@t1000/shared'
 import { KITTY_CELL_WORDS } from '@t1000/shared'
 import type { GlyphAtlas } from './atlas'
 import type { RenderTheme, Rgba } from './theme'
-import type { HighlightSpan, RendererOptions, SearchSpan } from './webgl'
+import type { HighlightSpan, ImagePlacement, RendererOptions, SearchSpan } from './webgl'
 import { parseHex } from './theme'
 
 const F_BOLD = 1
@@ -50,6 +50,7 @@ export class CanvasTerminalRenderer {
   private searchActive = -1
   private blinkOff = false
   private fontFamily: string
+  private images: ImagePlacement[] = []
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -93,9 +94,29 @@ export class CanvasTerminalRenderer {
     return true
   }
 
+  setImages(placements: ImagePlacement[]): void {
+    this.images = placements
+  }
+
+  /** 按 z 分层画图片（below = 文字下，above = 文字上） */
+  private drawImages(meta: KittyMeta, layer: 'below' | 'above'): void {
+    if (this.images.length === 0) return
+    const ctx = this.ctx
+    const cw = this.atlas.cellW
+    const ch = this.atlas.cellH
+    const abs0 = meta.scrollbackLength - meta.scrolledBy
+    for (const p of this.images) {
+      if ((layer === 'below') !== (p.z < 0)) continue
+      const vy = p.absLine - abs0
+      const h = p.pxH / ch
+      if (vy + h <= 0 || vy >= this.rows) continue
+      ctx.drawImage(p.source, p.col * cw, vy * ch + p.yOffsetPx, p.pxW, p.pxH)
+    }
+  }
+
   /* 光标动画与形状覆盖：2D 回退路径不做拖尾动画（保持光标即点即到），
      但接口保持同形，引擎无需区分后端。 */
-  setCursorTrail(_depth: number): void {}
+  setCursorTrail(_ms: number): void {}
   setCursorShapeOverride(_style: 'block' | 'underline' | 'bar' | null): void {}
   setCursorInactiveStyle(_style: 'outline' | 'block' | 'beam' | 'underline' | 'none'): void {}
   setFocused(_focused: boolean): void {}
@@ -163,6 +184,9 @@ export class CanvasTerminalRenderer {
     ctx.textBaseline = 'alphabetic'
     ctx.font = `${this.atlas.fontWeight} ${this.atlas.fontSizeDpr}px ${this.atlas.fontFamilyCss}`
 
+    // z<0 的图片画在所有文字/背景之下（2D 单通道做不到「背景上、文字下」的精确层）
+    this.drawImages(meta, 'below')
+
     const abs0 = meta.scrollbackLength - meta.scrolledBy
     for (let y = 0; y < this.rows; y += 1) {
       const abs = abs0 + y
@@ -210,7 +234,9 @@ export class CanvasTerminalRenderer {
         ctx.fillText(text, px, py + this.atlas.baseline)
         const underline = (flags & F_UNDERLINE_MASK) >> F_UNDERLINE_SHIFT
         if (underline > 0 || (flags & F_STRIKE) !== 0) {
-          ctx.strokeStyle = css(this.theme.underline ?? fg)
+          // SGR 58：SGR 4:3 附带的下划线颜色（word 5），0 = 默认色
+          const decoWord = this.grid[i + 5] ?? 0
+          ctx.strokeStyle = css(decoWord !== 0 ? this.packed(decoWord, false) : (this.theme.underline ?? fg))
           ctx.lineWidth = Math.max(1, Math.round(this.dpr))
           const width = wide ? cw * 2 : cw
           if ((flags & F_STRIKE) !== 0) {
@@ -239,18 +265,22 @@ export class CanvasTerminalRenderer {
         }
       }
     }
+    // z>=0 的图片画在文字上、光标下
+    this.drawImages(meta, 'above')
     this.drawCursor(meta)
   }
 
   private drawCursor(meta: KittyMeta): void {
     if (!meta.cursor.visible || meta.cursor.shape === 'none') return
+    // kitty：闪烁的灭相完全不画光标
+    if (this.blinkOff) return
     const ctx = this.ctx
     const cw = this.atlas.cellW
     const ch = this.atlas.cellH
     const x = meta.cursor.x * cw
     const y = meta.cursor.y * ch
     const c = this.theme.cursor
-    ctx.fillStyle = css({ ...c, a: this.blinkOff ? c.a * 0.35 : c.a })
+    ctx.fillStyle = css(c)
     switch (meta.cursor.shape) {
       case 'beam':
         ctx.fillRect(x, y, Math.max(1, cw * 0.14), ch)

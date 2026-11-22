@@ -17,6 +17,8 @@
 import type { ThemeMode } from '@t1000/shared'
 import { paletteFor, paletteToCssVars, isThemePresetId, type AppearanceMode, type ThemePresetId } from './presets'
 
+export type BackgroundType = 'none' | 'image' | 'video' | 'color' | 'script'
+
 export interface AppearanceConfig {
   preset: ThemePresetId
   /** 本地图片的绝对路径（也接受 file:/data:/blob: URL）；空串表示不设背景图 */
@@ -27,6 +29,16 @@ export interface AppearanceConfig {
   opacity: number
   /** 界面缩放 0.8~1.4 */
   scale: number
+  /** 动态背景类型：纯色/图片/视频/TS 脚本，任意界面播放 */
+  backgroundType: BackgroundType
+  /** 纯色背景色（#RRGGBB / #RRGGBBAA） */
+  backgroundColor: string
+  /** 视频背景的本地路径 */
+  backgroundVideo: string
+  /** 背景脚本：内置脚本名（如 matrix）或脚本文件绝对路径 */
+  backgroundScript: string
+  /** 脚本帧率上限（10~60，默认 30） */
+  backgroundFps: number
 }
 
 export const APPEARANCE_DEFAULTS: AppearanceConfig = {
@@ -36,6 +48,11 @@ export const APPEARANCE_DEFAULTS: AppearanceConfig = {
   // 默认 1（实心）——不改变现状观感；只有在设了背景图时才会自动略微透出
   opacity: 1,
   scale: 1,
+  backgroundType: 'none',
+  backgroundColor: '#10141a',
+  backgroundVideo: '',
+  backgroundScript: '',
+  backgroundFps: 30,
 }
 
 /** 设置项路径；与 settingsFields.ts 的声明保持一致（那边是"设置必须被消费"的唯一真源） */
@@ -80,6 +97,9 @@ export function resolveAppearance(settings: unknown): AppearanceConfig {
   const raw = readPath(settings, 'app.appearance')
   const source = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
   const image = source.backgroundImage
+  // 兼容：老版本没有 backgroundType， backgroundImage 非空就视为图片背景
+  const legacyImage = typeof image === 'string' && image.trim() !== ''
+  const type = source.backgroundType
   return {
     preset: isThemePresetId(source.preset) ? source.preset : APPEARANCE_DEFAULTS.preset,
     backgroundImage: typeof image === 'string' ? image.trim() : APPEARANCE_DEFAULTS.backgroundImage,
@@ -91,6 +111,19 @@ export function resolveAppearance(settings: unknown): AppearanceConfig {
     ),
     opacity: clampNumber(source.opacity, OPACITY_MIN, OPACITY_MAX, APPEARANCE_DEFAULTS.opacity),
     scale: clampNumber(source.scale, SCALE_MIN, SCALE_MAX, APPEARANCE_DEFAULTS.scale),
+    backgroundType:
+      type === 'image' || type === 'video' || type === 'color' || type === 'script' || type === 'none'
+        ? type
+        : legacyImage
+          ? 'image'
+          : APPEARANCE_DEFAULTS.backgroundType,
+    backgroundColor:
+      typeof source.backgroundColor === 'string' ? source.backgroundColor : APPEARANCE_DEFAULTS.backgroundColor,
+    backgroundVideo:
+      typeof source.backgroundVideo === 'string' ? source.backgroundVideo : APPEARANCE_DEFAULTS.backgroundVideo,
+    backgroundScript:
+      typeof source.backgroundScript === 'string' ? source.backgroundScript : APPEARANCE_DEFAULTS.backgroundScript,
+    backgroundFps: clampNumber(source.backgroundFps, 10, 60, APPEARANCE_DEFAULTS.backgroundFps),
   }
 }
 
@@ -197,13 +230,25 @@ function applyToDocument(config: AppearanceConfig, mode: AppearanceMode): void {
   const url = backgroundImageUrl(config.backgroundImage)
   root.style.setProperty('--t1000-bg-image', url ? cssUrlValue(url) : 'none')
   root.style.setProperty('--t1000-bg-image-opacity', String(config.backgroundOpacity))
+  // 动态背景（视频/纯色/脚本）生效时收敛静态背景图，两层不叠画
+  const dynActive =
+    (config.backgroundType === 'video' && config.backgroundVideo.trim() !== '') ||
+    (config.backgroundType === 'script' && config.backgroundScript.trim() !== '')
+  const colorActive = config.backgroundType === 'color' && config.backgroundColor.trim() !== ''
+  root.style.setProperty('--t1000-dyn-bg-opacity', String(config.backgroundOpacity))
+  root.style.setProperty('--t1000-dyn-bg-color', config.backgroundColor.trim() || '#000000')
+  document.body?.classList.toggle('t1000-has-dynbg', dynActive || colorActive)
+  const surfaceHasMedia = Boolean(url) || dynActive || colorActive
   root.style.setProperty(
     '--t1000-surface-alpha',
-    `${(effectiveSurfaceAlpha(config, Boolean(url)) * 100).toFixed(1)}%`,
+    `${(effectiveSurfaceAlpha(config, surfaceHasMedia) * 100).toFixed(1)}%`,
   )
   root.style.setProperty('--t1000-ui-scale', String(config.scale))
 
   document.body?.classList.toggle('t1000-has-bg', Boolean(url))
+
+  // 动态背景层（React 组件）监听这个事件换内容；不用把 appearance 塞进全局 store
+  window.dispatchEvent(new CustomEvent<AppearanceConfig>('t1000-appearance', { detail: config }))
 
   // 缩放变了要让终端等自绘区域重新量尺寸（xterm 的格子尺寸不会自己跟着 zoom 变）
   if (cachedScale !== null && cachedScale !== config.scale) {

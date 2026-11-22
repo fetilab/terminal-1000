@@ -20,6 +20,7 @@ import { BrandMark } from './components/BrandMark'
 import { subscribe } from './lib/ipc'
 import { SshPrompts } from './features/terminal/SshPrompts'
 import { AgentInstallPrompt } from './features/monitor/AgentInstallPrompt'
+import { DynamicBackground } from './features/background/DynamicBackground'
 
 /** 全局搜索面板：独立 chunk，只有按 Ctrl/Cmd+K 才加载 */
 const GlobalSearch = lazy(() => import('./features/search/GlobalSearch'))
@@ -168,8 +169,6 @@ function View(): React.JSX.Element {
   switch (view) {
     case 'connections':
       return <ConnectionsView />
-    case 'console':
-      return <TerminalWorkspace />
     case 'notes':
       return <NotesView />
     case 'tools':
@@ -265,7 +264,12 @@ export function App(): React.JSX.Element {
     const offLocked = subscribe(Events.SECURITY_LOCKED, (p) =>
       setLock({ reason: p.reason, ...(p.idleSeconds === undefined ? {} : { idleSeconds: p.idleSeconds }) }),
     )
-    const offUnlocked = subscribe(Events.SECURITY_UNLOCKED, () => setLock(null))
+    const offUnlocked = subscribe(Events.SECURITY_UNLOCKED, () => {
+      setLock(null)
+      // 解锁后必须重载连接列表：锁定态加载的列表里机密字段是 `__LOCKED__` 掩码，
+      // 不重载的话连接/编辑表单会一直拿着掩码缓存（连接报错、保存污染凭据）
+      void loadConnections(true)
+    })
     return () => {
       offLocked()
       offUnlocked()
@@ -298,6 +302,9 @@ export function App(): React.JSX.Element {
         .filter(Boolean)
         .join(' ')}
     >
+      {/* 动态背景：视频/图片/纯色/TS 脚本，任意界面播放。
+          渲染进 fixed 层（z-index 0），与 #root（z-index 1）无关 —— 放在 shell 里还是外面都行 */}
+      <DynamicBackground />
       <Rail />
       <Suspense fallback={<aside className="panel"><Loading text="载入面板…" /></aside>}>
         <Sidebar />
@@ -315,9 +322,23 @@ export function App(): React.JSX.Element {
         </Suspense>
       ) : null}
       <Suspense fallback={<Loading text="载入视图…" />}>
-        <div key={view} className="view-enter" style={{ display: 'contents' }}>
-          <View />
+        {/*
+          控制台**常驻不卸载**：切到别的页面只是 display:none 隐藏。
+          之前 `<View/>` 的 switch 会在切页时卸载整个工作区 → TerminalPane
+          dispose → kitty 内核会话销毁 + PTY 数据订阅断开 → 回来时清屏丢历史。
+          现在内核会话、滚动回看、PTY 输出全部原样保留。
+        */}
+        <div
+          style={view === 'console' ? { display: 'contents' } : { display: 'none' }}
+          className={view === 'console' ? 'view-enter' : undefined}
+        >
+          <TerminalWorkspace suspended={view !== 'console'} />
         </div>
+        {view !== 'console' ? (
+          <div key={view} className="view-enter" style={{ display: 'contents' }}>
+            <View />
+          </div>
+        ) : null}
       </Suspense>
       <ToastHost />
       {/* 遮罩放在 app-shell **外面**：里面已经被 visibility:hidden 了 */}

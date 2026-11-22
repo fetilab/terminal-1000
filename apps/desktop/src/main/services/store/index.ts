@@ -424,6 +424,11 @@ export class StoreService {
     return this.repo.listCredentials()
   }
 
+  /** 单条凭证；不存在返回 undefined。锁定态下机密字段是掩码（调用方自行过滤） */
+  getCredential(id: string): Credential | undefined {
+    return this.repo.getCredential(id)
+  }
+
   saveCredential(input: Credential): Credential {
     return this.repo.saveCredential(input, new Date().toISOString())
   }
@@ -663,6 +668,17 @@ export function getStoreService(dbFile?: string): StoreService {
 /** 测试 / 主进程启动时注入实例 */
 export function setStoreService(instance: StoreService | null): void {
   service = instance
+}
+
+/**
+ * 只读探测已存在的服务实例；**绝不创建**。
+ *
+ * 供 ssh 等域在连接时取权威解密记录用 —— 这里不能用 getStoreService()：
+ * 单例不存在时它会用 :memory: 建库并抢占（0.2.0 修过的竞态），
+ * 那样 ssh 拿到的是空库，用户连接全部"凭据不存在"。
+ */
+export function getStoreServiceIfExists(): StoreService | null {
+  return service
 }
 
 /**

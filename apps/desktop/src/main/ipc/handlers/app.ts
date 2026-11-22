@@ -2,7 +2,7 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 import { app, BrowserWindow, dialog, shell } from 'electron'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { AppError, parseInput } from '../../errors'
@@ -85,6 +85,56 @@ function kittyWasmPath(): string | null {
 /** 只允许打开 http/https/mailto，避免被当作任意协议处理器 */
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
 
+/* ── 动态背景 TS 脚本 ──────────────────────────────── */
+
+const compileScriptSchema = z.object({
+  /** 内置脚本名（如 `matrix`）或脚本文件的绝对路径 */
+  source: z.string().min(1).max(4096),
+})
+
+/**
+ * 定位内置背景脚本目录。
+ *
+ * - 打包：`<resources>/background-scripts/`（extraResources 拷进去）；
+ * - 开发：`apps/desktop/resources/background-scripts/`。
+ */
+function backgroundScriptsDir(): string[] {
+  const candidates: string[] = []
+  if (process.resourcesPath) candidates.push(join(process.resourcesPath, 'background-scripts'))
+  candidates.push(join(app.getAppPath(), 'resources', 'background-scripts'))
+  let dir = __dirname
+  for (let i = 0; i < 6; i += 1) {
+    candidates.push(join(dir, 'resources', 'background-scripts'))
+    candidates.push(join(dir, 'apps', 'desktop', 'resources', 'background-scripts'))
+    dir = dirname(dir)
+  }
+  return candidates.filter((c) => existsSync(c))
+}
+
+/**
+ * 把 TS 脚本源码转译成可在渲染层 `new Function` 执行的 CommonJS。
+ *
+ * 为什么用主进程的 typescript 包而不是在渲染层 eval 原文：
+ * - 用户脚本按文档写的是 **TypeScript**（有类型标注），必须先去掉类型才能跑；
+ * - typescript 包是纯 JS 无原生依赖，externalize 后按需动态 import，
+ *   只有真正用到 TS 背景时才会载入，不影响启动速度。
+ */
+async function transpileScript(src: string): Promise<string> {
+  // main 是 ESM（package.json type: module），用动态 import 按需加载
+  // typescript（CJS）—— interop 后的 default 才是模块本体
+  const tsModule = await import('typescript')
+  const ts = (tsModule.default ?? tsModule) as typeof import('typescript')
+  const out = ts.transpileModule(src, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2020,
+      module: ts.ModuleKind.CommonJS,
+      removeComments: true,
+    },
+    fileName: 'background-script.ts',
+  })
+  return out.outputText
+}
+
 export const appHandlers: Record<string, IpcHandler> = {
   /**
    * 返回 kitty 内核的 wasm 字节（base64）。
@@ -97,6 +147,43 @@ export const appHandlers: Record<string, IpcHandler> = {
     if (!file) throw new AppError('NOT_FOUND', '找不到 kitty 内核（kitty-vt.wasm），安装包可能不完整')
     const buf = readFileSync(file)
     return { base64: buf.toString('base64'), bytes: buf.byteLength, path: file }
+  },
+
+  /** 列出内置背景脚本名（不含扩展名），供设置下拉与文档引用 */
+  listBackgroundScripts: () => {
+    const names: string[] = []
+    for (const dir of backgroundScriptsDir()) {
+      try {
+        for (const f of readdirSync(dir)) {
+          if (f.endsWith('.ts') && !names.includes(f.slice(0, -3))) names.push(f.slice(0, -3))
+        }
+      } catch {
+        // 目录读不了就跳过，绝不让设置页因此崩掉
+      }
+    }
+    return { scripts: names.sort() }
+  },
+
+  /**
+   * 读取并转译一个背景脚本。
+   *
+   * `source` 无路径分隔符 → 内置脚本名；否则必须是绝对路径
+   * （设置界面只允许通过文件对话框选择，不接受任意 URL）。
+   */
+  compileBackgroundScript: async (payload) => {
+    const { source } = parseInput(compileScriptSchema, payload)
+    let file: string
+    if (!source.includes('/') && !source.includes('\\')) {
+      const dirs = backgroundScriptsDir()
+      file = dirs.map((d) => join(d, `${source}.ts`)).find((p) => existsSync(p)) ?? ''
+      if (!file) throw new AppError('NOT_FOUND', `找不到内置背景脚本「${source}」`)
+    } else {
+      file = resolve(source)
+      if (!existsSync(file)) throw new AppError('NOT_FOUND', `背景脚本不存在：${file}`)
+    }
+    const stat = statSync(file)
+    const js = await transpileScript(readFileSync(file, 'utf8'))
+    return { js, mtimeMs: stat.mtimeMs, path: file }
   },
 
   getInfo: () => ({

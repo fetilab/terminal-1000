@@ -5,7 +5,7 @@
 **terminal-1000** 把终端、文件传输、端口转发、图形远程桌面和服务器监控整合到一个桌面应用，
 面向需要管理多台服务器的开发者与运维人员。
 
-**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.1.4**
+**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.2.2**
 
 ---
 
@@ -15,11 +15,11 @@
 
 | 格式 | 适用 | 说明 |
 |---|---|---|
-| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.1.4_amd64.deb` |
-| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.1.4.x86_64.rpm` |
-| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.1.4.pacman` |
+| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.2.2_amd64.deb` |
+| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.2.2.x86_64.rpm` |
+| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.2.2.pacman` |
 | `.AppImage` | 任意发行版 | 免安装，`chmod +x` 后直接运行 |
-| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.1.4-x86_64.flatpak` |
+| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.2.2-x86_64.flatpak` |
 | `.exe` | Windows 10+ | **实验性**，见下方说明 |
 
 > **升级不会丢数据**：设置、连接、凭据、笔记都存在系统配置目录里（见
@@ -63,6 +63,7 @@ terminal-1000 是一个**独立实现**的开源项目。它**不是**任何商�
 
 ### 终端
 - 多标签、水平/垂直分屏
+- **kitty 渲染内核**（详见下文[终端渲染内核](#终端渲染内核kitty)）
 - Shell Integration：命令块、退出码、当前目录
 - 命令补全：语料 + 历史 + 动态变量
 - 快捷命令（支持 `${{变量:格式}}` 动态变量）
@@ -139,6 +140,35 @@ cd server && node src/index.js   # 默认 HTTP 8787（仅回环）+ TSC/1 8788�
   - 命令解释、生成、错误诊断
   - 风险命令黑白名单 + 执行次数上限
 - MCP 服务：向外部 AI 客户端暴露受策略约束的工具
+
+### 动态背景
+- 任意界面可播放：**纯色 / 图片 / 视频 / TS 脚本**
+- 三个内置脚本开箱即用：`matrix` 代码雨、`donut` 旋转甜甜圈、`snow` 下雪
+- 自带帧率上限、可见度调节与错误围栏；脚本怎么写见
+  [docs/background-scripts.md](docs/background-scripts.md)
+
+## 终端渲染内核（kitty）
+
+终端默认使用 **kitty 的 VT 内核 + 自研 WebGL2 渲染器**（可一键回退 xterm.js）。
+这不是"套壳 xterm"，而是一条完整的 kitty 渲染管线移植：
+
+- **内核**：`kitty-vt-wasm`（kitty 的 VT 解析器编译产物）跑在 Worker 里，支持
+  Kitty 键盘协议（CSI u）、kitty 图形协议、完整 SGR 集；图形协议的图片
+  （PNG / RGBA 原始像素 / 分块传输 / zlib 压缩 / z 分层 / 随内容滚动）由渲染器落进网格。
+- **字形**：Canvas 光栅化的 glyph atlas，粗体/斜体四变体、连字（liga/calt 按整段成形）、
+  组合字符、宽字符（CJK 占两格）。
+- **文本装饰**：五种下划线（直/双/波浪/点/虚）+ 删除线 + SGR 58 下划线颜色，
+  粗细与位置跟 kitty `cursor_underline_thickness` 同源。
+- **光标**：block / beam / underline，失焦按 `cursor_inactive_style` 降级；
+  **拖尾与原版逐行同源**——kitty `cursor_trail.c` 的移植：4 个角各自指数缓动追赶光标
+  （`cursor_trail_decay` 按方向点积插值快慢衰减）、`cursor_trail` 毫秒门控、
+  `cursor_trail_start_threshold` 启动阈值；光标本体永远画在真实位置、shader 按包围盒
+  遮罩拖尾，任何时刻**只有一个光标**。闪烁灭相完全隐藏，静止 15 秒自动停止（kitty 同款）。
+- **选区/搜索/高亮**：WebGL 里的三段实例化 pass（背景/字形/装饰），脏行增量上传，
+  40×120 网格满帧只有 5 次 draw call。
+- **回看**：滚动回看不打断内核会话；切页隐藏（display:none + 停帧）而不卸载，
+  历史与光标原样保留。
+
 
 ## 技术栈
 
@@ -242,6 +272,7 @@ docs                架构、性能目标、同步协议规范、部署
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、提交规范、许可证头 |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 行为准则 |
 | [docs/](docs/) | 同步协议规范（TSC/1）、部署手册、性能目标 |
+| [docs/background-scripts.md](docs/background-scripts.md) | 动态背景 TS 脚本开发指南（契约、内置示例、发布） |
 
 ## 贡献
 
