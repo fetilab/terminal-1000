@@ -85,6 +85,8 @@ interface Session {
   seq: number
   /** 上一次下发的 scrolledBy；变化时强制整屏重发 */
   lastScrolledBy: number
+  /** 上一次的 altscreen 状态；切换（1049h/l）时强制整屏重发 */
+  lastAltScreen: boolean
   /**
    * 上一次的 scrollbackLength。内核滚动屏幕（新行把旧行顶进历史）时，
    * 内容整体上移的行 **不会** 被 lineDirty 标脏（实测：写入 line11 后只有
@@ -153,6 +155,7 @@ async function createSession(
     cols_words: cols * KITTY_CELL_WORDS,
     seq: 0,
     lastScrolledBy: 0,
+    lastAltScreen: false,
     lastScrollbackLength: 0,
     forceFull: true,
     title: '',
@@ -266,8 +269,20 @@ function flush(sessionId: string): void {
   }
   const scrolledBy = term.scrolledBy
   const history = term.scrollbackLength
-  const full = s.forceFull || scrolledBy !== s.lastScrolledBy || history !== s.lastScrollbackLength
+  // altscreen（vim/htop/tmux 这类全屏 TUI）：区域滚动（DECSTBM/SU/SD/IL/DL）
+  // 与主屏滚动同根因 —— lineDirty 不标被移动的行，且没有 scrollbackLength
+  // 变化可以当滚动信号。alt 屏没有回看，整屏重发的成本就是几十行 cells，
+  // 与 kitty 原版「滚整个滚动区域」的损伤范围等价，直接整屏兜底。
+  // 主/备屏切换（1049h/l）也各强制一次整屏，避免旧屏内容残留。
+  const altScreen = !term.isMainScreen
+  const full =
+    s.forceFull ||
+    altScreen ||
+    altScreen !== s.lastAltScreen ||
+    scrolledBy !== s.lastScrolledBy ||
+    history !== s.lastScrollbackLength
   s.forceFull = false
+  s.lastAltScreen = altScreen
   s.lastScrolledBy = scrolledBy
   s.lastScrollbackLength = history
 

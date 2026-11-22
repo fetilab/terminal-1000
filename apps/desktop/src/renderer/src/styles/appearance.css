@@ -144,3 +144,14 @@ body.t1000-has-dynbg::before {
 .t1000-dynbg canvas {
   object-fit: fill;
 }
+
+/*
+ * 毛玻璃：背景图/动态背景激活时，终端自绘表面把背后的背景层磨砂化。
+ * 前提是终端画布本身半透明（TerminalPane 会把清屏 alpha 联动到
+ * --t1000-surface-alpha 同源系数），否则磨砂层被实心画布挡住、什么也看不见。
+ */
+body.t1000-has-bg .kitty-surface,
+body.t1000-has-dynbg .kitty-surface {
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+}

@@ -240,15 +240,14 @@ export class WebGLTerminalRenderer {
   private imagePlacements: ImagePlacement[] = []
   private imageTextures = new Map<number, { tex: WebGLTexture; w: number; h: number; rev: number }>()
 
-  /* ── 光标拖尾：kitty cursor_trail.c 的逐行移植 ──
+  /* ── 光标拖尾：刚性滑行方块（应「全程都是一个可动方形」的需求） ──
    *
-   * kitty 的拖尾**不是**残影序列，而是一个四边形：它的 4 个角各自独立地
-   * 指数缓动追赶光标矩形的 4 个角（每角的衰减时间按「角相对光标中心的
-   * 方向点积」在 decay_fast/slow 之间插值）。光标本体永远画在真实位置，
-   * 拖尾四边形在光标包围盒内的部分由片元着色器遮掉 —— 所以原版任何
-   * 时刻都只有一个光标，拖尾看起来是「拉着光标跑的彩色拖布」。
+   * kitty 原版的拖尾是一个四角独立缓动的四边形 —— 移动时会拉成一块
+   * 与光标本体分离的「变形残片」，观感就是「两个光标，一个标准一个变形」。
+   * 这里改为：光标矩形整体（四条边同一个步长）从旧位置指数缓动滑向新位置
+   * —— 任意时刻屏幕上只有一个**不变形**的方形，全程连续可动。
    */
-  /** kitty cursor_trail：光标停留多少毫秒后才更新拖尾目标（0 = 整体关闭） */
+  /** kitty cursor_trail：光标停留多少毫秒后才更新滑行目标（0 = 整体关闭） */
   private trailMs = 3
   /** kitty cursor_trail_decay 的两个值（秒）：贴近光标中心的角衰减快 */
   private trailDecayFast = 0.1
@@ -260,14 +259,9 @@ export class WebGLTerminalRenderer {
   /** 光标目标矩形（cell 坐标；x0=left x1=right y0=top y1=bottom） */
   private edgeX: [number, number] | null = null
   private edgeY: [number, number] | null = null
-  private prevEdgeX: [number, number] = [0, 0]
-  private prevEdgeY: [number, number] = [0, 0]
-  private prevEdgeValid = false
-  private targetUpdated = false
-  /** 拖尾四边形的 4 个角（角序：0=右上 1=右下 2=左上 3=左下，与 kitty 一致） */
-  private cornerX: [number, number, number, number] = [0, 0, 0, 0]
-  private cornerY: [number, number, number, number] = [0, 0, 0, 0]
-  private trailOpacity = 0
+  /** 视觉矩形：正在滑行的光标位置（唯一画出来的方块） */
+  private visX: [number, number] | null = null
+  private visY: [number, number] | null = null
   private trailUpdatedAt = 0
   /** 光标最后一次被程序移动的时间（kitty position_changed_by_client_at） */
   private cursorChangedAt = 0
@@ -443,8 +437,9 @@ export class WebGLTerminalRenderer {
 
   /** 动画是否还在跑（引擎据此决定要不要继续排下一帧） */
   get animActive(): boolean {
+    if (this.trailNeedsRender) return true
     // 目标还没跟上真实光标（trailMs 门控期内/目标尚未更新）：必须继续排帧，
-    // 否则门控打开后没有渲染机会，拖尾永远不动
+    // 否则门控打开后没有渲染机会，滑行永远不启动（只能靠 blink 碰巧推进）
     const rect = this.cursorRect()
     if (rect && (!this.edgeX || !this.edgeY)) return true
     if (rect && this.edgeX && this.edgeY) {
@@ -457,21 +452,24 @@ export class WebGLTerminalRenderer {
         return true
       }
     }
-    return this.trailNeedsRender || (!this.cursorVisibleMode && this.trailOpacity > 0)
+    return false
   }
 
   /** 拖尾立刻贴合光标（关动画/重排时用） */
   private snapTrail(): void {
     if (this.edgeX && this.edgeY) {
-      this.cornerX = [this.edgeX[1], this.edgeX[1], this.edgeX[0], this.edgeX[0]]
-      this.cornerY = [this.edgeY[0], this.edgeY[1], this.edgeY[0], this.edgeY[1]]
+      this.visX = [this.edgeX[0], this.edgeX[1]]
+      this.visY = [this.edgeY[0], this.edgeY[1]]
+    } else {
+      this.visX = null
+      this.visY = null
     }
     this.trailNeedsRender = false
   }
 
-  /* ─────────────── kitty cursor_trail.c 移植（几何与推进） ─────────────── */
+  /* ─────────────── 刚性滑行光标（替代 kitty 变形拖尾） ─────────────── */
 
-  /** 当前光标的真实矩形（cell 坐标）。光标不可见/在视口外 → null */
+  /** 当前光标的目标矩形（cell 坐标）。光标不可见/在视口外 → null */
   private cursorRect(): [number, number, number, number] | null {
     const meta = this.meta
     if (!meta || !meta.cursor.visible || meta.cursor.shape === 'none') return null
@@ -516,7 +514,7 @@ export class WebGLTerminalRenderer {
     const meta = this.meta
     this.cursorVisibleMode = Boolean(meta && meta.cursor.visible && meta.cursor.shape !== 'none')
     const rect = this.cursorRect()
-    // 光标位置变化（程序驱动）：对比**原始光标位置**而不是拖尾目标——
+    // 光标位置变化（程序驱动）：对比**原始光标位置**而不是滑行目标——
     // kitty 的 position_changed_by_client_at 在客户端移动光标时置一次，
     // 若每帧对着没跟上来的目标重新计时，门控会死锁（目标永远不更新）。
     // 回看滚动会改变光标的视口位置，也算一次移动。
@@ -531,140 +529,89 @@ export class WebGLTerminalRenderer {
     // 目标更新门控：光标停稳 trailMs 毫秒后才跟随（kitty update_cursor_trail）
     const gated = this.trailMs > 0 && now - this.cursorChangedAt < this.trailMs
     if (rect && !gated) this.updateTrailTarget(rect)
-    this.updateTrailCorners(now)
-    this.updateTrailOpacity(now)
-    this.updateTrailNeedsRender()
+    this.updateTrailVisual(now)
     this.trailUpdatedAt = now
   }
 
-  /** kitty update_cursor_trail_target：目标边变化时记录上一位置 */
+  /** 光标目标边变化时更新目标（视觉方块随后滑过去） */
   private updateTrailTarget(rect: [number, number, number, number]): void {
     const [left, right, top, bottom] = rect
-    const changed =
+    if (
       this.edgeX !== null &&
-      (this.edgeX[0] !== left ||
-        this.edgeX[1] !== right ||
-        (this.edgeY !== null && (this.edgeY[0] !== top || this.edgeY[1] !== bottom)))
-    if (changed && this.prevEdgeValid) {
-      this.prevEdgeX = [this.edgeX![0], this.edgeX![1]]
-      this.prevEdgeY = [this.edgeY![0], this.edgeY![1]]
+      this.edgeY !== null &&
+      this.edgeX[0] === left &&
+      this.edgeX[1] === right &&
+      this.edgeY[0] === top &&
+      this.edgeY[1] === bottom
+    ) {
+      return
     }
-    if (changed || this.edgeX === null || this.edgeY === null) {
-      this.targetUpdated = true
-      this.prevEdgeValid = true
-      this.edgeX = [left, right]
-      this.edgeY = [top, bottom]
-    }
+    this.edgeX = [left, right]
+    this.edgeY = [top, bottom]
   }
 
   /**
-   * kitty update_cursor_trail_corners + should_skip_cursor_trail_update。
-   * 每个角以 `step = 1 - 2^(-10·dt/decay)` 追赶目标角；decay 按「角相对
-   * 光标中心的方向点积」在 fast/slow 之间插值（面向移动方向的角快）。
+   * 视觉方块推进：四条边用**同一个步长**指数缓动追赶目标边 —— 矩形全程
+   * 保持刚性（不拉伸、不自交），只是位置/尺寸平滑过渡。这就是「全程都是
+   * 一个可动的方形」：没有第二块残片，没有蝶形结。
    */
-  private updateTrailCorners(now: number): void {
-    const CORNER_IX = [1, 1, 0, 0] as const
-    const CORNER_IY = [0, 1, 1, 0] as const
-    if (!this.edgeX || !this.edgeY) return
-
-    // 起始阈值：拖尾四边形离目标已经够近（小移动）就不启动
-    let skip = false
-    if ((this.trailThresholdX > 0 || this.trailThresholdY > 0) && !this.trailNeedsRender) {
-      const dx = Math.round(this.cornerX[0] - this.edgeX[1])
-      const dy = Math.round(this.cornerY[0] - this.edgeY[0])
-      if (Math.abs(dx) <= this.trailThresholdX && Math.abs(dy) <= this.trailThresholdY) skip = true
-    }
-    // 光标隐藏且拖尾已淡出：直接贴合
-    if (!this.cursorVisibleMode && this.trailOpacity <= 0) skip = true
-
-    if (skip) {
-      this.targetUpdated = false
-      this.cornerX = [
-        this.edgeX[CORNER_IX[0]],
-        this.edgeX[CORNER_IX[1]],
-        this.edgeX[CORNER_IX[2]],
-        this.edgeX[CORNER_IX[3]],
-      ]
-      this.cornerY = [
-        this.edgeY[CORNER_IY[0]],
-        this.edgeY[CORNER_IY[1]],
-        this.edgeY[CORNER_IY[2]],
-        this.edgeY[CORNER_IY[3]],
-      ]
-      return
-    }
-    if (this.trailUpdatedAt >= now) return
-    const dt = Math.min(0.1, (now - this.trailUpdatedAt) / 1000)
-
-    const centerX = (this.edgeX[0] + this.edgeX[1]) * 0.5
-    const centerY = (this.edgeY[0] + this.edgeY[1]) * 0.5
-    const diag2 = Math.hypot(this.edgeX[1] - this.edgeX[0], this.edgeY[1] - this.edgeY[0]) * 0.5
-    const dx: number[] = [0, 0, 0, 0]
-    const dy: number[] = [0, 0, 0, 0]
-    const dot: number[] = [0, 0, 0, 0]
-    for (let i = 0; i < 4; i += 1) {
-      const tix = CORNER_IX[i] as 0 | 1
-      const tiy = CORNER_IY[i] as 0 | 1
-      dx[i] = this.edgeX[tix] - this.cornerX[i]!
-      dy[i] = this.edgeY[tiy] - this.cornerY[i]!
-      if (Math.abs(dx[i]!) < 1e-6 && Math.abs(dy[i]!) < 1e-6) {
-        dx[i] = 0
-        dy[i] = 0
-        dot[i] = 0
-        continue
-      }
-      // 方向向量与「光标中心到角」的点积归一化：角越面向光标移动方向越快
-      dot[i] =
-        (dx[i]! * (this.edgeX[tix] - centerX) + dy[i]! * (this.edgeY[tiy] - centerY)) /
-        diag2 /
-        Math.hypot(dx[i]!, dy[i]!)
-    }
-    let minDot = Infinity
-    let maxDot = -Infinity
-    for (let i = 0; i < 4; i += 1) {
-      minDot = Math.min(minDot, dot[i]!)
-      maxDot = Math.max(maxDot, dot[i]!)
-    }
-    for (let i = 0; i < 4; i += 1) {
-      if ((dx[i] === 0 && dy[i] === 0) || minDot === Infinity) continue
-      const decay =
-        minDot === maxDot
-          ? this.trailDecaySlow
-          : this.trailDecaySlow +
-            (this.trailDecayFast - this.trailDecaySlow) * ((dot[i]! - minDot) / (maxDot - minDot))
-      const step = 1 - Math.pow(2, (-10 * dt) / decay)
-      this.cornerX[i] = this.cornerX[i]! + dx[i]! * step
-      this.cornerY[i] = this.cornerY[i]! + dy[i]! * step
-    }
-  }
-
-  /** kitty update_cursor_trail_opacity：光标可见时淡入到 1，隐藏时淡出 */
-  private updateTrailOpacity(now: number): void {
-    if (this.trailUpdatedAt >= now) return
-    const dt = Math.min(0.1, (now - this.trailUpdatedAt) / 1000)
-    if (this.cursorVisibleMode) {
-      this.trailOpacity = Math.min(1, this.trailOpacity + dt / this.trailDecaySlow)
-    } else {
-      this.trailOpacity = Math.max(0, this.trailOpacity - dt / this.trailDecaySlow)
-    }
-  }
-
-  /** kitty update_cursor_trail_needs_render：任一角离目标 ≥ 半格就继续动画 */
-  private updateTrailNeedsRender(): void {
+  private updateTrailVisual(now: number): void {
     if (!this.edgeX || !this.edgeY) {
+      // 光标消失（隐藏/视口外）：方块就地淡出语义不存在，直接清掉
+      this.visX = null
+      this.visY = null
       this.trailNeedsRender = false
       return
     }
-    const CORNER_IX = [1, 1, 0, 0] as const
-    const CORNER_IY = [0, 1, 1, 0] as const
+    if (!this.visX || !this.visY) {
+      // 首次出现：直接落到目标
+      this.visX = [this.edgeX[0], this.edgeX[1]]
+      this.visY = [this.edgeY[0], this.edgeY[1]]
+      this.trailNeedsRender = false
+      return
+    }
+    if (this.trailUpdatedAt >= now) return
+    const dt = Math.min(0.1, (now - this.trailUpdatedAt) / 1000)
+    // 起始阈值：位移小于阈值且已收敛过就不启动（kitty cursor_trail_start_threshold）
+    const distX = Math.abs(this.edgeX[0] - this.visX[0]) + Math.abs(this.edgeX[1] - this.visX[1])
+    const distY = Math.abs(this.edgeY[0] - this.visY[0]) + Math.abs(this.edgeY[1] - this.visY[1])
+    if (
+      !this.trailNeedsRender &&
+      (this.trailThresholdX > 0 || this.trailThresholdY > 0) &&
+      Math.abs(Math.round(this.visX[1]) - Math.round(this.edgeX[1])) <= this.trailThresholdX &&
+      Math.abs(Math.round(this.visY[0]) - Math.round(this.edgeY[0])) <= this.trailThresholdY &&
+      distX < 0.02 &&
+      distY < 0.02
+    ) {
+      this.visX = [this.edgeX[0], this.edgeX[1]]
+      this.visY = [this.edgeY[0], this.edgeY[1]]
+      this.trailNeedsRender = false
+      return
+    }
+    // 统一步长：整个方块一起走（矩形保持刚性）。远处用 slow（平滑滑行）、
+    // 贴近目标用 fast（干脆利落地贴合），两档按距离插值
+    const dist = distX + distY
+    const blend = Math.min(1, dist / 8)
+    const decay = this.trailDecaySlow + (this.trailDecayFast - this.trailDecaySlow) * (1 - blend)
+    const step = 1 - Math.pow(2, (-10 * dt) / decay)
+    for (let i = 0; i < 2; i += 1) {
+      this.visX[i] = this.visX[i]! + (this.edgeX[i]! - this.visX[i]!) * step
+      this.visY[i] = this.visY[i]! + (this.edgeY[i]! - this.visY[i]!) * step
+    }
+    // 收敛判定：任一边离目标 ≥ 0.01 格就继续渲染
     let needed = false
-    for (let i = 0; i < 4; i += 1) {
-      const dx = Math.abs(this.edgeX[CORNER_IX[i] as 0 | 1] - this.cornerX[i]!)
-      const dy = Math.abs(this.edgeY[CORNER_IY[i] as 0 | 1] - this.cornerY[i]!)
-      if (0.5 <= dx || 0.5 <= dy) {
+    for (let i = 0; i < 2; i += 1) {
+      if (
+        Math.abs(this.edgeX[i]! - this.visX[i]!) >= 0.01 ||
+        Math.abs(this.edgeY[i]! - this.visY[i]!) >= 0.01
+      ) {
         needed = true
         break
       }
+    }
+    if (!needed) {
+      this.visX = [this.edgeX[0], this.edgeX[1]]
+      this.visY = [this.edgeY[0], this.edgeY[1]]
     }
     this.trailNeedsRender = needed
   }
@@ -693,10 +640,9 @@ export class WebGLTerminalRenderer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer)
     gl.bufferData(gl.ARRAY_BUFFER, this.instances.byteLength, gl.DYNAMIC_DRAW)
     for (let y = 0; y < rows; y += 1) this.dirty.add(y)
-    // 重排后拖尾几何可能落在旧网格空间里，直接贴合光标（kitty 在 live resize
+    // 重排后滑行方块可能落在旧网格空间里，直接贴合光标（kitty 在 live resize
     // 期间跳过拖尾更新，观感等价）
     this.snapTrail()
-    this.prevEdgeValid = false
   }
 
   applyFrame(meta: KittyMeta, rows: KittyRow[], full: boolean): void {
@@ -971,7 +917,10 @@ export class WebGLTerminalRenderer {
     this.atlas.upload(gl, this.atlasTex)
 
     gl.viewport(0, 0, this.canvas.width, this.canvas.height)
-    gl.clearColor(this.theme.bg.r, this.theme.bg.g, this.theme.bg.b, this.theme.bg.a)
+    // 清屏必须全透明：背景只由 bg pass 画一遍。此前 clearColor 也铺一层
+    // theme.bg（alpha 0.88），再叠加每格 0.88 的背景实例 → 1-(1-0.88)²≈98.6%
+    // 不透明，设置里的半透明/背景透出全部失效（「背景完全不显示」的根因）。
+    gl.clearColor(0, 0, 0, 0)
     gl.clear(gl.COLOR_BUFFER_BIT)
 
     gl.useProgram(this.program)
@@ -999,7 +948,6 @@ export class WebGLTerminalRenderer {
     drawPass(1)
     drawPass(2)
     this.drawImages('above')
-    this.drawTrailQuad()
     this.drawCursorQuad()
     gl.bindVertexArray(null)
   }
@@ -1097,54 +1045,14 @@ export class WebGLTerminalRenderer {
   }
 
   /**
-   * 拖尾四边形（kitty shaders.c draw_cursor_trail + shaders/trail.slang）。
-   * 4 个角独立缓动 → 一个可能拉伸变形的实心四边形；在光标包围盒内的
-   * 片元被遮掉。非实例化绘制：6 个顶点直接来自 corner 数组。
-   */
-  private drawTrailQuad(): void {
-    if (this.trailOpacity <= 0 || !this.edgeX || !this.edgeY) return
-    const gl = this.gl
-    // 角序（kitty corner_index）：0=右上 1=右下 2=左上 3=左下 → 三角形 (0,1,2)(2,1,3)
-    const order = [0, 1, 2, 2, 1, 3]
-    const verts = new Float32Array(order.length * FLOATS)
-    const color = this.theme.cursor
-    for (let v = 0; v < order.length; v += 1) {
-      const ci = order[v] as 0 | 1 | 2 | 3
-      const base = v * FLOATS
-      // a_cell 直接是角的格坐标；flags.xy = 尺寸 0 → 顶点正好落在角上
-      verts[base] = this.cornerX[ci]
-      verts[base + 1] = this.cornerY[ci]
-      verts[base + 6] = color.r
-      verts[base + 7] = color.g
-      verts[base + 8] = color.b
-      verts[base + 9] = color.a * this.trailOpacity
-      // flags 全 0
-    }
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.trailBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
-    gl.bindVertexArray(this.trailVao)
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_pass'), 0)
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_maskOn'), 1)
-    gl.uniform4f(
-      gl.getUniformLocation(this.program, 'u_maskRect'),
-      this.edgeX[0],
-      this.edgeX[1],
-      this.edgeY[0],
-      this.edgeY[1],
-    )
-    gl.drawArrays(gl.TRIANGLES, 0, order.length)
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_maskOn'), 0)
-    gl.bindVertexArray(null)
-  }
-
-  /**
-   * 光标本体：永远画在真实位置（kitty 的 cursor 由 cell 渲染管线在真实
-   * 位置绘制，拖尾是独立四边形）——任何时刻屏幕上只有一个光标。
+   * 光标本体：画在**视觉滑行矩形**上（目标矩形的刚性缓动位置）。
+   * 全屏任何时刻只有一个光标方块 —— 静止时它就是真实光标，移动中它是
+   * 从旧位置平滑滑向新位置的同一个方块（不再有 kitty 式变形残片）。
    */
   private drawCursorQuad(): void {
     const rect = this.cursorRect()
-    if (!rect) return
-    const [left, right, top, bottom] = rect
+    if (!rect || !this.visX || !this.visY) return
+    const [left, right, top, bottom] = [this.visX[0], this.visX[1], this.visY[0], this.visY[1]]
     const gl = this.gl
     const color = this.theme.cursor
     const shape = this.focused ? (this.shapeOverride ?? this.meta!.cursor.shape) : this.cursorInactiveShape()
@@ -1212,7 +1120,7 @@ export class WebGLTerminalRenderer {
     this.inactiveStyle = style
   }
 
-  /** 供验收脚本读取拖尾内部状态 */
+  /** 供验收脚本读取滑行光标内部状态 */
   trailDebug(): {
     edgeX: [number, number] | null
     edgeY: [number, number] | null
@@ -1223,12 +1131,18 @@ export class WebGLTerminalRenderer {
     cursorRect: [number, number, number, number] | null
     cursorQuads: number
   } {
+    // corner 序沿用旧约定（0=右上 1=右下 2=左下 3=左上）——刚性矩形四角
+    // 永远共边，自交检测恒为 false
+    const vx = this.visX
+    const vy = this.visY
+    const cornerX = vx ? [vx[1], vx[1], vx[0], vx[0]] : [0, 0, 0, 0]
+    const cornerY = vy ? [vy[0], vy[1], vy[1], vy[0]] : [0, 0, 0, 0]
     return {
       edgeX: this.edgeX ? [...this.edgeX] : null,
       edgeY: this.edgeY ? [...this.edgeY] : null,
-      cornerX: [...this.cornerX],
-      cornerY: [...this.cornerY],
-      opacity: this.trailOpacity,
+      cornerX,
+      cornerY,
+      opacity: vx && vy ? 1 : 0,
       needsRender: this.trailNeedsRender,
       cursorRect: this.cursorRect(),
       cursorQuads: this.cursorCount,

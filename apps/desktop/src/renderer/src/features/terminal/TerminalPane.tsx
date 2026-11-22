@@ -59,6 +59,12 @@ import {
 import { CompletionPopup } from './CompletionPopup'
 import { computeCompletionAnchor, type CompletionAnchor } from './completionAnchor'
 import { cellsFor, normalizeHexColor, segmentHighlightStyle, segmentText } from './highlights'
+import {
+  backgroundImageUrl,
+  effectiveSurfaceAlpha,
+  currentMediaSurfaceAlpha,
+  type AppearanceConfig,
+} from '../../theme/appearance'
 import './terminal.css'
 import './completion.css'
 
@@ -321,6 +327,26 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   termSettingsRef.current = termCfg
   const resolvedThemeRef = useRef(resolvedTheme)
   resolvedThemeRef.current = resolvedTheme
+  /* ── 背景透出：动态背景/背景图激活时，终端画布要跟界面一样半透明 ──
+   * 否则 WebGL 清屏 alpha（terminal.backgroundOpacity，默认 0.88）几乎不透明，
+   * 背景层被盖住 —— 用户看到的就是「背景设置了完全不显示」。
+   * 0.78 系数与面板（--t1000-surface-alpha）同源，整体观感一致。 */
+  const [surfaceAlpha, setSurfaceAlpha] = useState<number | null>(() => currentMediaSurfaceAlpha())
+  useEffect(() => {
+    const sync = (cfg: AppearanceConfig | null): void => {
+      if (!cfg) return
+      const url = backgroundImageUrl(cfg.backgroundImage)
+      const media =
+        Boolean(url) ||
+        (cfg.backgroundType === 'video' && cfg.backgroundVideo.trim() !== '') ||
+        (cfg.backgroundType === 'script' && cfg.backgroundScript.trim() !== '') ||
+        (cfg.backgroundType === 'color' && cfg.backgroundColor.trim() !== '')
+      setSurfaceAlpha(media ? effectiveSurfaceAlpha(cfg, true) : null)
+    }
+    const onChange = (e: Event): void => sync((e as CustomEvent<AppearanceConfig>).detail ?? null)
+    window.addEventListener('t1000-appearance', onChange)
+    return () => window.removeEventListener('t1000-appearance', onChange)
+  }, [])
   // 录制状态来自全局 store（低频），终端标签/状态栏据此显示红点
   const recording = useStoreShallow((s) => ({
     rec: s.activeRecordings.find((r) => r.sessionId === tab.sessionId),
@@ -841,8 +867,14 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   useEffect(() => {
     const kitty = kittyRef.current
     if (kitty) {
-      // kitty 后端：字体/字号/配色/内边距都直接改渲染器，不必重建终端
-      kitty.applySettings({ ...termCfg, fontFamily: withEmojiFallback(termCfg.fontFamily) })
+      // kitty 后端：字体/字号/配色/内边距都直接改渲染器，不必重建终端。
+      // 明暗模式必须显式同步——引擎内部 buildTheme 读的是这份 resolved，
+      // 不传的话应用主题切到浅色、终端永远停在深色配色（淡色字看不见）。
+      kitty.setResolvedTheme(resolvedTheme)
+      // 背景（图/视频/脚本/纯色）激活时终端画布跟着半透明，否则背景层被盖住
+      const bgAlpha =
+        surfaceAlpha !== null ? Math.min(termCfg.backgroundOpacity, surfaceAlpha) : termCfg.backgroundOpacity
+      kitty.applySettings({ ...termCfg, fontFamily: withEmojiFallback(termCfg.fontFamily), backgroundOpacity: bgAlpha })
       setBackendLabel(kitty.backendLabel)
       return
     }
@@ -874,7 +906,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         linksAddonRef.current = null
       }
     }
-  }, [termCfg, resolvedTheme, ready])
+  }, [termCfg, resolvedTheme, ready, surfaceAlpha])
 
   /* ── 尺寸跟踪 ─────────────────────────────────── */
   useEffect(() => {

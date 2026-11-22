@@ -180,6 +180,24 @@ export function effectiveSurfaceAlpha(config: AppearanceConfig, hasImage: boolea
   return hasImage ? config.opacity * BACKGROUND_SURFACE_FACTOR : config.opacity
 }
 
+/**
+ * 当前设置下是否有媒体背景在生效；有则返回界面不透明系数（终端画布
+ * 也应降到这个 alpha，否则背景层被实心画布挡住），没有返回 null。
+ * 供终端窗格初始化时同步（applyAppearance 在窗格挂载前就跑过一次，
+ * 只听 t1000-appearance 事件会漏掉启动时已生效的背景）。
+ */
+export function currentMediaSurfaceAlpha(): number | null {
+  if (cachedSettings === null) return null
+  const config = resolveAppearance(cachedSettings)
+  const url = backgroundImageUrl(config.backgroundImage)
+  const media =
+    Boolean(url) ||
+    (config.backgroundType === 'video' && config.backgroundVideo.trim() !== '') ||
+    (config.backgroundType === 'script' && config.backgroundScript.trim() !== '') ||
+    (config.backgroundType === 'color' && config.backgroundColor.trim() !== '')
+  return media ? effectiveSurfaceAlpha(config, true) : null
+}
+
 function prefersLight(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
   return window.matchMedia('(prefers-color-scheme: light)').matches

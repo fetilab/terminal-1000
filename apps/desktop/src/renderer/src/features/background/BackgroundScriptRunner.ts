@@ -54,15 +54,25 @@ async function loadCompiled(source: string): Promise<string> {
   return res.js
 }
 
-function instantiate(js: string): BackgroundModule {
-  const moduleObj: { exports: Record<string, unknown> } = { exports: {} }
-  // 脚本是用户/内置的可信代码（用户自己选的本地文件），与主进程读盘同级信任
-  const factory = new Function('module', 'exports', js)
-  factory(moduleObj, moduleObj.exports)
-  const mod = moduleObj.exports as { default?: unknown } & BackgroundModule
-  const def = (mod.default ?? mod) as BackgroundModule | ((api: BackgroundFrameInfo) => void)
-  if (typeof def === 'function') return { frame: def }
-  return def
+async function instantiate(js: string): Promise<BackgroundModule> {
+  // CSP 是 `script-src 'self' blob:` —— `new Function` 会被 EvalError 挡掉
+  //（"Evaluating a string as JavaScript violates CSP"）。所以这里把 CJS 输出
+  // 包成 ES module 文本走 **blob URL 动态 import**：blob 在白名单里，
+  // 且是真正的模块加载，不是 eval。
+  const src =
+    'const module = { exports: {} };\n' +
+    'const exports = module.exports;\n' +
+    js +
+    '\nexport default (module.exports && module.exports.default !== undefined) ? module.exports.default : module.exports;\n'
+  const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
+  try {
+    const mod = (await import(/* @vite-ignore */ url)) as { default?: unknown }
+    const def = mod.default
+    if (typeof def === 'function') return { frame: def as (api: BackgroundFrameInfo) => void }
+    return (def ?? {}) as BackgroundModule
+  } finally {
+    URL.revokeObjectURL(url)
+  }
 }
 
 /** 一个正在运行的脚本实例（画布 + 循环 + 生命周期） */
@@ -96,7 +106,7 @@ export class BackgroundScriptRunner {
   async start(): Promise<void> {
     const js = await loadCompiled(this.source)
     if (this.disposed) return
-    this.mod = instantiate(js)
+    this.mod = await instantiate(js)
     this.measure()
     this.resizeObs = new ResizeObserver(() => this.measure())
     this.resizeObs.observe(this.host)

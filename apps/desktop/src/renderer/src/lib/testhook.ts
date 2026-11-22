@@ -162,6 +162,11 @@ export interface T1000TestHook {
   /** 往指定会话注入一份监控快照（默认 demoSession 造的那个） */
   demoMonitor(processCount?: number, sessionId?: string): void
   snapshot(processCount?: number): MonitorSnapshot
+  /**
+   * 按**设置界面同款路径**改一个设置项：IPC set → 拿回全量文档 → applyAppearance。
+   * 与 SettingsView.update 完全一致 —— 验收动态背景时走这条，别绕过 UI 链路。
+   */
+  setAppearance(path: string, value: unknown): Promise<boolean>
 }
 
 function install(): void {
@@ -256,6 +261,17 @@ function install(): void {
       applySnapshot(sessionId, { ...demoSnapshot(processCount), sessionId })
     },
     snapshot: (processCount = 300) => demoSnapshot(processCount),
+    setAppearance: async (path, value) => {
+      const { invoke } = await import('./ipc')
+      const { applyAppearance } = await import('../theme/appearance')
+      const next = await invoke<'settings', 'set', { path: string; value: unknown }, Record<string, unknown>>(
+        'settings',
+        'set',
+        { path, value },
+      )
+      applyAppearance(next as never)
+      return true
+    },
   }
 
   ;(window as unknown as { __t1000?: T1000TestHook }).__t1000 = hook

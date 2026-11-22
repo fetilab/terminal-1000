@@ -342,7 +342,8 @@ export class KittyEngine {
     this.renderer.setCursorInactiveStyle(this.options.cursorInactiveStyle)
     this.renderer.setFocused(true)
     this.ready = true
-    this.startBlink()
+    // cursorBlink=false 时光标常亮（此前这个设置被忽略，定时器无条件启动）
+    if (this.options.cursorBlink !== false) this.startBlink()
     this.scheduleRender()
   }
 
@@ -1084,6 +1085,24 @@ export class KittyEngine {
     })
   }
 
+  /**
+   * 应用明暗模式（深色 ↔ 浅色切换）。
+   *
+   * resolvedTheme 原先只在构造时捕获，之后 buildTheme（applySettings 与
+   * 每帧的 refreshThemeBase）都读构造时的旧值 —— 切换应用主题后 kitty
+   * 渲染器永远停在旧配色上。窗格在 resolvedTheme 变化时必须调用这里。
+   */
+  setResolvedTheme(mode: 'light' | 'dark'): void {
+    if (this.opts.resolvedTheme === mode) return
+    ;(this.opts as { resolvedTheme: 'light' | 'dark' }).resolvedTheme = mode
+    this.theme = buildTheme({
+      settings: this.options,
+      resolved: mode,
+      core: this.customThemeBase ?? undefined,
+    })
+    this.renderer.setTheme(this.theme)
+  }
+
   /** 换主题/字体（设置热更新） */
   applySettings(settings: TerminalSettings): void {
     Object.assign(this.options, settings)
@@ -1107,6 +1126,13 @@ export class KittyEngine {
     this.renderer.setCursorTrail(settings.cursorTrail)
     this.renderer.setCursorShapeOverride(settings.cursorStyle)
     this.renderer.setCursorInactiveStyle(settings.cursorInactiveStyle)
+    // 闪烁开关热更新：false = 清定时器常亮；true = 重启定时器
+    if (settings.cursorBlink !== undefined) {
+      window.clearInterval(this.blinkTimer)
+      this.blinkOff = false
+      if (this.renderer.setBlinkOff(false)) this.scheduleRender()
+      if (settings.cursorBlink) this.startBlink()
+    }
     this.fit()
   }
 

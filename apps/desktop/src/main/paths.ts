@@ -2,7 +2,8 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 import { app } from 'electron'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { AppPaths } from '@t1000/shared'
 import {
@@ -44,6 +45,23 @@ export function prepareDataDir(): DataDirInfo {
   const appData = safePath('appData')
   const home = safePath('home')
   const exeDir = dirname(safePath('exe'))
+
+  // 自动化验收隔离：带 T1000_TEST_HOOK=1 时数据目录走一次性目录，绝不碰用户的
+  // 库/设置 —— 验收探针要读写真实设置项（外观、连接），混进用户数据就是事故。
+  // T1000_TEST_USERDATA 可固定目录：重启类验收（设置持久化）两次启动用同一个目录。
+  if (process.env['T1000_TEST_HOOK'] === '1') {
+    const isolated =
+      process.env['T1000_TEST_USERDATA'] ?? mkdtempSync(join(tmpdir(), 't1000-verify-'))
+    mkdirSync(isolated, { recursive: true })
+    app.setPath('userData', isolated)
+    prepared = {
+      dir: isolated,
+      previous,
+      migration: { from: null, items: [], failed: [] },
+      exeDir,
+    }
+    return prepared
+  }
 
   const { dir, relocatedFrom } = resolveDataDir({
     platform: process.platform,
