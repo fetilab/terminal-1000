@@ -50,7 +50,7 @@ describe('isAllowedUpdateUrl 安全边界', () => {
   it('★ 非 loopback 的 http 一律拒绝（明文更新通道）', () => {
     for (const u of [
       'http://example.com/update.json',
-      'http://192.168.1.10/update.json',
+      'http://192.0.2.10/update.json',
       'http://10.0.0.1/x.json',
     ]) {
       const r = isAllowedUpdateUrl(u)

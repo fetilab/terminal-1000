@@ -6,7 +6,7 @@
  *
  * ## 为什么用独立端口，而不是同端口按 magic 分流
  *
- * 本部署的现实约束（见 `docs/DEPLOYMENT-192.168.1.187.md`）：
+ * 本部署的现实约束（见 `docs/SELF-HOSTING.md`）：
  * - HTTP 的 **8787 被 nft `t1000-port-guard` 限制为仅回环**，只允许本机反代连入；
  *   正因为如此，`T1000_TRUST_PROXY=1`（采信 X-Forwarded-For）才是安全的。
  * - TSC/1 的存在意义恰恰是**被公网直连**（用户 80 被 ISP 封、无证书、不动 DNS）。

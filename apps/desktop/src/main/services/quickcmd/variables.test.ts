@@ -105,10 +105,10 @@ describe('clipboard / password / 主机信息', () => {
   })
 
   it('hostname / username / ip 用注入值', () => {
-    const c = ctx({ hostname: 'dev-box', username: 'mosfet', localIp: '192.168.1.20' })
+    const c = ctx({ hostname: 'dev-box', username: 'mosfet', localIp: '192.0.2.20' })
     expect(evaluateVariable('hostname', undefined, c)).toBe('dev-box')
     expect(evaluateVariable('username', undefined, c)).toBe('mosfet')
-    expect(evaluateVariable('ip', undefined, c)).toBe('192.168.1.20')
+    expect(evaluateVariable('ip', undefined, c)).toBe('192.0.2.20')
   })
 
   it('未知变量返回空串', () => {

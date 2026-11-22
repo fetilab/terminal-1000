@@ -542,7 +542,7 @@ export const MANUAL_CORE: Record<string, ManualEntry> = {
       ['ip -br a', '简洁列出所有网卡与地址'],
       ['ip route', '查看路由表'],
       ['ip link set eth0 up', '启用网卡（需 root）'],
-      ['ip a add 192.168.1.10/24 dev eth0', '临时加地址'],
+      ['ip a add 192.0.2.10/24 dev eth0', '临时加地址'],
     ],
   },
   nc: {

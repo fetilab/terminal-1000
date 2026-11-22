@@ -78,7 +78,7 @@ describe('安全默认（必须最保守）', () => {
     expect(isLoopbackHost('localhost')).toBe(true)
     expect(isLoopbackHost('::1')).toBe(true)
     expect(isLoopbackHost('0.0.0.0')).toBe(false)
-    expect(isLoopbackHost('192.168.1.5')).toBe(false)
+    expect(isLoopbackHost('192.0.2.5')).toBe(false)
   })
 })
 

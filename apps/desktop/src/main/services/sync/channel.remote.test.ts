@@ -11,7 +11,7 @@
  * 平时 skip，不让日常测试依赖外部机器（与 VNC/RDP 的门控 E2E 同一套做法）。
  *
  * 运行示例：
- *   T1000_TSC1_E2E=mc.mosfetech.de5.net:8788 pnpm vitest run src/main/services/sync/channel.remote.test.ts
+ *   T1000_TSC1_E2E=<你的域名>:8788 pnpm vitest run src/main/services/sync/channel.remote.test.ts
  */
 
 import { describe, expect, it } from 'vitest'

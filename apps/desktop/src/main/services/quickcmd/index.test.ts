@@ -38,7 +38,7 @@ function makeService(overrides: Partial<QuickCmdDeps> = {}): {
     password: 'p@ss',
     hostname: 'dev-box',
     username: 'mosfet',
-    localIp: '192.168.1.20',
+    localIp: '192.0.2.20',
   }
   const service = new QuickCmdService({
     store,
@@ -373,7 +373,7 @@ describe('变量面板（当前值预览）', () => {
 
     expect(panel.find((v) => v.name === 'date')?.value).toBe('2025-11-29')
     expect(panel.find((v) => v.name === 'hostname')?.value).toBe('dev-box')
-    expect(panel.find((v) => v.name === 'ip')?.value).toBe('192.168.1.20')
+    expect(panel.find((v) => v.name === 'ip')?.value).toBe('192.0.2.20')
   })
 })
 

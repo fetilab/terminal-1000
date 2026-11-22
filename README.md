@@ -132,7 +132,7 @@ cd server && node src/index.js   # 默认 HTTP 8787（仅回环）+ TSC/1 8788�
 ```
 
 - 只依赖 Node ≥ 22，无 npm 依赖；数据落本地目录，账号/令牌/密文 blob 三类记录
-- 单机部署、反代、systemd 与指纹核对流程见 [docs/DEPLOYMENT-192.168.1.187.md](docs/DEPLOYMENT-192.168.1.187.md)
+- 单机部署、反代、端口隔离、systemd 与指纹核对流程见 [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md)
 - 协议规范与威胁模型见 [docs/SYNC-SECURE-CHANNEL.md](docs/SYNC-SECURE-CHANNEL.md)
 
 ### 扩展

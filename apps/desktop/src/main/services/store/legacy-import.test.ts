@@ -27,7 +27,7 @@ function makeLegacyDb(dir: string): string {
   // 一台带私钥的 SSH（installId 前缀 + title 字段命名）
   put.run(K('Server', '6a9c1b17bfa3db9b57b8c720'), '6a9c1ba09b3e48839b2a5308', JSON.stringify({
     title: 'debian',
-    host: '192.168.1.187',
+    host: '192.0.2.10',
     port: 22,
     authType: 'privateKey',
     username: 'mosfet',
@@ -42,7 +42,7 @@ function makeLegacyDb(dir: string): string {
   // 一条 RDP（authDecrypted 嵌套）
   put.run(K('Rdp', '6a9c1b17bfa3db9b57b8c720'), '6af10a09faaf511644cdca1a', JSON.stringify({
     title: '1111',
-    authDecrypted: { address: '192.168.1.187', port: 3389, username: 'mosfet', password: '114514', enableClipboard: true, renderQualityMode: 'balanced' },
+    authDecrypted: { address: '192.0.2.10', port: 3389, username: 'mosfet', password: 'demo-pass', enableClipboard: true, renderQualityMode: 'balanced' },
     note: '',
     _id: '6af10a09faaf511644cdca1a',
     createdAt: '2026-11-09T07:47:21.796+08:00',
@@ -80,7 +80,7 @@ describe('legacy-import（历史数据一次性导入）', () => {
     expect(ssh).toMatchObject({
       kind: 'ssh',
       name: 'debian',
-      host: '192.168.1.187',
+      host: '192.0.2.10',
       port: 22,
       username: 'mosfet',
       authType: 'privateKey',
@@ -93,10 +93,10 @@ describe('legacy-import（历史数据一次性导入）', () => {
     const rdp = JSON.parse(db.get(STORE_KEYS.server, '6af10a09faaf511644cdca1a')!.payload)
     expect(rdp).toMatchObject({
       kind: 'rdp',
-      host: '192.168.1.187',
+      host: '192.0.2.10',
       port: 3389,
       username: 'mosfet',
-      password: '114514',
+      password: 'demo-pass',
       clipboardShare: true,
       quality: 'balanced',
     })

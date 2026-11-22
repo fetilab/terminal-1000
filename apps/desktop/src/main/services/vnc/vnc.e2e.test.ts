@@ -9,13 +9,13 @@
  *
  * 默认**跳过**（需要外部环境），用环境变量开启：
  *
- *   T1000_VNC_E2E=192.168.1.187:5901 T1000_VNC_PASSWORD=xxxxxxxx \
+ *   T1000_VNC_E2E=192.0.2.10:5901 T1000_VNC_PASSWORD=xxxxxxxx \
  *     pnpm exec vitest run src/main/services/vnc/vnc.e2e.test.ts
  *
  * 为什么做成门控测试而不是普通脚本：它在仓库里可被发现、可重复运行，
  * 又不会让日常 `pnpm test` 依赖外部机器。
  *
- * 本机实测环境（192.168.1.187）：tigervnc-standalone-server 1.15.0 起在 :1（5901），
+ * 实测环境（本地自建服务）：tigervnc-standalone-server 1.15.0 起在 :1（5901），
  * 会话为 LXQt，分辨率 1280x800。
  */
 

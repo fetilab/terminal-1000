@@ -114,7 +114,7 @@ export const DYNAMIC_VARIABLES: readonly VariableDef[] = [
     name: 'ip',
     description: '本机 IP 地址（第一个非回环 IPv4）',
     defaultFormat: '-',
-    example: '192.168.1.20',
+    example: '192.0.2.20',
   },
 ]
 

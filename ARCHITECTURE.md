@@ -110,7 +110,7 @@ terminal-1000/
 
 ## 6. 自建同步后端（server/）
 
-- 部署目标：`192.168.1.187`，数据目录 `/mnt/hdd-btrfs/terminal-1000`
+- 部署方式：单机 systemd + 反代，数据落本地目录；步骤见 `docs/SELF-HOSTING.md`
 - 职责最小化：账号 + 密文 blob 的版本化存储 + 拉取，**不解密、不索引明文**
 - 传输：HTTPS + Bearer token；冲突按 `updated_at` + 版本向量处理
 

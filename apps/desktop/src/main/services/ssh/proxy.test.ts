@@ -102,10 +102,10 @@ describe('expandIpv6', () => {
 
 describe('encodeSocks5Target', () => {
   it('IPv4 用 ATYP=0x01 且为紧凑 4 字节', () => {
-    const b = encodeSocks5Target('192.168.1.10', 22)
+    const b = encodeSocks5Target('192.0.2.10', 22)
     expect(b[0]).toBe(0x01)
     expect(b).toHaveLength(1 + 4 + 2)
-    expect([...b.subarray(1, 5)]).toEqual([192, 168, 1, 10])
+    expect([...b.subarray(1, 5)]).toEqual([192, 0, 2, 10])
     // 端口大端
     expect([...b.subarray(5, 7)]).toEqual([0x00, 0x16])
   })

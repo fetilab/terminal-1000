@@ -9,7 +9,7 @@
 
 `terminal-1000`：一个自主实现的 **Electron + React + TypeScript** 远程连接管理器。
 GPL-3.0 开源。覆盖 SSH / SFTP / Telnet / 隧道 / VNC / RDP、终端工作区、监控面板、命令补全、
-AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研的云同步后端**（部署在 `192.168.1.187`）。
+AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研的云同步后端**（`server/`，可自建部署）。
 
 工作目录：`/home/mosfet/dsh1/terminal-1000`
 
@@ -85,18 +85,12 @@ docs/                    架构、性能目标、部署、协议规范
 - Node ≥ 24，pnpm 11，monorepo（`pnpm-workspace.yaml`）
 - 无头 UI：`Xvfb :75 -screen 0 1280x800x24 &`，Electron 必须带 `--no-sandbox --ozone-platform=x11`
 
-### 服务器 `192.168.1.187`
-- **仅 IPv6**：绑定必须用 `::`，`0.0.0.0` 完全不可达
-- 域名 `mc.mosfetech.de5.net`（IPv6 解析到该机）
-- 数据盘 `/mnt/hdd-btrfs`（1TB 机械盘），同步数据在 `/mnt/hdd-btrfs/terminal-1000/data`
-- 同步后端 systemd 服务：`terminal-1000-sync`
-- **HTTP 端口 8787**（给反代用，仅回环）+ **TSC/1 加密端口 8788**（公网直连，无反代）
-- TSC/1 身份指纹：`4844 72aa 4517 f615 edae a7a4 d86c acff`
-  （查看当前值：`node server/src/tsc1/identity.js --fingerprint`，需在有身份的机器上跑）
-- 部署细节与回滚方式：`docs/DEPLOYMENT-192.168.1.187.md`
-- **不要动** Lucky 反代与 Docker/1Panel 的配置
-- 80 端口被 ISP 封；**443 无证书**，所以外网走 `http://<域名>:8787`（明文，仅本地/回环允许）
-  或 `tsc1://<域名>:8788`（加密）
+### 同步后端（`server/`）
+- 零运行时依赖，只需 Node ≥ 22；数据落一个本地目录
+- **HTTP 端口 8787**（给反代用，必须仅回环）+ **TSC/1 加密端口 8788**（公网直连，无反代）
+- 仅 IPv6 的主机绑定必须用 `::`，`0.0.0.0` 完全不可达
+- 身份指纹：`node server/src/tsc1/identity.js --fingerprint`
+- 部署、端口隔离、反代与回滚方式：`docs/SELF-HOSTING.md`
 
 ### 远程执行（dsh-remote）—— 有陷阱
 绑定机器后**所有 bash 命令都在远端执行**，而远端那份目录是**旧的同步镜像**。
@@ -368,7 +362,7 @@ cd apps/desktop
 pnpm test                                     # 单元测试
 pnpm typecheck                                # 类型检查
 pnpm build                                    # 构建（验收前必须成功，否则跑的是旧产物）
-T1000_TSC1_E2E=mc.mosfetech.de5.net:8788 \
+T1000_TSC1_E2E=<你的域名>:8788 \
   pnpm vitest run src/main/services/sync/channel.remote.test.ts   # 加密通道真机验收
 
 # 整机验收（需要 X）

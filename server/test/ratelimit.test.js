@@ -124,7 +124,7 @@ describe('失败锁定与指数退避', () => {
 
 describe('IPv6 与客户端 IP', () => {
   it('IPv4-mapped IPv6 归一化为 IPv4（限流 key 才稳定）', () => {
-    assert.equal(normalizeIp('::ffff:192.168.1.5'), '192.168.1.5')
+    assert.equal(normalizeIp('::ffff:192.0.2.5'), '192.0.2.5')
     assert.equal(normalizeIp('::ffff:10.0.0.1'), '10.0.0.1')
   })
 
@@ -168,7 +168,7 @@ describe('IPv6 与客户端 IP', () => {
   it('★ :: 视为对外暴露（IPv6 全接口就是对外）', () => {
     assert.equal(isPublicBind('::'), true)
     assert.equal(isPublicBind('0.0.0.0'), true)
-    assert.equal(isPublicBind('192.168.1.187'), true)
+    assert.equal(isPublicBind('192.0.2.10'), true)
   })
 })
 
