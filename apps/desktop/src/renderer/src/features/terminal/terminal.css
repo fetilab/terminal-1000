@@ -214,6 +214,10 @@
 }
 
 .term-pane__surface {
+  /* kitty 引擎的 .kitty-surface 是 absolute; inset:0 —— 这里必须是定位祖先，
+     否则它会以 .term-pane 为包含块，高度多算上底部状态栏（约 33px），
+     画布越界盖住状态栏、底边被切，表现为「终端底边烂了」。 */
+  position: relative;
   flex: 1;
   min-height: 0;
   padding: 6px 2px 2px 8px;

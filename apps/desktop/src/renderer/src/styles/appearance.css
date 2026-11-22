@@ -157,15 +157,21 @@ body.t1000-has-dynbg::before {
 }
 
 /*
- * 毛玻璃：背景图/动态背景激活时，终端自绘表面把背后的背景层磨砂化。
- * 前提是终端画布本身半透明（TerminalPane 会把清屏 alpha 联动到
- * --t1000-surface-alpha 同源系数），否则磨砂层被实心画布挡住、什么也看不见。
+ * 终端区域**不做二次模糊**。
+ *
+ * 这里曾有一条 `.kitty-surface { backdrop-filter: blur(14px) }`，想给终端加
+ * 磨砂感，实际造成三个可见缺陷：
+ *   1. 壁纸层已有「背景模糊」滑杆（body::before 的 filter），再叠 14px 就是
+ *      **两层高斯模糊**——终端糊成白雾，而两侧只有壁纸层的一层，清晰可见，
+ *      中间与两侧观感完全不一致；
+ *   2. backdrop-filter 让 .kitty-surface 变成独立合成层，边缘（尤其底部）
+ *      采样越界，圆角与底边被切掉；
+ *   3. 它与 kitty 原版模型相悖：kitty 只有整张壁纸的 background_blur，
+ *      没有「终端区域单独磨砂」这回事。
+ *
+ * 模糊的唯一来源 = 背景层的 `--t1000-bg-blur`（全屏统一，见 body::before）。
+ * 终端只负责「透出多少」（画布 alpha 联动 --t1000-surface-alpha）。
  */
-body.t1000-has-bg .kitty-surface,
-body.t1000-has-dynbg .kitty-surface {
-  backdrop-filter: blur(14px) saturate(1.15);
-  -webkit-backdrop-filter: blur(14px) saturate(1.15);
-}
 
 /*
  * 媒体背景激活时，终端画布 → 背景层之间的**中间容器必须全部透明**。

@@ -454,13 +454,16 @@ async function probeDynbgChain(cdp) {
     return el ? (getComputedStyle(el).backdropFilter || getComputedStyle(el).webkitBackdropFilter || 'none') : null
   })()`)
   const alphaOnOk = alphaOn >= 10 && alphaOn < 40
-  const glassOk = typeof glass === 'string' && glass !== 'none'
+  // 终端区域**不允许**再有第二层模糊：模糊的唯一来源是背景层 --t1000-bg-blur。
+  // 曾经这里断言 backdrop-filter 必须是 blur(14px)，于是「中间糊成白雾、
+  // 两侧清晰」的双层模糊被当成合格，探针全绿而用户一眼看穿。
+  const glassOk = glass === 'none'
   // 关闭背景：画布回到终端自己的不透明度 0.88
   await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, backgroundOpacity: 0.88 })`)
   await sleep(150)
   const alphaOff = await canvasBgAlpha(cdp, `document.querySelector('#kitty-demo canvas')`)
   const alphaOffOk = alphaOff >= 216
-  console.log(`  canvas alpha: 背景开=${alphaOn} (期望≈26) 毛玻璃=${glass} 背景关=${alphaOff} (期望≈224)`)
+  console.log(`  canvas alpha: 背景开=${alphaOn} (期望≈26) 终端二次模糊=${glass} (必须 none) 背景关=${alphaOff} (期望≈224)`)
 
   // 图片类型：走 body::before（静态层），断言 CSS 变量与 has-bg；
   // 媒体层必须满强度（--t1000-bg-image-opacity=1）——此前它自己乘可见度（默认 0.35），
@@ -569,7 +572,7 @@ async function probeDynbgChain(cdp) {
   const c3 = await dom()
   const offOk = !c3.hasClass && !c3.layer
 
-  console.log(`DYNBG-CHAIN: ${colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && defaultVisOk && zeroHiddenOk && blurOk && overlaySolidOk && scriptOk && offOk ? 'PASS' : 'FAIL'} (纯色+10%透出=${colorOk} 画布半透明=${alphaOnOk && alphaOffOk} 毛玻璃=${glassOk} 图片=${imageOk} 默认可见度满强度=${defaultVisOk} 可见度0隐藏=${zeroHiddenOk} 背景模糊=${blurOk} 浮层实色=${overlaySolidOk} 脚本=${scriptOk} 关闭=${offOk})`)
+  console.log(`DYNBG-CHAIN: ${colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && defaultVisOk && zeroHiddenOk && blurOk && overlaySolidOk && scriptOk && offOk ? 'PASS' : 'FAIL'} (纯色+10%透出=${colorOk} 画布半透明=${alphaOnOk && alphaOffOk} 无二次模糊=${glassOk} 图片=${imageOk} 默认可见度满强度=${defaultVisOk} 可见度0隐藏=${zeroHiddenOk} 背景模糊=${blurOk} 浮层实色=${overlaySolidOk} 脚本=${scriptOk} 关闭=${offOk})`)
   console.log('  color dom =', JSON.stringify(c1))
   console.log('  image dom =', JSON.stringify(cImg))
   console.log('  script dom =', JSON.stringify(c2), 'pixels =', JSON.stringify(pixels))
@@ -592,7 +595,7 @@ async function probeRealPane(cdp) {
     console.log('REAL-PANE: FAIL (真实窗格引擎未创建)')
     return false
   }
-  const paneCanvas = `document.querySelector('.kitty-canvas')`
+  const paneCanvas = `document.querySelector('.term-pane .kitty-canvas')`
   const paneRender = `window.__t1000PaneEngine?.renderer?.render?.()`
 
   // 先强制深色作为基线（测试 userdata 启动时可能直接落在 light/system）
@@ -675,7 +678,7 @@ async function probeRealPane(cdp) {
   // 来自文字抗锯齿边缘，正常应远低于 1%。
   const film = await cdp.eval(`(() => {
     ${paneRender}
-    const glc = document.querySelector('.kitty-canvas')
+    const glc = document.querySelector('.term-pane .kitty-canvas')
     if (!glc) return { ratio: 1, total: 0 }
     const c2 = document.createElement('canvas')
     c2.width = glc.width; c2.height = glc.height
@@ -689,7 +692,7 @@ async function probeRealPane(cdp) {
   })()`)
   const composite = await cdp.eval(`(() => {
     ${ALPHA_PARSER}
-    const canvas = document.querySelector('.kitty-canvas')
+    const canvas = document.querySelector('.term-pane .kitty-canvas')
     const dyn = document.querySelector('.t1000-dynbg')
     if (!canvas || !dyn) return { ok: false, why: 'missing elements' }
     const dr = dyn.getBoundingClientRect()
@@ -716,7 +719,39 @@ async function probeRealPane(cdp) {
     chainComposite = 1 - chainComposite
     // DOCUMENT_POSITION_FOLLOWING：canvas 在 dyn 之后 → dyn 在画布之前绘制（在下层）
     const dynBeforeContent = !!(dyn.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING)
-    return { coversViewport, redSet, dynOpacity, opaqueLayers, chainComposite: +chainComposite.toFixed(4), dynBeforeContent }
+    // 终端区域不允许第二层模糊：模糊只由背景层 --t1000-bg-blur 提供（全屏统一）。
+    // 曾有 backdrop-filter: blur(14px)，导致中间糊成白雾、两侧清晰，且边缘被切。
+    const ks = document.querySelector('.kitty-surface')
+    const ksCs = ks ? getComputedStyle(ks) : null
+    // 不只 .kitty-surface：终端子树里任何一层都不许有自己的模糊/滤镜，
+    // 否则「中间糊、两侧清晰」的割裂会以别的形式复现。
+    const paneEl = document.querySelector('.term-pane')
+    let blurred = []
+    if (paneEl) {
+      for (const el of [paneEl, ...paneEl.querySelectorAll('*')]) {
+        const cs = getComputedStyle(el)
+        const bd = cs.backdropFilter || 'none'
+        const ft = cs.filter || 'none'
+        if (bd !== 'none' || ft !== 'none') {
+          blurred.push(el.tagName.toLowerCase() + '.' + String(el.className || '').split(' ')[0] + ':' + (bd !== 'none' ? bd : ft))
+        }
+      }
+    }
+    const noSecondBlur = (!ksCs || (ksCs.backdropFilter || 'none') === 'none') && blurred.length === 0
+    // .kitty-surface 必须严格贴合 .term-pane__surface：absolute;inset:0 一旦
+    // 找不到定位祖先，就会以 .term-pane 为包含块、越界盖住底部状态栏。
+    const sf = document.querySelector('.term-pane__surface')
+    let surfaceFits = false
+    if (ks && sf) {
+      const kr = ks.getBoundingClientRect()
+      const sr = sf.getBoundingClientRect()
+      // inset:0 填充包含块的 padding box：底边应与 surface 底边重合（±1px），
+      // 高度等于 clientHeight（含 padding），且绝不能越过状态栏。
+      surfaceFits = Math.abs(kr.bottom - sr.bottom) <= 1.5 &&
+        Math.abs(kr.height - sf.clientHeight) <= 1.5 &&
+        kr.top >= sr.top - 0.5
+    }
+    return { coversViewport, redSet, dynOpacity, opaqueLayers, chainComposite: +chainComposite.toFixed(4), dynBeforeContent, noSecondBlur, surfaceFits, blurred }
   })()`)
   const bgVisibleOk =
     // 终端画布上不能有任何半透明底色薄膜；中间容器累积合成必须≈0
@@ -726,12 +761,14 @@ async function probeRealPane(cdp) {
     composite.dynOpacity > 0.95 &&
     composite.opaqueLayers.length === 0 &&
     composite.chainComposite < 0.02 &&
-    composite.dynBeforeContent
+    composite.dynBeforeContent &&
+    composite.noSecondBlur &&
+    composite.surfaceFits
   await cdp.shot('pane-bg-red.png')
 
   // 模拟鼠标：真实点击终端区域（按下/抬起/移动），引擎必须存活且无异常
   const canvasBox = await cdp.eval(`(() => {
-    const el = document.querySelector('.kitty-canvas')
+    const el = document.querySelector('.term-pane .kitty-canvas')
     if (!el) return null
     const r = el.getBoundingClientRect()
     return { x: r.left, y: r.top, w: r.width, h: r.height }
@@ -760,7 +797,7 @@ async function probeRealPane(cdp) {
   await cdp.eval(`window.__t1000.setAppearance('app.appearance.backgroundType', 'none')`)
   await sleep(300)
 
-  console.log(`REAL-PANE: ${themeKeepOk && textVisibleOk && bgVisibleOk && mouseOk ? 'PASS' : 'FAIL'} (配色跟随=${themeKeepOk} 历史文字可见=${textVisibleOk} 背景透出=${bgVisibleOk} 模拟鼠标=${mouseOk})`)
+  console.log(`REAL-PANE: ${themeKeepOk && textVisibleOk && bgVisibleOk && mouseOk ? 'PASS' : 'FAIL'} (配色跟随=${themeKeepOk} 历史文字可见=${textVisibleOk} 背景透出=${bgVisibleOk} 无二次模糊=${composite.noSecondBlur} 画布贴合=${composite.surfaceFits} 模拟鼠标=${mouseOk})`)
   console.log('  before =', JSON.stringify(before), 'greenPxBefore =', greenPxBefore)
   console.log('  after  =', JSON.stringify(after), 'greenPxAfter =', greenPxAfter)
   console.log('  paneAlpha =', paneAlpha, 'film =', JSON.stringify(film), 'composite =', JSON.stringify(composite), 'greenPxBefore =', greenPxBefore, 'greenPxAfter =', greenPxAfter)
