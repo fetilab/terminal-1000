@@ -339,6 +339,18 @@ export const SETTINGS_FIELDS: Record<
   terminal: [
     { path: 'terminal.copyOnSelect', label: '选中即复制', kind: 'switch' },
     { path: 'terminal.rightClickPaste', label: '右键粘贴', kind: 'switch' },
+    {
+      path: 'terminal.copyOnCtrlC',
+      label: '有选区时 Ctrl+C 复制',
+      kind: 'switch',
+      hint: '默认关闭：Ctrl+C 首先是终端程序的中断信号。打开后只在有选区时复制，没有选区仍发中断',
+    },
+    {
+      path: 'terminal.pasteOnCtrlV',
+      label: 'Ctrl+V 粘贴',
+      kind: 'switch',
+      hint: '默认关闭：Ctrl+V 是 vim 的块选择、emacs 的 quoted-insert。想要 Windows Terminal 的手感再打开；Ctrl+Shift+V / Shift+Insert 始终可用',
+    },
     { path: 'terminal.scrollback', label: '回看行数', kind: 'number', min: 100, max: 200000, step: 1000, hint: '越大越占内存' },
     {
       path: 'terminal.bell',

@@ -398,6 +398,8 @@ const initialState: AppState = {
     cursorBlink: true,
     copyOnSelect: true,
     rightClickPaste: false,
+    copyOnCtrlC: false,
+    pasteOnCtrlV: false,
     scrollback: 50000,
     wrapLines: true,
     bell: 'none',

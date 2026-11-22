@@ -16,17 +16,7 @@ import { Badge } from '../../components/Feedback'
 import { Switch } from '../../components/Form'
 import { Icon } from '../../components/Icon'
 import { toast } from '../../components/Toast'
-
-/** 命令 id → 人话。没有映射的按原样显示，避免"看不出来这是干什么的"。 */
-const COMMAND_LABELS: Record<string, string> = {
-  'terminal.newTab': '新建会话标签',
-  'terminal.closeTab': '关闭当前标签',
-  'terminal.find': '终端内查找',
-  'terminal.clear': '清屏',
-  'terminal.splitHorizontal': '左右分屏',
-  'terminal.splitVertical': '上下分屏',
-  'app.toggleWindow': '显示 / 隐藏主窗口',
-}
+import { COMMAND_LABELS } from '../../lib/commands'
 
 /**
  * 键盘事件 → Electron accelerator 字符串。
@@ -168,8 +158,9 @@ export function HotkeysEditor({ bindings, onChange }: HotkeysEditorProps): React
       </div>
 
       <p className="t-field__hint" style={{ marginTop: 12 }}>
-        <Icon name="info" size={12} /> 变更只落库；真正把快捷键注册到 Electron（含全局快捷键）
-        需要主进程的 hotkey 服务消费这份配置，这一步还没接。
+        <Icon name="info" size={12} /> 应用内快捷键在主进程捕获（before-input-event），
+        全局快捷键走系统级注册；两者改动即时生效。注意：占用的键不会再送进终端 ——
+        如果某个程序需要这个键（如 Ctrl+K 是 shell 的 kill-line），把对应绑定关掉即可。
       </p>
     </>
   )

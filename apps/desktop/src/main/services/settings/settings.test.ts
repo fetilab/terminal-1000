@@ -273,4 +273,45 @@ describe('settings 域', () => {
     const ids = s.hotkeys.map((h) => h.id)
     expect(new Set(ids).size).toBe(ids.length)
   })
+
+  it('终端程序常用的键默认不抢：Ctrl+K（kill-line）/ Ctrl+Space（set-mark）默认关', () => {
+    const s = call('getAll') as ReturnType<typeof defaultSettings>
+    const byCommand = new Map(s.hotkeys.map((h) => [h.command, h]))
+    expect(byCommand.get('app.globalSearch')?.enabled).toBe(false)
+    expect(byCommand.get('terminal.completion')?.enabled).toBe(false)
+    // Ctrl+, / Ctrl+1..7 终端程序基本不用，保持默认开
+    expect(byCommand.get('app.openSettings')?.enabled).toBe(true)
+    expect(byCommand.get('app.view.console')?.enabled).toBe(true)
+  })
+
+  it('旧文档的 hotkeys 数组补齐新版本命令，且不动用户的改动', () => {
+    // 0.2.5 落库的 hotkeys 只有 7 条；用户把 new-tab 改成 Alt+Q 并禁用了 find
+    const oldDoc = {
+      version: 1,
+      data: {
+        hotkeys: [
+          { id: 'hk-new-tab', command: 'terminal.newTab', accelerator: 'Alt+Q', global: false, enabled: true },
+          { id: 'hk-find', command: 'terminal.find', accelerator: 'Ctrl+Shift+F', global: false, enabled: false },
+        ],
+      },
+    }
+    getStoreService().db.put(storeKeyOf('Settings'), 'app', JSON.stringify(oldDoc), Date.now())
+    resetSettingsCache()
+
+    const s = call('getAll') as ReturnType<typeof defaultSettings>
+    const byCommand = new Map(s.hotkeys.map((h) => [h.command, h]))
+    // 用户的改动原样保留（迁移是按 command 补缺的加法，不是重置）
+    expect(byCommand.get('terminal.newTab')?.accelerator).toBe('Alt+Q')
+    expect(byCommand.get('terminal.find')?.enabled).toBe(false)
+    // 新版本命令补齐
+    expect(byCommand.get('app.globalSearch')).toBeDefined()
+    expect(byCommand.get('app.openSettings')).toBeDefined()
+    expect(byCommand.get('app.view.console')).toBeDefined()
+    expect(byCommand.get('terminal.completion')).toBeDefined()
+
+    // 幂等：重读不会重复追加
+    resetSettingsCache()
+    const again = call('getAll') as typeof s
+    expect(again.hotkeys.length).toBe(s.hotkeys.length)
+  })
 })

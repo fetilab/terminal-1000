@@ -13,11 +13,12 @@
  * xterm / 监控面板 / 连接表单这类重模块在真正用到时才拉取。
  */
 
-import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { Events } from '@t1000/shared'
 import { VaultGate } from './components/VaultGate'
 import { BrandMark } from './components/BrandMark'
 import { subscribe } from './lib/ipc'
+import { runCommand } from './lib/commands'
 import { SshPrompts } from './features/terminal/SshPrompts'
 import { AgentInstallPrompt } from './features/monitor/AgentInstallPrompt'
 import { DynamicBackground } from './features/background/DynamicBackground'
@@ -135,13 +136,6 @@ function Rail(): React.JSX.Element {
 function Sidebar(): React.JSX.Element {
   const view = useStoreShallow((s) => ({ view: s.view })).view
 
-  /**
-   * 全局搜索（Ctrl/Cmd+K）。
-   *
-   * 走渲染层 keydown 而不是 hotkey 服务：hotkey 是给系统级/全局快捷键用的，
-   * 这个只在应用有焦点时才该生效。我核对过默认绑定，Ctrl+K 没有被占用。
-   */
-
   switch (view) {
     case 'connections':
       return <ConnectionsSidebar />
@@ -216,30 +210,19 @@ export function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (!e.ctrlKey) return
-      if (e.key === ',') {
-        e.preventDefault()
-        actions.setView('settings')
-        return
-      }
-      const byNumber: Record<string, ViewId> = {
-        '1': 'connections',
-        '2': 'console',
-        '3': 'notes',
-        '4': 'tools',
-        '5': 'ai',
-        '6': 'services',
-        '7': 'logs',
-      }
-      const target = byNumber[e.key]
-      if (target) {
-        e.preventDefault()
-        actions.setView(target)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    /*
+     * 快捷键**只**走设置里的 hotkeys：主进程捕获（before-input-event /
+     * globalShortcut）后发 HOTKEY_TRIGGERED，这里分发到命令表。
+     *
+     * 早先这里还有一批写死的 Ctrl+, / Ctrl+1..7 / Ctrl+K —— 全部删掉了：
+     * 1. 用户改不了、关不掉（Ctrl+K 抢了 readline 的 kill-line）；
+     * 2. 与 hotkey 服务双重捕获，行为拧着来。
+     * 现在这批键全部搬进 DEFAULT_HOTKEYS，「设置 → 快捷键」里可改可关。
+     */
+    const off = subscribe(Events.HOTKEY_TRIGGERED, (p) => {
+      runCommand(p.command)
+    })
+    return off
   }, [])
 
   const view = useStoreShallow((s) => ({ view: s.view })).view
@@ -275,22 +258,7 @@ export function App(): React.JSX.Element {
       offUnlocked()
     }
   }, [])
-  const toggleSearch = useCallback(() => actions.toggleGlobalSearch(), [])
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
-        e.preventDefault()
-        // 别让 xterm 同时把 ^K 发给远端 shell
-        e.stopPropagation()
-        toggleSearch()
-      }
-    }
-    // 用**捕获阶段**：终端里的 xterm 会把 Ctrl+K 当 kill-line 吞掉，
-    // 冒泡阶段收不到，全局搜索在终端聚焦时就打不开
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [toggleSearch])
+  /* Ctrl+K（全局搜索）的键盘入口已迁到「设置 → 快捷键」的 app.globalSearch 绑定 */
 
   return (
     <div

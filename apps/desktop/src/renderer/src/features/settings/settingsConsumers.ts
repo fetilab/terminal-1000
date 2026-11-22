@@ -51,6 +51,8 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'terminal.cursorBlink': '同上（term.options.cursorBlink）',
   'terminal.copyOnSelect': 'TerminalPane onSelectionChange → 选中即写入剪贴板',
   'terminal.rightClickPaste': 'TerminalPane onContextMenu → 直接粘贴而不弹菜单',
+  'terminal.copyOnCtrlC': 'TerminalPane 捕获阶段 keydown → 有选区时 Ctrl+C 复制（默认关，避免抢 SIGINT）',
+  'terminal.pasteOnCtrlV': 'TerminalPane 捕获阶段 keydown → Ctrl+V 粘贴（默认关，避免抢 vim/emacs）',
   'terminal.scrollback': '同上（term.options.scrollback）',
   'terminal.bell': 'TerminalPane onBell + VNC 查看器 BELL → sound 时发声、visual 时提示',
   'terminal.colorScheme': 'TerminalPane themeFor() → 三套内置配色，热切换',

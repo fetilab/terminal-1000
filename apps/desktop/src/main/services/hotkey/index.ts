@@ -34,19 +34,50 @@ const log = createLogger('hotkey')
 /** 当前注册结果（bindingId → 状态），供 list 与状态广播使用 */
 let registrations = new Map<string, HotkeyRegistration>()
 
-/** 应用内按键的监听器（需要时移除，避免重复注册） */
-const inputListeners = new WeakMap<BrowserWindow, (e: unknown, input: KeyInput) => void>()
+/** 一个窗口上挂着的全部应用内监听（每个 binding 一条，按 accelerator 去重） */
+interface InAppListener {
+  accel: string
+  listener: (e: unknown, input: KeyInput) => void
+}
+const inputListeners = new WeakMap<BrowserWindow, InAppListener[]>()
 
 let activeCtx: IpcContext | null = null
 
 // ── 注册与撤销 ───────────────────────────────────────
 
 function emitTriggered(ctx: IpcContext, binding: HotkeyBinding, source: 'global' | 'in-app'): void {
+  /*
+   * app.toggleWindow 必须在主进程就地执行：全局键在**应用未聚焦**时触发，
+   * 此时窗口可能是隐藏的 —— 渲染层虽然还活着、能收到事件，但"把窗口显示出来
+   * 并抢焦点"是窗口管理操作，只有主进程能做对。
+   */
+  if (binding.command === 'app.toggleWindow') {
+    void toggleMainWindow()
+    return
+  }
   ctx.emit(Events.HOTKEY_TRIGGERED, {
     bindingId: binding.id,
     command: binding.command,
     source,
   })
+}
+
+/** 显示 / 隐藏主窗口（托盘常驻场景下 = 一键呼出/收起） */
+async function toggleMainWindow(): Promise<void> {
+  try {
+    const { getMainWindow } = await import('../../window')
+    const win = getMainWindow()
+    if (!win) return
+    if (win.isVisible() && win.isFocused()) {
+      win.hide()
+    } else {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    }
+  } catch (err) {
+    log.warn('切换窗口可见性失败', err)
+  }
 }
 
 /** 卸载全部已注册的快捷键（含窗口级监听） */
@@ -57,11 +88,12 @@ export function unregisterAll(): void {
     log.warn('注销全局快捷键失败', err)
   }
   for (const win of BrowserWindow.getAllWindows()) {
-    const listener = inputListeners.get(win)
-    if (listener) {
-      win.webContents.removeListener('before-input-event', listener as never)
-      inputListeners.delete(win)
+    const list = inputListeners.get(win)
+    if (!list) continue
+    for (const item of list) {
+      win.webContents.removeListener('before-input-event', item.listener as never)
     }
+    inputListeners.delete(win)
   }
   registrations = new Map()
 }
@@ -152,23 +184,38 @@ export function registerFromSettings(ctx: IpcContext): HotkeyRegistration[] {
 
 /** 给单个窗口挂应用内快捷键监听（窗口新建时也要调用） */
 export function attachInApp(win: BrowserWindow, accel: string, binding: HotkeyBinding): void {
-  // 同一窗口同一 accelerator 不重复挂
-  const existing = inputListeners.get(win)
-  if (existing) {
-    win.webContents.removeListener('before-input-event', existing as never)
-    inputListeners.delete(win)
+  /*
+   * ⚠️ 这里必须**按 accelerator 累积**，而不是每个窗口只留一条监听。
+   *
+   * 早先是 `WeakMap<窗口, listener>`，每次调用都先 remove 掉上一条 —— 而
+   * `registerFromSettings` 是**对每个 binding 依次调用**的，于是后一条把前一条
+   * 顶掉，最终只有**最后一个快捷键**真正生效（其余全静默无效）。
+   * 用户看到的正是「设置里明明绑了，按下去没反应」。
+   */
+  const list = inputListeners.get(win) ?? []
+  const same = list.find((item) => item.accel === accel)
+  if (same) {
+    win.webContents.removeListener('before-input-event', same.listener as never)
+    list.splice(list.indexOf(same), 1)
   }
 
   // Electron 的 Input 结构上兼容 KeyInput（control/alt/shift/meta/key），
   // 这里用最小形状接收，避免把 electron 类型渗进纯逻辑
-  const listener = (_e: unknown, input: KeyInput): void => {
+  const listener = (e: unknown, input: KeyInput): void => {
     if (!activeCtx) return
-    if (matchesInput(input, accel)) {
-      emitTriggered(activeCtx, binding, 'in-app')
-    }
+    if (!matchesInput(input, accel)) return
+    /*
+     * 必须 preventDefault：`before-input-event` 不拦的话按键会继续送进渲染层，
+     * 终端就会把它当普通输入编码给 PTY（Ctrl+1 → `1`、Ctrl+K → `^K`）。
+     * 那样既是"快捷键和终端同时响应"，也会把垃圾字符塞进用户的命令里。
+     */
+    const ev = e as { preventDefault?: () => void }
+    ev.preventDefault?.()
+    emitTriggered(activeCtx, binding, 'in-app')
   }
   win.webContents.on('before-input-event', listener as never)
-  inputListeners.set(win, listener)
+  list.push({ accel, listener })
+  inputListeners.set(win, list)
 }
 
 /** 把 Electron 的 Input 与规范化后的 accelerator 做匹配 */

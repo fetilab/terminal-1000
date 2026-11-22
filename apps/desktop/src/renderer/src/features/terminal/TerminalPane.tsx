@@ -31,6 +31,7 @@ import { Badge } from '../../components/Feedback'
 import { IconButton } from '../../components/Button'
 import { invoke, subscribe } from '../../lib/ipc'
 import { copyText, readClipboardText } from '../../lib/clipboard'
+import { PANE_COMMAND_EVENT, type PaneCommandDetail } from '../../lib/commands'
 import type { TabKind } from '../../lib/store'
 import {
   actions,
@@ -278,12 +279,23 @@ export interface TerminalPaneProps {
   visible: boolean
 }
 
+/**
+ * tabId → 最近聚焦的窗格根元素。
+ * 快捷键命令（查找/清屏/补全）经 PANE_COMMAND_EVENT 广播到所有窗格，
+ * 由这个登记表决定谁接手 —— 分屏时命令只作用于用户正在操作的那半屏。
+ */
+const lastFocusedPane = new Map<string, HTMLElement>()
+
 export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Element {
   const paneRef = useRef<HTMLDivElement | null>(null)
+
+  /** 焦点登记：PANE_COMMAND_EVENT 按它路由到"用户最近在用的那个窗格" */
+  const registerPaneFocus = useCallback(() => {
+    const el = paneRef.current
+    if (el) lastFocusedPane.set(tab.tabId, el)
+  }, [tab.tabId])
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
-  /** 宿主平台：决定 Ctrl+V 是否当粘贴（仅 Windows，其它平台留给程序） */
-  const platform = window.t1000?.platform ?? 'linux'
   const fitRef = useRef<FitAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
   const writerRef = useRef<BackpressureWriter>(new BackpressureWriter())
@@ -1032,16 +1044,19 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
        * 那时已经晚了 —— 用户看到的就是"按了粘贴，结果终端里多了个怪字符"。
        * 捕获阶段在祖先上先触发，`stopPropagation` 一拦，引擎根本收不到。
        *
-       * 键位取三家习惯的并集：
-       * - `Ctrl+Shift+C/V`：kitty / GNOME Terminal / VS Code；
-       * - `Ctrl+Insert / Shift+Insert`：X11 与 Windows 传统终端；
-       * - `Ctrl+C`（**有选区时**才复制）：Windows Terminal 与 VS Code 的默认，
-       *   没选区时放行，仍然是 SIGINT，vim 用户不受影响；
-       * - `Ctrl+V`：仅 Windows（Windows Terminal 默认），其它平台留给程序
-       *   （vim 的块选择、emacs 的 quoted-insert 都要它）。
+       * 键位分两类，**绝大多数字符是"不抢占"的**：
+       * - `Ctrl+Shift+C/V`：kitty / GNOME Terminal / VS Code 的既成标准，
+       *   终端程序不会用到（Shift 变体本来就是留给终端的）；
+       * - `Ctrl+Insert / Shift+Insert`：X11 与 Windows 传统终端，同样不冲突。
+       *
+       * 而 `Ctrl+C` / `Ctrl+V` 属于**程序**（中断、vim 块选择、emacs quoted-insert），
+       * 抢走会让用户用不了这些功能，所以只在设置里显式打开后才接管：
+       * - `terminal.copyOnCtrlC`（默认关）：有选区时 Ctrl+C 复制；
+       * - `terminal.pasteOnCtrlV`（默认关）：Ctrl+V 粘贴。
        */
       const term = termRef.current
       if (!term) return
+      const opts = termSettingsRef.current
       const mod = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
       const isInsert = e.key === 'Insert'
@@ -1049,7 +1064,12 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       const wantCopy =
         (mod && e.shiftKey && key === 'c') ||
         (e.ctrlKey && !e.shiftKey && !e.altKey && isInsert) ||
-        (mod && !e.shiftKey && !e.altKey && key === 'c' && term.getSelection().length > 0)
+        (opts.copyOnCtrlC &&
+          mod &&
+          !e.shiftKey &&
+          !e.altKey &&
+          key === 'c' &&
+          term.getSelection().length > 0)
       if (wantCopy) {
         e.preventDefault()
         e.stopPropagation()
@@ -1065,13 +1085,10 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         return
       }
 
-      // Windows / macOS 上 Ctrl+V、Cmd+V 就是粘贴（Windows Terminal 与 Terminal.app
-      // 的默认）；Linux 留给程序（vim 的块选择、emacs 的 quoted-insert）
-      const barePasteAllowed = platform === 'win32' || platform === 'darwin'
       const wantPaste =
         (mod && e.shiftKey && key === 'v') ||
         (isInsert && e.shiftKey) ||
-        (mod && !e.shiftKey && !e.altKey && key === 'v' && barePasteAllowed)
+        (opts.pasteOnCtrlV && mod && !e.shiftKey && !e.altKey && key === 'v')
       if (wantPaste) {
         e.preventDefault()
         e.stopPropagation()
@@ -1079,31 +1096,49 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
         return
       }
     },
-    [completion, selected, acceptCandidate, closeCompletion, platform],
+    [completion, selected, acceptCandidate, closeCompletion],
   )
 
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      const term = termRef.current
-      if (!term) return
-      if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
-        e.preventDefault()
-        setFindOpen(true)
-        return
+  /*
+   * 查找（Ctrl+Shift+F）与手动补全（Ctrl+Space）的键盘入口已迁到
+   * 「设置 → 快捷键」（terminal.find / terminal.completion），经
+   * HOTKEY_TRIGGERED → commands.ts → PANE_COMMAND_EVENT 到达这里。
+   * 不再在组件里写死：Ctrl+Space 是 emacs/readline 的 set-mark，
+   * 默认不该从终端手里抢。Ctrl+L 一直是远端 shell 的清屏键，从不拦截。
+   */
+
+  /*
+   * PANE_COMMAND_EVENT 路由规则（见 commands.ts）：
+   * - 焦点在本窗格 → 本窗格处理；
+   * - 标签内从未有过焦点（刚打开还没点）→ 按监听顺序第一个窗格兜底
+   *   （detail.handled 保证只有一个窗格执行）。
+   */
+  useEffect(() => {
+    const onCommand = (e: Event): void => {
+      const d = (e as CustomEvent<PaneCommandDetail & { handled?: boolean }>).detail
+      if (!d || d.tabId !== tab.tabId || d.handled) return
+      const el = paneRef.current
+      if (!el) return
+      const owner = lastFocusedPane.get(tab.tabId)
+      if (owner && owner !== el) return
+      d.handled = true
+      switch (d.command) {
+        case 'terminal.find':
+          setFindOpen(true)
+          break
+        case 'terminal.clear':
+          termRef.current?.clear()
+          break
+        case 'terminal.completion':
+          void requestCompletion()
+          break
+        default:
+          break
       }
-      // Ctrl+Space：手动触发补全（终端用户的肌肉记忆）
-      if (e.ctrlKey && e.key === ' ') {
-        e.preventDefault()
-        void requestCompletion()
-        return
-      }
-      if (e.ctrlKey && !e.shiftKey && (e.key === 'l' || e.key === 'L')) {
-        // Ctrl+L 交给远端 shell 处理（清屏），这里不拦截
-        return
-      }
-    },
-    [],
-  )
+    }
+    window.addEventListener(PANE_COMMAND_EVENT, onCommand)
+    return () => window.removeEventListener(PANE_COMMAND_EVENT, onCommand)
+  }, [tab.tabId, requestCompletion])
 
   /**
    * 终端右键菜单。
@@ -1330,7 +1365,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     <div
       ref={paneRef}
       className="term-pane"
-      onKeyDown={onKeyDown}
+      onFocusCapture={registerPaneFocus}
       onKeyDownCapture={onKeyDownCapture}
       onContextMenu={(e) => {
         // 接管右键：xterm 没有自带的上下文菜单，这里给出终端该有的操作

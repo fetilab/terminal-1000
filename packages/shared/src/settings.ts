@@ -60,6 +60,21 @@ export interface TerminalSettings {
   copyOnSelect: boolean
   /** 右键粘贴 */
   rightClickPaste: boolean
+  /**
+   * 有选区时 `Ctrl+C` 复制（而不是发 SIGINT）。
+   *
+   * **默认关闭**：`Ctrl+C` 首先属于终端里的程序（中断）。Windows Terminal 与
+   * VS Code 会「有选区就复制」，但那会让习惯了 SIGINT 的人（vim、make、ssh）
+   * 偶尔复制到半截内容却中断不了任务 —— 这种抢占必须是用户自己选的。
+   */
+  copyOnCtrlC: boolean
+  /**
+   * `Ctrl+V` 直接粘贴。
+   *
+   * **默认关闭**：Linux 上 `Ctrl+V` 是 vim 的块选择、emacs 的 quoted-insert，
+   * 抢走会让这些程序用不了。想要 Windows Terminal 的手感再打开。
+   */
+  pasteOnCtrlV: boolean
   /** 滚动回看行数 */
   scrollback: number
   /**

@@ -7,6 +7,61 @@
 "修复了 X 的问题"。因为这个项目里有一批缺陷属于"看起来正常、实际从未生效"，
 把根因写下来，比写"已修复"对后来者有用得多。
 
+## [0.2.6] - 2026-11-22
+
+### 修复
+
+- **复制粘贴完全不可用**：渲染层调的是 HTML 剪贴板 `navigator.clipboard`，而它在
+  Electron 里有两条硬限制 —— `writeText`/`readText` 要求 **document 有焦点**，否则抛
+  `NotAllowedError: Document is not focused`；`readText` 还要 `clipboard-read` 权限，
+  Electron 默认不授予。窗口切换、右键菜单抢焦点、OSC 52 在后台触发时都会踩到。
+  现在新增 `clipboard` IPC 域，直接对接主进程的 `clipboard` 模块（不受焦点与权限限制，
+  并能正确成为 X11 selection owner）；渲染层统一走 `lib/clipboard.ts`，仅在 IPC 不可用时
+  回退 HTML API。
+- **Ctrl+V 会往终端里塞一个 `\x16`**：快捷键原先在冒泡阶段处理，而引擎在隐藏 textarea
+  上的 keydown 更早，组合键已经被编码成控制字符送进 PTY。现在移到**捕获阶段**并
+  `stopPropagation`，引擎收不到。
+- **键位补齐**（取各家终端习惯的并集）：
+  - `Ctrl+Shift+C/V`（kitty / GNOME Terminal / VS Code）；
+  - `Ctrl+Insert` 复制、`Shift+Insert` 粘贴（X11 与 Windows 传统终端）；
+  - `Ctrl+C`：**有选区时**复制并清选区（Windows Terminal 与 VS Code 的默认），
+    无选区时仍然是 SIGINT —— vim/emacs 用户不受影响；
+  - `Ctrl+V` / `Cmd+V`：Windows 与 macOS 当粘贴，Linux 留给程序
+    （vim 的块选择、emacs 的 quoted-insert 都要它）。
+- **复制失败不再静默**：没选区时明确提示「先在终端里拖选，或双击取词」，
+  成功时报告复制了多少字符。
+- **中键粘贴读错了剪贴板**：kitty 的 `middle release ungrabbed paste_from_selection`
+  读的是 X11 PRIMARY，我们原先读的是普通剪贴板。现在选中即复制会同时写 PRIMARY，
+  中键读 PRIMARY（非 Linux 自动回退）。
+- **其余界面的复制同样修好**：MCP 端点/令牌、SFTP 路径、命令手册、快捷命令、
+  服务器指纹、RDP 报错、VNC「取回剪贴板」都换成同一入口，不再依赖 document 焦点。
+
+### 变更
+
+- **快捷键全部收进设置**（应用内快捷键再也不是"改不了、关不掉"的硬编码）：
+  - **修了一个"只有最后一个快捷键生效"的 bug**：`attachInApp` 原先用
+    `WeakMap<窗口, listener>` 每次注册都顶掉上一条，而注册是逐条进行的 ——
+    结果设置里绑的键只有最后一条真正挂上，其余全部静默无效。
+    现在按 accelerator 累积去重。
+  - **`before-input-event` 捕获后必须 `preventDefault`**：不拦的话按键继续进渲染层，
+    被终端编码成控制字符塞进 PTY（Ctrl+1 → `1`、Ctrl+K → `^K`）。
+  - **新增一批可配置命令**：打开设置（`Ctrl+,`）、全局搜索（`Ctrl+K`，默认关）、
+    手动补全（`Ctrl+Space`，默认关）、切视图 `Ctrl+1..7`。
+    取舍原则与 `copyOnCtrlC`/`pasteOnCtrlV` 一致：**终端程序常用的键默认不抢**
+    （Ctrl+K 是 readline 的 kill-line，Ctrl+Space 是 emacs 的 set-mark），
+    想要的去「设置 → 快捷键」里打开。
+  - **0.2.5 就存在但从未接线的 `HOTKEY_TRIGGERED` 事件终于有了订阅方**：
+    渲染层收到事件后走统一命令表（`lib/commands.ts`）分发 —— 应用级命令直接改 store，
+    终端级命令（查找/清屏/补全）经内部事件交给**焦点所在的窗格**（分屏时不串台）。
+  - **旧配置自动补齐新命令**：按 command id 缺哪补哪（幂等加法），
+    用户已有的改键与禁用不会被重置。
+  - **设置里改快捷键即时生效**：`settings.set` 写到 `hotkeys` 时热重载注册，
+    不再需要重启。
+  - **`app.toggleWindow` 在主进程就地执行**：全局键在应用未聚焦时触发，
+    "显示窗口并抢焦点"只有主进程能做对。
+  - 旧的一批写死键（Ctrl+, / Ctrl+1..7 / Ctrl+K / 组件内的 Ctrl+Shift+F 与
+    Ctrl+Space）全部删除，统一走设置。
+
 ## [0.2.5] - 2026-11-22
 
 这一版把「光标」和「鼠标选择」按 kitty 源码（`cursor_trail.c`、`screen.c`、

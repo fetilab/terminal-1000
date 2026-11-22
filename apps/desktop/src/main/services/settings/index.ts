@@ -84,6 +84,10 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   cursorBlink: true,
   copyOnSelect: true,
   rightClickPaste: false,
+  // 这两条会从终端程序手里抢键位（Ctrl+C = SIGINT、Ctrl+V = vim 块选择），
+  // 默认必须关，由用户在设置里显式打开
+  copyOnCtrlC: false,
+  pasteOnCtrlV: false,
   scrollback: 50000,
   // 默认关闭：斑马纹是辅助，不该替用户改变默认观感
   zebraStripes: false,
@@ -215,7 +219,42 @@ export const DEFAULT_HOTKEYS: HotkeyBinding[] = [
   { id: 'hk-split-h', command: 'terminal.splitHorizontal', accelerator: 'Ctrl+Shift+D', global: false, enabled: true },
   { id: 'hk-split-v', command: 'terminal.splitVertical', accelerator: 'Ctrl+Shift+E', global: false, enabled: true },
   { id: 'hk-toggle-window', command: 'app.toggleWindow', accelerator: 'Ctrl+Shift+Space', global: true, enabled: false },
+  /*
+   * ⚠️ 默认值的取舍原则（与 terminal.copyOnCtrlC / pasteOnCtrlV 一致）：
+   * 终端程序常用的按键**默认不抢**，想要的应用级功能去设置里打开。
+   * - Ctrl+K 是 readline 的 kill-line（bash/zsh 删到行尾），默认关；
+   * - Ctrl+Space 是 emacs/readline 的 set-mark，默认关；
+   * - Ctrl+, 与 Ctrl+1..7 终端程序基本不用，默认开（保持 0.2.5 的行为，
+   *   只是搬进了设置——用户现在可以关掉或改键）。
+   */
+  { id: 'hk-open-settings', command: 'app.openSettings', accelerator: 'Ctrl+,', global: false, enabled: true },
+  { id: 'hk-global-search', command: 'app.globalSearch', accelerator: 'Ctrl+K', global: false, enabled: false },
+  { id: 'hk-completion', command: 'terminal.completion', accelerator: 'Ctrl+Space', global: false, enabled: false },
+  { id: 'hk-view-connections', command: 'app.view.connections', accelerator: 'Ctrl+1', global: false, enabled: true },
+  { id: 'hk-view-console', command: 'app.view.console', accelerator: 'Ctrl+2', global: false, enabled: true },
+  { id: 'hk-view-notes', command: 'app.view.notes', accelerator: 'Ctrl+3', global: false, enabled: true },
+  { id: 'hk-view-tools', command: 'app.view.tools', accelerator: 'Ctrl+4', global: false, enabled: true },
+  { id: 'hk-view-ai', command: 'app.view.ai', accelerator: 'Ctrl+5', global: false, enabled: true },
+  { id: 'hk-view-services', command: 'app.view.services', accelerator: 'Ctrl+6', global: false, enabled: true },
+  { id: 'hk-view-logs', command: 'app.view.logs', accelerator: 'Ctrl+7', global: false, enabled: true },
 ]
+
+/**
+ * 快捷键迁移：老用户落库的 `hotkeys` 数组没有新版本加入的命令。
+ * deepMerge 对数组是整体替换，不会自动补 —— 这里按 **command id** 缺哪补哪。
+ *
+ * 为什么能用「command 是否存在」判定而外观设置必须用版本戳（见 migrateAppearance）：
+ * 快捷键只增不改语义，且绑定只能被禁用/清键、不能被删除 —— 按 command 补齐
+ * 是幂等的加法，永远不会把用户的改动静掉。
+ */
+function migrateHotkeys(settings: Settings): boolean {
+  const existing = settings.hotkeys ?? []
+  const known = new Set(existing.map((b) => b.command))
+  const missing = DEFAULT_HOTKEYS.filter((k) => !known.has(k.command))
+  if (missing.length === 0) return false
+  settings.hotkeys = [...existing, ...missing.map((k) => ({ ...k }))]
+  return true
+}
 
 /** 完整默认设置 */
 export function defaultSettings(): Settings {
@@ -393,14 +432,18 @@ function readDoc(): Settings {
     const parsed = JSON.parse(row.payload) as Partial<SettingsDoc>
     // 与默认值深合并：旧版本新增的设置项会自动补齐，不会因缺字段而 undefined
     const data = parsed.data ?? {}
-    if (migrateAppearance(data as Record<string, unknown>)) {
-      const migrated = deepMerge(defaultSettings(), data)
-      // 落盘：避免每次启动都用内存里的迁移值、而设置面板显示旧值
-      writeDoc(migrated)
-      log.info('外观设置已迁移到 v2（单滑杆 + 背景模糊）')
-      return migrated
+    // 外观迁移**必须先于合并**：它靠原地改写 data.app.appearance 生效，
+    // 先合并的话迁移值进不了结果。返回值只用来决定要不要落盘。
+    const appearanceMigrated = migrateAppearance(data as Record<string, unknown>)
+    const merged = deepMerge(defaultSettings(), data)
+    const hotkeysMigrated = migrateHotkeys(merged)
+    // 迁移命中任意一项都立即落盘：避免每次启动都用内存里的迁移值、而设置面板显示旧值
+    if (appearanceMigrated || hotkeysMigrated) {
+      writeDoc(merged)
+      if (appearanceMigrated) log.info('外观设置已迁移到 v2（单滑杆 + 背景模糊）')
+      if (hotkeysMigrated) log.info('快捷键配置已补齐新版本命令')
     }
-    return deepMerge(defaultSettings(), data)
+    return merged
   } catch (err) {
     log.warn('设置文档损坏，回退默认值', err)
     return defaultSettings()
@@ -509,7 +552,7 @@ export const settingsHandlers: Record<string, IpcHandler> = {
   },
 
   /** 按点分路径写入；只覆盖该路径，其余保持不变 */
-  set: (payload) => {
+  set: (payload, ctx) => {
     const { path, value } = parseInput(setSchema, payload)
     const current = getSettings()
 
@@ -521,6 +564,14 @@ export const settingsHandlers: Record<string, IpcHandler> = {
     writeDoc(next)
     cache = next
     log.debug(`设置已更新: ${path}`)
+
+    // 快捷键改动即时生效：动态 import 避免 settings ↔ hotkey 的静态循环依赖
+    //（hotkey 静态依赖本模块的 getSettings/updateSettings）
+    if (path === 'hotkeys' || path.startsWith('hotkeys.')) {
+      void import('../hotkey')
+        .then((m) => m.registerFromSettings(ctx))
+        .catch((err: unknown) => log.warn('快捷键重注册失败', err))
+    }
     return next
   },
 
