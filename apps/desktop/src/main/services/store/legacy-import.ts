@@ -2,12 +2,12 @@
 // Copyright (C) 2026 terminal-1000 contributors
 
 /**
- * 旧版（参考实现产品）数据的一次性导入。
+ * 历史版本数据的一次性导入。
  *
- * 背景：用户之前一直用原产品，连接/密钥都存在
+ * 背景：用户之前用的早期版本，连接/密钥都存在
  * `<系统配置目录>/xterminal/sqlite/local-store.db` 里。我们的数据目录
  * （`terminal-1000`）从第一版起就是独立目录，`dataDir.ts` 的目录级迁移
- * 只处理「同一目录布局」的旧版本 —— 对原产品的库无能为力，而且只要目标
+ * 只处理「同一目录布局」的旧版本 —— 对早期版本的库无能为力，而且只要目标
  * 目录里已经先建了库（哪怕只有 demo 数据），那次迁移就直接跳过。
  * 结果就是用户装上新版看到空列表，以为「配置全丢了」。
  *
@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { STORE_KEYS, type StoreDb } from './db'
 
-/** 原产品在本项目之前使用的数据库名（相对系统配置目录） */
+/** 早期版本使用的数据库名（相对系统配置目录，目录名沿用 xterminal） */
 export const LEGACY_DB_RELATIVE = ['xterminal', 'sqlite', 'local-store.db'] as const
 
 export interface LegacyImportReport {
@@ -141,7 +141,7 @@ const OMIT_REASONS: Record<string, string> = {
   AIChat: '消息结构（segments）与本项目（ChatMessage）差异过大，导入会静默损坏，暂不迁移',
   ServerStatus: '运行时监控快照，属临时数据，无需迁移',
   SessionLog: '会话日志属临时数据，无需迁移',
-  Settings: '原产品的设置项命名与本项目完全不同，无法安全映射',
+  Settings: '早期版本的设置项命名与本项目完全不同，无法安全映射',
   Credential: '凭证行可能被旧产品加密，格式未知，暂不迁移',
 }
 

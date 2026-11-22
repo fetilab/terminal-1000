@@ -2,6 +2,8 @@
 node_modules/
 dist/
 out/
+# electron-vite 在 out/ 被占用时会另建 out.dev.<ts> / out.old.<ts> —— 同样是产物
+apps/desktop/out.*/
 # 只忽略根目录的构建缓存：apps/desktop/build/ 是 electron-builder 的**资源目录**
 # （图标 SVG/PNG 真身就在里面），用裸 `build/` 会把产品资源一起排除掉
 /build/
@@ -36,13 +38,11 @@ backups/
 /notes/
 session-log/
 
-# ── 内部/非公开材料（不属于开源项目内容）───────────
-# research/ 原始软件包与解包产物（第三方二进制，不可分发）
-# spec/     逆向分析笔记（内部参考资料，不随 GPL 源码发布）
-research/
-spec/
+# ── 第三方二进制（不可再分发，不入库）───────────────
 *.deb
-asar-extracted/
+*.rpm
+*.AppImage
+*.flatpak
 
 # ── 开发期验证截图（非交付物）──────────────────
 # docs/ 为工程文档，需要入库；仅忽略其中的临时截图

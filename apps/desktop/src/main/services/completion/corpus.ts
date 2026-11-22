@@ -374,7 +374,7 @@ export class CompletionCorpus {
   /**
    * 设置/移除用户语料层（null = 移除）。
    *
-   * 层一换，索引/spec/搜索文档的全部缓存作废：下次访问按新层重建。
+   * 层一换，索引 / 明细 / 搜索文档的全部缓存作废：下次访问按新层重建。
    * 用户层条目**不经** LRU/负缓存——同名命令整体覆盖内置明细，重载以层为单位整体替换。
    */
   setUserLayer(layer: UserCorpusLayer | null): void {

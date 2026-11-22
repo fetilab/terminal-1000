@@ -5,7 +5,7 @@
  * 命令手册：其余命令（紧凑三/四元组：`[用途, 语法, 安装方式?]`）。
  *
  * 要求：**目录里每一条命令都至少能搜到并显示用途与语法**（见 search.test.ts 的覆盖断言）。
- * 内容为本项目自撰；未从任何第三方语料或逆向提取物取用。
+ * 内容为本项目自撰；未从任何第三方语料取用。
  */
 
 import { manualFromRow, type ManualEntry, type ManualRow } from '../types'

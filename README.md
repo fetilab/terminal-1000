@@ -5,7 +5,7 @@
 **terminal-1000** 把终端、文件传输、端口转发、图形远程桌面和服务器监控整合到一个桌面应用，
 面向需要管理多台服务器的开发者与运维人员。
 
-**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.2.2**
+**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.2.4**
 
 ---
 
@@ -15,11 +15,11 @@
 
 | 格式 | 适用 | 说明 |
 |---|---|---|
-| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.2.2_amd64.deb` |
-| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.2.2.x86_64.rpm` |
-| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.2.2.pacman` |
+| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.2.4_amd64.deb` |
+| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.2.4.x86_64.rpm` |
+| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.2.4.pacman` |
 | `.AppImage` | 任意发行版 | 免安装，`chmod +x` 后直接运行 |
-| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.2.2-x86_64.flatpak` |
+| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.2.4-x86_64.flatpak` |
 | `.exe` | Windows 10+ | **实验性**，见下方说明 |
 
 > **升级不会丢数据**：设置、连接、凭据、笔记都存在系统配置目录里（见
@@ -239,12 +239,23 @@ rpmbuild 不兼容，需要把 `rpmbuild` 钉在 4.x 旧版（本机的垫片方
 ### 目录结构
 
 ```
-packages/shared     全局类型与 IPC 契约（冻结，改动需评估影响）
-apps/desktop        Electron 应用（main / preload / renderer）
-server              可选的同步后端（零依赖纯 JS）
-scripts             测试夹具：SSH 测试主机等
-docs                架构、性能目标、同步协议规范、部署
+terminal-1000/
+├── apps/desktop/            Electron 应用（唯一可执行产物）
+│   ├── src/main/            主进程：IPC 路由 + 各业务服务（ssh / sftp / pty / store …）
+│   ├── src/preload/         contextBridge 暴露的 API
+│   ├── src/renderer/src/    React 界面（app / features / components / styles / theme）
+│   ├── agent/               远端监控采集器（Go，独立编译）
+│   ├── build/               打包资源：图标、desktop 文件、flatpak / pacman 元数据
+│   ├── vendor/              内置第三方运行时（kitty-vt-wasm）
+│   └── scripts/             应用级构建与验收脚本
+├── packages/shared/         全局类型与 IPC 契约（冻结，改动需评估影响）
+├── server/                  可选的同步后端（零依赖纯 JS，含 test/）
+├── scripts/                 仓库级脚本：六格式打包、发布、SSH 测试主机
+└── docs/                    工程文档：同步协议、部署、性能目标、背景脚本指南
 ```
+
+构建产物 `out/`、`release/` 与依赖 `node_modules/` 不入库。更细的分层与模块边界见
+[ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 数据存放位置
 

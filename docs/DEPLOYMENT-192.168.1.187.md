@@ -122,7 +122,7 @@ systemctl restart t1000-port-guard
 
 ## 已知边界
 
-- RDP 走外部 `xfreerdp` 进程（画面在独立窗口），非参考产品那种"嵌进自己窗口"
+- RDP 走外部 `xfreerdp` 进程（画面在独立窗口），不是"嵌进自己窗口"的做法
 - VNC 的 `scaleViewport` / `clipViewport` 由渲染层实现
 - 未验证项：SFTP 真实读写、VNC/SSH 真实内容录制的端到端（本机缺可连主机/网络设备）
 

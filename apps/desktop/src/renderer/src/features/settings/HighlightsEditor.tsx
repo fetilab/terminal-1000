@@ -166,7 +166,7 @@ export function HighlightsEditor({ rules, onChange }: HighlightsEditorProps): Re
           ))}
         </pre>
         <div className="t-field__hint">
-          只对**增量渲染**生效，不会回刷已有历史输出（与原产品一致，避免滚动时重排卡顿）。
+          只对**增量渲染**生效，不会回刷已有历史输出（避免滚动时重排造成卡顿）。
         </div>
       </div>
 

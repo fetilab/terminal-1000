@@ -5,7 +5,7 @@
  * 补全语料的**数据契约**（叶子模块，不 import 任何东西，避免循环依赖）。
  *
  * 合规说明：本目录下的语料是 terminal-1000 自己编写的命令说明，
- * **没有**从任何第三方补全库（含 withfig / Fig）或逆向材料中提取。
+ * **没有**从任何第三方补全库（含 withfig / Fig）中提取。
  * 命令与选项事实属于通用 CLI 知识，描述文字为本项目自撰。
  */
 
@@ -84,7 +84,7 @@ export interface SpecShortcut {
  * 单个命令的详情（惰性加载的实体）。
  *
  * `purpose` / `install` / `usage` / `examples` / `shortcuts` 是**命令手册**需要的字段
- * （spec/official-features.md 的「命令搜索」要求展开 用途/安装方式/语法/参数/常用快捷键）。
+ * （「命令搜索」需要展开 用途 / 安装方式 / 语法 / 参数 / 常用快捷键）。
  * 全部可选：补全逻辑只依赖 name/options/subcommands。
  */
 export interface CommandSpec {

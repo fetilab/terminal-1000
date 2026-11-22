@@ -688,7 +688,7 @@ export function getStoreServiceIfExists(): StoreService | null {
 function ensureService(ctx: { paths: { dbFile: string; userData?: string } }): StoreService {
   if (!service) {
     service = new StoreService(ctx.paths.dbFile)
-    // 一次性导入原产品（xterminal）的历史数据。只在真实文件库上做，
+    // 一次性导入早期版本（xterminal 目录）的历史数据。只在真实文件库上做，
     // 幂等由 meta 标记保证；任何异常都不能阻断启动。
     if (ctx.paths.dbFile !== ':memory:' && ctx.paths.userData) {
       try {

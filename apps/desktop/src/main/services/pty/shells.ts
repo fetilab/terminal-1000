@@ -4,7 +4,7 @@
 /**
  * 本地 shell 探测与 profile。
  *
- * 规格依据 `spec/connection-layer.md` §5.1–5.5：
+ * 查找与解析规则：
  * - shell 查找目录序 `/bin, /usr/bin, /usr/local/bin, /opt/homebrew/bin`
  * - 平台默认：darwin → `$SHELL || /bin/zsh`，其它 → `$SHELL || /bin/sh`
  * - `resolveShell`：空 → 平台默认；Windows 原样；绝对路径直接用；

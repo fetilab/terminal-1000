@@ -1,14 +1,13 @@
 /**
  * 连接领域模型。
  *
- * 字段集来自对目标产品的实测（见 spec/connection-layer.md），但**命名自研**，
- * 且类型定义按我们自己的设计收敛——不与原产品的内部结构保持字节级一致。
+ * 字段集按本项目自己的需求收敛，**命名自研**；不追求与其它客户端的数据结构一致。
  */
 
 /** 连接协议种类 */
 export type ConnectionKind = 'ssh' | 'rdp' | 'telnet' | 'tunnel' | 'vnc'
 
-/** SSH 认证方式。实测原产品有 5 态，含引用式 identity。 */
+/** SSH 认证方式：5 态，含引用式 identity。 */
 export type SshAuthType =
   | 'password'
   | 'privateKey'
@@ -27,7 +26,7 @@ export const SSH_AUTH_TYPES: readonly SshAuthType[] = [
   'keyboard',
 ] as const
 
-/** 认证尝试顺序（原产品可拖拽「认证顺序」） */
+/** 认证尝试顺序（界面支持拖拽调整） */
 export interface AuthOrder {
   /** 优先尝试的方式，按顺序 */
   order: SshAuthType[]

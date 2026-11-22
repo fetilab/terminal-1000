@@ -56,7 +56,7 @@ function makeLegacyDb(dir: string): string {
   return file
 }
 
-describe('legacy-import（原产品数据一次性导入）', () => {
+describe('legacy-import（历史数据一次性导入）', () => {
   let tmp: string
   let db: StoreDb
 

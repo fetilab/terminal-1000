@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-`terminal-1000`：功能对齐 **XTerminal 5.8.6** 的独立 **Electron + React + TypeScript** 远程连接管理器。
+`terminal-1000`：一个自主实现的 **Electron + React + TypeScript** 远程连接管理器。
 GPL-3.0 开源。覆盖 SSH / SFTP / Telnet / 隧道 / VNC / RDP、终端工作区、监控面板、命令补全、
 AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研的云同步后端**（部署在 `192.168.1.187`）。
 
@@ -24,10 +24,9 @@ AI 助手、MCP 服务、并发广播、笔记、加密存储，外加**自研�
 - flatpak 需要 24.08 运行时 + `org.electronjs.Electron2.BaseApp`（已装，源为 USTC 镜像）
 
 ### 合规红线（必须遵守）
-- **绝不把 `research/` 下的任何内容写进产品**：那是逆向材料（原软件解包、文档摘录）。
-  产品代码、语料、文案、图标一律**自研**。
-- `research/` 与 `spec/` 已在 `.gitignore` 里。**不要**为了"方便"把它们加进版本控制。
-- 不引入许可不明的第三方语料/图标/字体。
+- 产品代码、语料、文案、图标一律**原创**，不从任何第三方安装包中提取内容。
+- 不引入许可不明的第三方语料/图标/字体；引入前先核实 license。
+- 仓库里不保留第三方二进制或分析产物（`.gitignore` 已排除安装包格式文件）。
 
 ---
 
@@ -66,8 +65,6 @@ packages/shared/          ★ 冻结契约：ipc.ts / events.ts / connection.ts 
 server/                   ★ 零依赖纯 JS 同步后端（部署在 .187），含 src/tsc1/ 加密通道
 scripts/                 测试夹具（ssh-test-host.mjs 等）
 docs/                    架构、性能目标、部署、协议规范
-spec/                    功能规格（gitignore）
-research/                逆向材料（gitignore，绝不入库、绝不抄）
 ```
 
 ### 契约纪律（本项目的核心约束）
@@ -392,5 +389,5 @@ bash scripts/kill-my-electron.sh
 1. `cd /home/mosfet/dsh1/terminal-1000 && git log --oneline | head -5 && git status`
 2. `cd apps/desktop && pnpm test && pnpm typecheck` —— 确认基线是绿的
 3. `team_task_list` 看未完成任务；`list_agents` 看有没有活跃队友
-4. 读 `spec/official-features.md` §20 的优先级表（功能基线）
+4. 读 `docs/` 与 `ARCHITECTURE.md` 建立边界感（进程分层、IPC 契约、服务划分）
 5. 从 `task-35` / `task-37` 或 P2 清单里挑一项继续

@@ -488,7 +488,7 @@ function handleSocks5(
   }
 }
 
-/** 预置的快速填充模板（与原产品常用组合对齐，命名自研） */
+/** 预置的快速填充模板（覆盖常见运维组合，命名自研） */
 export function quickFillTemplates(): Array<{
   label: string
   type: ForwardType
