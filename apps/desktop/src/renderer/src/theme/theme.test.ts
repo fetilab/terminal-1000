@@ -25,7 +25,7 @@ import {
 } from './presets'
 import {
   APPEARANCE_DEFAULTS,
-  BACKGROUND_VISIBILITY_STRENGTH,
+  BACKGROUND_SURFACE_MAX,
   effectiveSurfaceAlpha,
   resolveAppearance,
   resolveMode,
@@ -105,7 +105,7 @@ describe('resolveAppearance（脏值容错）', () => {
           preset: 'hacker-rainbow',
           backgroundImage: 42,
           backgroundOpacity: 7,
-          opacity: 0.1,
+          backgroundBlur: 999,
           scale: 99,
         },
       },
@@ -113,19 +113,19 @@ describe('resolveAppearance（脏值容错）', () => {
     expect(cfg.preset).toBe(APPEARANCE_DEFAULTS.preset)
     expect(cfg.backgroundImage).toBe('')
     expect(cfg.backgroundOpacity).toBe(1)
-    expect(cfg.opacity).toBe(0.5)
+    expect(cfg.backgroundBlur).toBe(40)
     expect(cfg.scale).toBe(1.4)
   })
 
   it('合法值原样通过', () => {
     const cfg = resolveAppearance({
-      app: { appearance: { preset: 'ember', backgroundImage: '/tmp/wall.png', backgroundOpacity: 0.5, opacity: 0.9, scale: 1.2 } },
+      app: { appearance: { preset: 'ember', backgroundImage: '/tmp/wall.png', backgroundOpacity: 0.5, backgroundBlur: 6, scale: 1.2 } },
     })
     expect(cfg).toEqual({
       preset: 'ember',
       backgroundImage: '/tmp/wall.png',
       backgroundOpacity: 0.5,
-      opacity: 0.9,
+      backgroundBlur: 6,
       scale: 1.2,
       // backgroundImage 非空且未显式给 backgroundType → 兼容旧文档视为图片背景
       backgroundType: 'image',
@@ -166,11 +166,14 @@ describe('明暗解析与表面透明度', () => {
     expect(readThemeMode(undefined)).toBe('system')
   })
 
-  it('设了背景图时表面按可见度变透，未设时就是用户设置的值', () => {
-    const cfg = { ...APPEARANCE_DEFAULTS, opacity: 0.9 }
-    expect(effectiveSurfaceAlpha(cfg, false)).toBe(0.9)
-    // 可见度 1 → 面板降到 30%；可见度 0 → 保持实心
-    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 1 }, true)).toBeCloseTo(0.9 * (1 - BACKGROUND_VISIBILITY_STRENGTH))
-    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 0 }, true)).toBeCloseTo(0.9)
+  it('设了背景图时表面按可见度变透，未设时实心（单滑杆合并后不再乘 opacity）', () => {
+    const cfg = APPEARANCE_DEFAULTS
+    // 无媒体背景：表面恒实心（透出来只有窗口默认色，没有意义）
+    expect(effectiveSurfaceAlpha(cfg, false)).toBe(1)
+    // 可见度 1 → 表面 10%（背景几乎全清晰）；可见度 0 → 100% 实心
+    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 1 }, true)).toBeCloseTo(1 - BACKGROUND_SURFACE_MAX)
+    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 0 }, true)).toBeCloseTo(1)
+    // 默认 0.6 → 46%
+    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 0.6 }, true)).toBeCloseTo(0.46)
   })
 })

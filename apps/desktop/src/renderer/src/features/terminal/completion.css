@@ -16,7 +16,8 @@
   max-height: min(42vh, 320px);
   border: 1px solid var(--t1000-border-strong);
   border-radius: var(--t1000-radius);
-  background: var(--t1000-bg-panel);
+  /* 浮层必须实色：半透明会让壁纸透上来，与文字争夺对比度 */
+  background: var(--t1000-bg-panel-solid);
   box-shadow: var(--t1000-shadow-3);
   overflow: hidden;
   animation: t1000-view-in var(--t1000-fast) var(--t1000-ease);
@@ -29,7 +30,7 @@
   flex: 0 0 auto;
   padding: 4px 8px;
   border-bottom: 1px solid var(--t1000-border);
-  background: var(--t1000-bg-raised);
+  background: var(--t1000-bg-raised-solid);
   color: var(--t1000-fg-dim);
   font-size: 10.5px;
   font-weight: 600;
@@ -118,7 +119,7 @@
   overflow: hidden;
   padding: 5px 8px;
   border-top: 1px solid var(--t1000-border);
-  background: var(--t1000-bg-sunken);
+  background: var(--t1000-bg-sunken-solid);
 }
 
 .completion__preview-title {
@@ -146,7 +147,7 @@
   flex: 0 0 auto;
   padding: 3px 8px;
   border-top: 1px solid var(--t1000-border);
-  background: var(--t1000-bg-raised);
+  background: var(--t1000-bg-raised-solid);
   color: var(--t1000-fg-faint);
   font-size: 10px;
 }

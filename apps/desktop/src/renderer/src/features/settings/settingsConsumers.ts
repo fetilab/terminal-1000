@@ -30,7 +30,7 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'app.appearance.backgroundVideo': 'DynamicBackground → <video> 循环静音播放（本地来源校验同背景图）',
   'app.appearance.backgroundScript': 'DynamicBackground → BackgroundScriptRunner（主进程 transpileModule 剥类型后 new Function 执行）',
   'app.appearance.backgroundFps': 'BackgroundScriptRunner 帧率上限（10~60）',
-  'app.appearance.opacity': 'theme/appearance.ts applyAppearance() → --t1000-surface-alpha（设了背景图时乘 BACKGROUND_SURFACE_FACTOR）',
+  'app.appearance.backgroundBlur': 'theme/appearance.ts applyAppearance() → --t1000-bg-blur（静态图与动态层共用的高斯模糊强度）',
   'app.appearance.scale': 'theme/appearance.ts applyAppearance() → --t1000-ui-scale',
 
   // ── 终端（全部由 features/terminal/TerminalPane 消费，且支持热更新） ──
@@ -57,7 +57,6 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'terminal.cursorOpacity': 'kitty 渲染器 drawCursor 的 alpha；xterm 由主题 cursor 颜色承载',
   'terminal.cursorTrail': 'kitty 渲染器拖尾四边形的目标更新门控（kitty cursor_trail 毫秒阈值）；0 关闭',
   'terminal.padding': 'kitty 渲染器 fit()/CSS padding；xterm 后端由 .xterm 容器 padding 承载',
-  'terminal.backgroundOpacity': 'kitty 渲染器 clear 颜色 alpha 与画布背景',
   'terminal.selectionBackground': 'kitty 渲染器 selectionAt → theme.selectionBg；xterm 后端消费于 theme.selectionBackground',
   'terminal.selectionForeground': 'kitty 渲染器选中行文字色；xterm 后端 theme.selectionForeground',
   'terminal.underlineColor': 'kitty 渲染器 buildRow 装饰线 decoColor',

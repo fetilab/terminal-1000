@@ -417,25 +417,25 @@ async function probeDynbgChain(cdp) {
   // 可见度=1 → 界面/画布必须降到 30%（背景真正看得见），毛玻璃必须生效
   const colorOk =
     c1.hasClass && c1.layer && c1.colorEl && c1.colorCss === 'rgb(192, 57, 43)' &&
-    parseFloat(c1.opacityCss) === 1 && c1.surfaceAlphaCss.trim() === '30.0%'
+    parseFloat(c1.opacityCss) === 1 && c1.surfaceAlphaCss.trim() === '10.0%'
   await cdp.shot('dynbg-color.png')
 
   // 终端画布半透明联动：画布 alpha 必须 ≈0.3（≈77/255），毛玻璃必须挂上
-  await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, backgroundOpacity: 0.3 })`)
+  await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, backgroundOpacity: 0.1 })`)
   await sleep(150)
   const alphaOn = await canvasBgAlpha(cdp, `document.querySelector('#kitty-demo canvas')`)
   const glass = await cdp.eval(`(() => {
     const el = document.querySelector('#kitty-demo .kitty-surface')
     return el ? (getComputedStyle(el).backdropFilter || getComputedStyle(el).webkitBackdropFilter || 'none') : null
   })()`)
-  const alphaOnOk = alphaOn >= 55 && alphaOn < 110
+  const alphaOnOk = alphaOn >= 10 && alphaOn < 40
   const glassOk = typeof glass === 'string' && glass !== 'none'
   // 关闭背景：画布回到终端自己的不透明度 0.88
   await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, backgroundOpacity: 0.88 })`)
   await sleep(150)
   const alphaOff = await canvasBgAlpha(cdp, `document.querySelector('#kitty-demo canvas')`)
   const alphaOffOk = alphaOff >= 216
-  console.log(`  canvas alpha: 背景开=${alphaOn} (期望≈77) 毛玻璃=${glass} 背景关=${alphaOff} (期望≈224)`)
+  console.log(`  canvas alpha: 背景开=${alphaOn} (期望≈26) 毛玻璃=${glass} 背景关=${alphaOff} (期望≈224)`)
 
   // 图片类型：走 body::before（静态层），断言 CSS 变量与 has-bg；
   // 媒体层必须满强度（--t1000-bg-image-opacity=1）——此前它自己乘可见度（默认 0.35），
@@ -467,7 +467,7 @@ async function probeDynbgChain(cdp) {
       surfaceAlpha: parseFloat(root.style.getPropertyValue('--t1000-surface-alpha')),
     }
   })()`)
-  const defaultVisOk = cDef.hasBgClass && cDef.imgOpacity === 1 && cDef.surfaceAlpha > 70 && cDef.surfaceAlpha < 80
+  const defaultVisOk = cDef.hasBgClass && cDef.imgOpacity === 1 && cDef.surfaceAlpha > 62 && cDef.surfaceAlpha < 75
   await cdp.shot('dynbg-default-vis.png')
   // 可见度推到 0：媒体层整体隐藏（has-bg 撤、图片 none、毛玻璃撤）
   await set('app.appearance.backgroundOpacity', 0)
@@ -481,7 +481,42 @@ async function probeDynbgChain(cdp) {
     }
   })()`)
   const zeroHiddenOk = !cZero.hasBgClass && cZero.imgNone && parseFloat(cZero.surfaceAlpha) > 88
+  // 背景模糊：滑杆写进 --t1000-bg-blur，静态背景层实际吃到 blur()
+  await set('app.appearance.backgroundImage', '/home/mosfet/dsh1/_tmp/t1000-test-bg.png')
+  await set('app.appearance.backgroundBlur', 20)
+  await sleep(400)
+  const cBlur = await cdp.eval(`(() => {
+    const root = document.documentElement
+    const filter = getComputedStyle(document.body, '::before').filter
+    return {
+      cssVar: root.style.getPropertyValue('--t1000-bg-blur'),
+      filter,
+    }
+  })()`)
+  const blurOk = cBlur.cssVar === '20px' && String(cBlur.filter).includes('blur(20px)')
+  // 浮层必须实色：补全弹窗/右键菜单不能透出壁纸（半透明会与文字抢对比度）
+  const overlayOk = await cdp.eval(`(() => {
+    const probe = document.createElement('div')
+    probe.className = 'completion'
+    document.body.appendChild(probe)
+    const menu = document.createElement('div')
+    menu.className = 'ctxmenu'
+    document.body.appendChild(menu)
+    const alphaOf = (el) => {
+      const bg = getComputedStyle(el).backgroundColor
+      const m = bg.match(/rgba?\\(([^)]+)\\)/)
+      if (!m) return 0
+      const parts = m[1].split(',').map(x => parseFloat(x))
+      return parts.length === 4 ? parts[3] : 1
+    }
+    const out = { completion: alphaOf(probe), ctxmenu: alphaOf(menu) }
+    probe.remove(); menu.remove()
+    return out
+  })()`)
+  const overlaySolidOk = overlayOk.completion === 1 && overlayOk.ctxmenu === 1
+  await cdp.shot('dynbg-blur.png')
   // 恢复拉满供后续探针使用
+  await set('app.appearance.backgroundBlur', 12)
   await set('app.appearance.backgroundOpacity', 1)
   await set('app.appearance.backgroundImage', '')
   await cdp.shot('dynbg-image.png')
@@ -509,12 +544,12 @@ async function probeDynbgChain(cdp) {
   const c3 = await dom()
   const offOk = !c3.hasClass && !c3.layer
 
-  console.log(`DYNBG-CHAIN: ${colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && defaultVisOk && zeroHiddenOk && scriptOk && offOk ? 'PASS' : 'FAIL'} (纯色+30%透出=${colorOk} 画布半透明=${alphaOnOk && alphaOffOk} 毛玻璃=${glassOk} 图片=${imageOk} 默认可见度满强度=${defaultVisOk} 可见度0隐藏=${zeroHiddenOk} 脚本=${scriptOk} 关闭=${offOk})`)
+  console.log(`DYNBG-CHAIN: ${colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && defaultVisOk && zeroHiddenOk && blurOk && overlaySolidOk && scriptOk && offOk ? 'PASS' : 'FAIL'} (纯色+10%透出=${colorOk} 画布半透明=${alphaOnOk && alphaOffOk} 毛玻璃=${glassOk} 图片=${imageOk} 默认可见度满强度=${defaultVisOk} 可见度0隐藏=${zeroHiddenOk} 背景模糊=${blurOk} 浮层实色=${overlaySolidOk} 脚本=${scriptOk} 关闭=${offOk})`)
   console.log('  color dom =', JSON.stringify(c1))
   console.log('  image dom =', JSON.stringify(cImg))
   console.log('  script dom =', JSON.stringify(c2), 'pixels =', JSON.stringify(pixels))
   console.log('  off dom =', JSON.stringify(c3))
-  return colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && defaultVisOk && zeroHiddenOk && scriptOk && offOk
+  return colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && defaultVisOk && zeroHiddenOk && blurOk && overlaySolidOk && scriptOk && offOk
 }
 
 /* ── 探针 5：真实窗格端到端（主题保持 + 背景可见 + 模拟鼠标） ── */
@@ -645,8 +680,8 @@ async function probeRealPane(cdp) {
     return { coversViewport, redSet, dynOpacity, opaqueLayers, chainComposite, dynBeforeContent }
   })()`)
   const bgVisibleOk =
-    paneAlpha >= 55 &&
-    paneAlpha < 110 &&
+    paneAlpha >= 10 &&
+    paneAlpha < 45 &&
     composite.coversViewport &&
     composite.redSet &&
     composite.dynOpacity > 0.95 &&

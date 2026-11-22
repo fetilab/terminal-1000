@@ -820,7 +820,7 @@
   max-height: min(88vh, 900px);
   border: 1px solid var(--t1000-border-strong);
   border-radius: var(--t1000-radius-lg);
-  background: var(--t1000-bg-panel);
+  background: var(--t1000-bg-panel-solid);
   box-shadow: var(--t1000-shadow-3);
   overflow: hidden;
   animation: t1000-modal-in var(--t1000-normal) var(--t1000-ease);
@@ -905,7 +905,7 @@
   border: 1px solid var(--t1000-border-strong);
   border-left-width: 3px;
   border-radius: var(--t1000-radius);
-  background: var(--t1000-bg-panel);
+  background: var(--t1000-bg-panel-solid);
   box-shadow: var(--t1000-shadow-2);
   pointer-events: auto;
   animation: t1000-toast-in var(--t1000-normal) var(--t1000-ease);
@@ -1092,7 +1092,7 @@
   padding: 4px;
   border: 1px solid var(--t1000-border-strong);
   border-radius: var(--t1000-radius);
-  background: var(--t1000-bg-panel);
+  background: var(--t1000-bg-panel-solid);
   box-shadow: var(--t1000-shadow-2);
   animation: t1000-fade-in var(--t1000-fast) var(--t1000-ease);
 }

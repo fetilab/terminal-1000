@@ -17,6 +17,7 @@
   --t1000-surface-alpha: 100%;
   --t1000-bg-image: none;
   --t1000-bg-image-opacity: 0;
+  --t1000-bg-blur: 12px;
   --t1000-ui-scale: 1;
   /* 动态背景（视频/纯色/TS 脚本），由 DynamicBackground 组件消费 */
   --t1000-dyn-bg-color: #000000;
@@ -78,6 +79,13 @@ body::before {
   background-position: center;
   background-repeat: no-repeat;
   opacity: var(--t1000-bg-image-opacity);
+  /*
+   * 高斯模糊：壁纸越花越晃眼，模糊后焦点回到文字上。
+   * blur 会让边缘取样到视口外（发虚/露底色），用 scale 略放大补偿。
+   */
+  filter: blur(var(--t1000-bg-blur, 0px));
+  transform: scale(1.06);
+  will-change: filter;
   pointer-events: none;
 }
 
@@ -122,6 +130,9 @@ body.t1000-has-dynbg::before {
   inset: 0;
   z-index: 0;
   opacity: var(--t1000-dyn-bg-opacity, 0.35);
+  /* 与静态背景图同一套高斯模糊/边缘补偿 */
+  filter: blur(var(--t1000-bg-blur, 0px));
+  transform: scale(1.06);
   pointer-events: none;
 }
 

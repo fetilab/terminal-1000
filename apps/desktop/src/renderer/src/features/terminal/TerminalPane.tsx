@@ -241,11 +241,20 @@ function parseOsc7(data: string): string | null {
 }
 
 /**
- * 媒体背景激活时终端画布的不透明度：跟随界面半透明系数（与面板同源），
- * 不激活则用终端自己的 backgroundOpacity 设置。
+ * 终端画布 alpha。
+ *
+ * 媒体背景激活时跟随「背景可见度」的统一系数（与面板同一个
+ * `--t1000-surface-alpha`），并**再乘一个更低的终端系数**：终端是"看穿"的
+ * 内容区，壁纸主要从终端透出来（kitty background_opacity 的观感），
+ * 面板则要承托按钮/文字，保持稍实一点。
+ * 不再与 terminal.backgroundOpacity 取 min —— 那是第二个透明度滑杆，
+ * 会把「可见度拉满」钉在 0.88，用户看到的就是「调到头终端还是不完全透明」。
  */
+const TERMINAL_SURFACE_FACTOR = 0.55
+
 function bgAlphaFor(cfg: TerminalSettings, mediaAlpha: number | null): number {
-  return mediaAlpha !== null ? Math.min(cfg.backgroundOpacity, mediaAlpha) : cfg.backgroundOpacity
+  if (mediaAlpha === null) return cfg.backgroundOpacity
+  return Math.max(0.05, mediaAlpha * TERMINAL_SURFACE_FACTOR)
 }
 
 function themeFor(colorScheme: string, resolved: 'light' | 'dark'): import('@xterm/xterm').ITheme {

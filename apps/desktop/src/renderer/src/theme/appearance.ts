@@ -23,10 +23,14 @@ export interface AppearanceConfig {
   preset: ThemePresetId
   /** 本地图片的绝对路径（也接受 file:/data:/blob: URL）；空串表示不设背景图 */
   backgroundImage: string
-  /** 背景图可见度 0~1 */
+  /**
+   * 背景可见度 0~1 —— **唯一的透明度滑杆**。
+   * 越高：背景越清晰、界面/终端画布越透；0 = 隐藏背景层且界面全实心。
+   * （旧版还叠加一个「界面不透明度」滑杆，两者语义重复且互相打架，已合并到这里。）
+   */
   backgroundOpacity: number
-  /** 界面不透明度 0.5~1：越低，背景图/桌面透出越多 */
-  opacity: number
+  /** 背景高斯模糊强度（px）：模糊壁纸、降低炫光，文字更好读 */
+  backgroundBlur: number
   /** 界面缩放 0.8~1.4 */
   scale: number
   /** 动态背景类型：纯色/图片/视频/TS 脚本，任意界面播放 */
@@ -44,9 +48,9 @@ export interface AppearanceConfig {
 export const APPEARANCE_DEFAULTS: AppearanceConfig = {
   preset: 'aurora',
   backgroundImage: '',
-  backgroundOpacity: 0.35,
-  // 默认 1（实心）——不改变现状观感；只有在设了背景图时才会自动略微透出
-  opacity: 1,
+  // 0.6：默认就明显透出背景（表面 46%），而不是「设了背景却像没生效」
+  backgroundOpacity: 0.6,
+  backgroundBlur: 12,
   scale: 1,
   backgroundType: 'none',
   backgroundColor: '#10141a',
@@ -60,24 +64,20 @@ export const APPEARANCE_PATHS = {
   preset: 'app.appearance.preset',
   backgroundImage: 'app.appearance.backgroundImage',
   backgroundOpacity: 'app.appearance.backgroundOpacity',
-  opacity: 'app.appearance.opacity',
+  backgroundBlur: 'app.appearance.backgroundBlur',
   scale: 'app.appearance.scale',
 } as const
 
 /**
- * 背景可见度 → 界面透光强度。
+ * 背景可见度 → 表面（面板/终端画布）剩余不透明度上限。
  *
- * 语义：**背景可见度滑杆直接决定界面透多少** —— backgroundOpacity=1 时
- * 背景要清晰可见，面板/终端画布必须降到 30%；0 时界面保持实心。
- * 与界面不透明度（opacity）相乘组合，两个滑杆互不打架。
- *
- * 此前是 `opacity × 0.78`：背景永远只透 22%，观感等于「没生效」——
- * 正是「背景设置了完全不显示」的组成部分。
+ * 语义：**唯一一个滑杆**。可见度 1 → 表面只剩 10%（几乎全透，背景清晰）；
+ * 可见度 0 → 背景层隐藏、表面 100% 实心。
+ * 旧版把「界面不透明度」与「背景可见度」相乘，两个滑杆语义重复还互相抵消，
+ * 用户看到的就是「怎么调都不透」——合并后单滑杆直接决定透多少。
  */
-export const BACKGROUND_VISIBILITY_STRENGTH = 0.7
+export const BACKGROUND_SURFACE_MAX = 0.9
 
-const OPACITY_MIN = 0.5
-const OPACITY_MAX = 1
 const SCALE_MIN = 0.8
 const SCALE_MAX = 1.4
 
@@ -113,7 +113,7 @@ export function resolveAppearance(settings: unknown): AppearanceConfig {
       1,
       APPEARANCE_DEFAULTS.backgroundOpacity,
     ),
-    opacity: clampNumber(source.opacity, OPACITY_MIN, OPACITY_MAX, APPEARANCE_DEFAULTS.opacity),
+    backgroundBlur: clampNumber(source.backgroundBlur, 0, 40, APPEARANCE_DEFAULTS.backgroundBlur),
     scale: clampNumber(source.scale, SCALE_MIN, SCALE_MAX, APPEARANCE_DEFAULTS.scale),
     backgroundType:
       type === 'image' || type === 'video' || type === 'color' || type === 'script' || type === 'none'
@@ -179,11 +179,16 @@ function cssUrlValue(url: string): string {
   return `url("${safe}")`
 }
 
-/** 背景图存在时界面不透明的实际系数（面板与终端画布同源） */
+/**
+ * 界面/终端画布的表面不透明度（面板、窗格、GL 画布全部同源）。
+ *
+ * 单滑杆语义：可见度 v → 表面 alpha = 1 - v × BACKGROUND_SURFACE_MAX。
+ * v=1 → 10%（背景清晰可见，终端几乎全透）；v=0 → 100%（背景隐藏、界面实心）。
+ * 没有媒体背景时恒为 1（透出来只有窗口默认色，没有意义）。
+ */
 export function effectiveSurfaceAlpha(config: AppearanceConfig, hasImage: boolean): number {
-  if (!hasImage) return config.opacity
-  const visibility = 1 - config.backgroundOpacity * BACKGROUND_VISIBILITY_STRENGTH
-  return config.opacity * visibility
+  if (!hasImage) return 1
+  return 1 - config.backgroundOpacity * BACKGROUND_SURFACE_MAX
 }
 
 /**
@@ -273,6 +278,8 @@ function applyToDocument(config: AppearanceConfig, mode: AppearanceMode): void {
     !mediaHidden && config.backgroundType === 'color' && config.backgroundColor.trim() !== ''
   root.style.setProperty('--t1000-dyn-bg-opacity', '1')
   root.style.setProperty('--t1000-dyn-bg-color', config.backgroundColor.trim() || '#000000')
+  // 背景高斯模糊强度：静态图与动态层共用（media 层自己带 scale 补偿，见 appearance.css）
+  root.style.setProperty('--t1000-bg-blur', `${config.backgroundBlur}px`)
   document.body?.classList.toggle('t1000-has-dynbg', dynActive || colorActive)
   const surfaceHasMedia = (Boolean(url) && !mediaHidden) || dynActive || colorActive
   root.style.setProperty(
