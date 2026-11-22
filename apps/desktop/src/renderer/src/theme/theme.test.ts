@@ -25,7 +25,7 @@ import {
 } from './presets'
 import {
   APPEARANCE_DEFAULTS,
-  BACKGROUND_SURFACE_FACTOR,
+  BACKGROUND_VISIBILITY_STRENGTH,
   effectiveSurfaceAlpha,
   resolveAppearance,
   resolveMode,
@@ -166,9 +166,11 @@ describe('明暗解析与表面透明度', () => {
     expect(readThemeMode(undefined)).toBe('system')
   })
 
-  it('设了背景图时表面按系数变透，未设时就是用户设置的值', () => {
+  it('设了背景图时表面按可见度变透，未设时就是用户设置的值', () => {
     const cfg = { ...APPEARANCE_DEFAULTS, opacity: 0.9 }
     expect(effectiveSurfaceAlpha(cfg, false)).toBe(0.9)
-    expect(effectiveSurfaceAlpha(cfg, true)).toBeCloseTo(0.9 * BACKGROUND_SURFACE_FACTOR)
+    // 可见度 1 → 面板降到 30%；可见度 0 → 保持实心
+    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 1 }, true)).toBeCloseTo(0.9 * (1 - BACKGROUND_VISIBILITY_STRENGTH))
+    expect(effectiveSurfaceAlpha({ ...cfg, backgroundOpacity: 0 }, true)).toBeCloseTo(0.9)
   })
 })

@@ -167,6 +167,8 @@ export interface T1000TestHook {
    * 与 SettingsView.update 完全一致 —— 验收动态背景时走这条，别绕过 UI 链路。
    */
   setAppearance(path: string, value: unknown): Promise<boolean>
+  /** 切换应用深浅主题（store.applyTheme 同款路径：写入 store resolvedTheme + data-theme） */
+  setThemeMode(mode: 'light' | 'dark' | 'system'): void
 }
 
 function install(): void {
@@ -271,6 +273,9 @@ function install(): void {
       )
       applyAppearance(next as never)
       return true
+    },
+    setThemeMode: (mode) => {
+      void import('./store').then(({ applyTheme }) => applyTheme(mode))
     },
   }
 

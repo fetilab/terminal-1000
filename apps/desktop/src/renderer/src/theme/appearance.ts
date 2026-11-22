@@ -65,12 +65,16 @@ export const APPEARANCE_PATHS = {
 } as const
 
 /**
- * 设了背景图后，界面不透明度再乘这个系数。
+ * 背景可见度 → 界面透光强度。
  *
- * 不加这一步，"背景图"会被实心面板完全挡住 —— 用户会以为设置没生效。
- * 系数取 0.78：默认值下背景图明显可见，同时面板仍有足够底色保证文字可读。
+ * 语义：**背景可见度滑杆直接决定界面透多少** —— backgroundOpacity=1 时
+ * 背景要清晰可见，面板/终端画布必须降到 30%；0 时界面保持实心。
+ * 与界面不透明度（opacity）相乘组合，两个滑杆互不打架。
+ *
+ * 此前是 `opacity × 0.78`：背景永远只透 22%，观感等于「没生效」——
+ * 正是「背景设置了完全不显示」的组成部分。
  */
-export const BACKGROUND_SURFACE_FACTOR = 0.78
+export const BACKGROUND_VISIBILITY_STRENGTH = 0.7
 
 const OPACITY_MIN = 0.5
 const OPACITY_MAX = 1
@@ -175,9 +179,11 @@ function cssUrlValue(url: string): string {
   return `url("${safe}")`
 }
 
-/** 背景图存在时界面不透明的实际系数 */
+/** 背景图存在时界面不透明的实际系数（面板与终端画布同源） */
 export function effectiveSurfaceAlpha(config: AppearanceConfig, hasImage: boolean): number {
-  return hasImage ? config.opacity * BACKGROUND_SURFACE_FACTOR : config.opacity
+  if (!hasImage) return config.opacity
+  const visibility = 1 - config.backgroundOpacity * BACKGROUND_VISIBILITY_STRENGTH
+  return config.opacity * visibility
 }
 
 /**

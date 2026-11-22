@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // //SPDX-License-Identifier: GPL-3.0-or-later
-// 终端 TUI / 光标 / 动态背景无头验收（真实应用 + 真实内核 + 真实设置链）：
-//   1. KERNEL-TUI    altscreen + 滚动区域（DECSTBM/SU/SD/IL/DL）→ 引擎网格必须与内核一致
-//                    （vim/htop 叠印回归：alt 屏区域滚动不标脏，worker 必须 alt 屏整屏重发）
-//   2. CURSOR-CLICK  光标跳转 → 动画中拖尾可见 → 收敛后像素级扫描：光标色块全屏只有 1 个
-//                    （「点按出现两个光标」回归：收敛后残留 quad 绝不允许再画）
-//   3. DYNBG-CHAIN   动态背景：设置 → 纯色/TS 脚本 → DOM/像素断言 → 关闭
+// 终端 TUI / 光标 / 动态背景 / 真实窗格 无头验收（真实应用 + 真实内核 + 真实设置链）：
+//   1. KERNEL-TUI    altscreen + 滚动区域（DECSTBM/SU/SD/IL/DL）→ 引擎网格必须与内核一致；
+//                    alt 屏彩色内容退出后必须零残留像素（htop 色块残留回归）
+//   2. CURSOR-CLICK  kitty 式拖尾：动画中拖尾 quad 在跑且与光标连成一块（不自交），
+//                    收敛后像素级扫描全屏只有光标一处
+//   3. DYNBG-CHAIN   动态背景：设置 → 纯色/TS 脚本 → DOM/像素断言 + 画布 alpha 联动 + 毛玻璃
 //   4. DYNBG-BOOT    重启后设置持久化且启动即生效（挂载时序回归）
+//   5. REAL-PANE     真实窗格端到端：应用主题深浅切换时终端配色必须保持、历史文字必须可见，
+//                    背景色必须透过真实终端画布可见，模拟鼠标点击不炸
 // 数据目录用 T1000_TEST_USERDATA 隔离，绝不碰用户真实数据。
 import { spawn } from 'node:child_process'
 import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -17,6 +19,26 @@ const CDP_PORT = 9226
 const TEST_USERDATA = '/home/mosfet/dsh1/_tmp/t1000-verify-userdata'
 const SHOTS = '/home/mosfet/dsh1/_shots'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+let xvfbLog = ''
+
+/** 确保测试跑在 Xvfb 虚拟显示里——Xvfb 掉了绝不回退主屏（Electron 会连 :0 弹窗） */
+async function ensureXvfb() {
+  for (let i = 0; i < 10; i++) {
+    try {
+      const r = spawn('xdpyinfo', ['-display', ':97'], { stdio: 'ignore' })
+      const ok = await new Promise((res) => r.on('exit', (c) => res(c === 0)))
+      if (ok) return
+    } catch {}
+    // 清掉僵死 socket（Xvfb 被杀后 /tmp/.X11-unix/X97 残留会让新实例绑定失败）
+    try {
+      spawn('rm', ['-f', '/tmp/.X11-unix/X97'], { stdio: 'ignore' })
+    } catch {}
+    const xvfb = spawn('Xvfb', [':97', '-screen', '0', '1600x1000x24'])
+    xvfb.stderr.on('data', (d) => (xvfbLog += d))
+    await sleep(800)
+  }
+  throw new Error('Xvfb :97 无法启动：' + xvfbLog.slice(-200))
+}
 
 class Cdp {
   static async connect(url) {
@@ -60,6 +82,17 @@ class Cdp {
   async shot(name) {
     const s = await this.send('Page.captureScreenshot', { format: 'png' })
     writeFileSync(join(SHOTS, name), Buffer.from(s.data, 'base64'))
+  }
+  /** Xvfb 无头环境里模拟真实鼠标（点击/移动），走 CDP 输入链路 */
+  async mouse(type, x, y, opts = {}) {
+    await this.send('Input.dispatchMouseEvent', {
+      type,
+      x,
+      y,
+      button: opts.button ?? 'left',
+      clickCount: opts.clickCount ?? (type === 'mousePressed' || type === 'mouseReleased' ? 1 : undefined),
+      buttons: opts.buttons ?? 0,
+    })
   }
 }
 
@@ -110,7 +143,74 @@ async function connectWithDemo(electron, appLogRef, { withDemo = true } = {}) {
   return cdp
 }
 
-/* ── 探针 1：内核级 altscreen + 滚动区域 ── */
+/* ── 像素扫描工具：整画布找指定颜色连通块 ──
+ * 注意：WebGL 画布 preserveDrawingBuffer=false，跨任务直接 drawImage 会读到
+ * 空缓冲（clear 全透明后尤其如此）——必须先在**同一任务**里同步 render() */
+function scanBlobsExpr(canvasExpr, rgb, { tol = 20, minArea = 40, renderExpr = `window.__kittyDemoEngine?.renderer?.render?.()` } = {}) {
+  return `(() => {
+    ${renderExpr}
+    const glc = ${canvasExpr}
+    if (!glc) return { blobs: [], missing: true }
+    const c2 = document.createElement('canvas')
+    c2.width = glc.width; c2.height = glc.height
+    const ctx = c2.getContext('2d')
+    ctx.drawImage(glc, 0, 0)
+    const img = ctx.getImageData(0, 0, c2.width, c2.height)
+    const [cr, cg, cb] = ${JSON.stringify(rgb)}
+    const tol = ${tol}
+    const match = (i) => Math.abs(img.data[i]-cr)<=tol && Math.abs(img.data[i+1]-cg)<=tol && Math.abs(img.data[i+2]-cb)<=tol
+    const W = c2.width, H = c2.height
+    const mark = new Uint8Array(W*H)
+    for (let p = 0; p < W*H; p++) if (match(p*4)) mark[p] = 1
+    const seen = new Uint8Array(W*H)
+    const blobs = []
+    const stack = []
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const p = y*W+x
+      if (!mark[p] || seen[p]) continue
+      let area = 0, x0 = x, x1 = x, y0 = y, y1 = y
+      stack.push(p); seen[p] = 1
+      while (stack.length) {
+        const q = stack.pop(); area++
+        const qx = q%W, qy = (q/W)|0
+        if (qx<x0) x0=qx; if (qx>x1) x1=qx; if (qy<y0) y0=qy; if (qy>y1) y1=qy
+        for (const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+          const nx = qx+dx, ny = qy+dy
+          if (nx<0||ny<0||nx>=W||ny>=H) continue
+          const np = ny*W+nx
+          if (mark[np] && !seen[np]) { seen[np]=1; stack.push(np) }
+        }
+      }
+      if (area >= ${minArea}) blobs.push({ x: x0, y: y0, w: x1-x0+1, h: y1-y0+1, area })
+    }
+    return { blobs, W, H }
+  })()`
+}
+
+/** 读指定画布的背景 alpha：取非零 alpha 的众数（网格边距是清屏透明区，跳过） */
+async function canvasBgAlpha(cdp, canvasExpr, renderExpr) {
+  return cdp.eval(`(() => {
+    ${renderExpr ?? `window.__kittyDemoEngine?.renderer?.render?.()`}
+    const glc = ${canvasExpr}
+    if (!glc) return -1
+    const c2 = document.createElement('canvas')
+    c2.width = glc.width; c2.height = glc.height
+    const ctx = c2.getContext('2d')
+    ctx.drawImage(glc, 0, 0)
+    const img = ctx.getImageData(0, 0, c2.width, c2.height)
+    const hist = new Map()
+    for (let p = 0; p < c2.width*c2.height; p++) {
+      const a = img.data[p*4+3]
+      if (a === 0) continue
+      hist.set(a, (hist.get(a) ?? 0) + 1)
+    }
+    let best = -1, bestN = 0
+    for (const [a, n] of hist) if (n > bestN) { best = a; bestN = n }
+    return best
+  })()`)
+}
+
+/* ── 探针 1：内核级 altscreen + 滚动区域 + 彩色残留 ── */
 async function probeKernelTui(cdp) {
   // 进 alt 屏铺 6 行；区域 3..6 内做 SU/SD/IL，区域外的行绝不能动
   await cdp.eval(`window.__kittyDemoEngine.write('\\x1b[?1049h\\x1b[H')
@@ -154,59 +254,75 @@ async function probeKernelTui(cdp) {
   }))()`)
   const restoreOk = s5.alt === false && s5.hasDemo
 
+  // alt 屏彩色残留：再进 alt 屏铺两种唯一真彩色块（先重置滚动区域——
+  // DECSTBM 在主/备屏之间共享），退出后画布上必须 0 残留像素
+  //（htop/vim 退出后色块残留在主屏 = 「双光标/色块」类回归的另一个来源）
+  await cdp.eval(`window.__kittyDemoEngine.write('\\x1b[?1049h\\x1b[0r\\x1b[2J\\x1b[H\\x1b[48;2;18;52;86m        \\x1b[48;2;180;60;20m        \\x1b[0m')`)
+  await sleep(300)
+  const inAlt = await cdp.eval(scanBlobsExpr(`document.querySelector('#kitty-demo canvas')`, [18, 52, 86], { tol: 8, minArea: 30 }))
+  await cdp.eval(`window.__kittyDemoEngine.write('\\x1b[?1049l')`)
+  await sleep(500)
+  const afterExit = await cdp.eval(scanBlobsExpr(`document.querySelector('#kitty-demo canvas')`, [18, 52, 86], { tol: 8, minArea: 30 }))
+  const residueOk = inAlt.blobs.length >= 1 && afterExit.blobs.length === 0
   await cdp.shot('tui-altscreen.png')
-  console.log(`KERNEL-TUI: ${baseOk && suOk && sdOk && dlOk && restoreOk ? 'PASS' : 'FAIL'} (铺屏=${baseOk} SU=${suOk} SD=${sdOk} DL=${dlOk} 出alt恢复=${restoreOk})`)
+  await cdp.shot('tui-residue-check.png')
+  console.log(`KERNEL-TUI: ${baseOk && suOk && sdOk && dlOk && restoreOk && residueOk ? 'PASS' : 'FAIL'} (铺屏=${baseOk} SU=${suOk} SD=${sdOk} DL=${dlOk} 出alt恢复=${restoreOk} 彩色残留=${residueOk})`)
   if (!baseOk) console.log('  base =', JSON.stringify(s1))
   if (!suOk) console.log('  su   =', JSON.stringify(s2))
   if (!sdOk) console.log('  sd   =', JSON.stringify(s3))
   if (!dlOk) console.log('  dl   =', JSON.stringify(s4))
   if (!restoreOk) console.log('  rst  =', JSON.stringify(s5))
-  return baseOk && suOk && sdOk && dlOk && restoreOk
+  if (!residueOk) console.log('  residue inAlt =', JSON.stringify(inAlt.blobs), 'afterExit =', JSON.stringify(afterExit.blobs))
+  return baseOk && suOk && sdOk && dlOk && restoreOk && residueOk
 }
 
-/* ── 探针 2：光标像素级扫描（滑行中一个刚性方块、收敛后精确落位） ── */
+/* ── 探针 2：光标像素级扫描（kitty 式拖尾动画 + 收敛后单光标） ── */
 async function probeCursorClick(cdp) {
   // 光标换成 block（默认设置是细条 beam，面积太小不好做像素断言），
   // 并关掉闪烁——blink 灭相时光标不画，像素断言会随机翻车
   await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, cursorStyle: 'block', cursorBlink: false })`)
   await sleep(200)
-  const dims = await cdp.eval(`(() => {
-    const eng = window.__kittyDemoEngine
-    return { cellW: eng.renderer.atlas.cellW, cellH: eng.renderer.atlas.cellH }
-  })()`)
-  // 光标从当前位跳到 (12,50)：距离远超 threshold 2，滑行必然启动
+  const dims = await cdp.eval(`(() => ({
+    cellW: window.__kittyDemoEngine.renderer.atlas.cellW,
+    cellH: window.__kittyDemoEngine.renderer.atlas.cellH,
+  }))()`)
+  // 光标从当前位跳到 (12,50)：距离远超 threshold 2，拖尾必然启动
   await cdp.eval(`window.__kittyDemoEngine.write('\\x1b[12;50H')`)
   await sleep(40)
   const mid = await cdp.eval(`(() => {
     const eng = window.__kittyDemoEngine
     const d = eng.trailDebug()
-    // 刚性检测：四角必须构成矩形（对边等长、邻边垂直）——变形=蝶形结=「第二个光标」
+    const c = eng.renderer.theme.cursor
+    // 四边形自交检测（叉积符号）：0-1 边与 3-2 边、0-3 边与 1-2 边都不许相交
+    const ori = (a, b, p) => (b[0]-a[0])*(p[1]-a[1]) - (b[1]-a[1])*(p[0]-a[0])
+    const seg = (a, b, c, d) => {
+      const d1 = ori(a, b, c), d2 = ori(a, b, d), d3 = ori(c, d, a), d4 = ori(c, d, b)
+      return ((d1>0) !== (d2>0)) && ((d3>0) !== (d4>0))
+    }
     const P = d.cornerX.map((x, i) => [x, d.cornerY[i]])
-    const d01 = Math.hypot(P[1][0]-P[0][0], P[1][1]-P[0][1])
-    const d13 = Math.hypot(P[3][0]-P[1][0], P[3][1]-P[1][1])
-    const d32 = Math.hypot(P[2][0]-P[3][0], P[2][1]-P[3][1])
-    const d20 = Math.hypot(P[0][0]-P[2][0], P[0][1]-P[2][1])
-    const rigid = Math.abs(d01-d32) < 0.05 && Math.abs(d13-d20) < 0.05
+    const crossed = seg(P[0], P[1], P[3], P[2]) || seg(P[0], P[3], P[1], P[2])
     return {
-      needsRender: d.needsRender, cursorRect: d.cursorRect, corners: P, rigid,
-      cursorRgb: [Math.round(eng.renderer.theme.cursor.r*255), Math.round(eng.renderer.theme.cursor.g*255), Math.round(eng.renderer.theme.cursor.b*255)],
+      needsRender: d.needsRender, opacity: d.opacity,
+      cursorRect: d.cursorRect, corners: P, crossed, cursorQuads: d.cursorQuads,
+      cursorRgb: [Math.round(c.r*255), Math.round(c.g*255), Math.round(c.b*255)],
     }
   })()`)
   await cdp.shot('cursor-mid-1.png')
   await sleep(140)
   await cdp.shot('cursor-mid-2.png')
 
-  // 滑行中断言：动画在跑、四角是刚性矩形
-  const midOk = mid.needsRender === true && mid.cursorRect !== null && mid.rigid
+  // 动画中断言：拖尾在跑、角落后、四边形不许自交（蝶形结 = 「两个光标」的来源）、
+  // 光标本体同时在真实位置绘制（kitty 原版语义）
+  const midOk = mid.needsRender === true && mid.opacity > 0 && mid.cursorRect !== null && mid.crossed === false && mid.cursorQuads >= 1
   if (!midOk) console.log('  mid =', JSON.stringify(mid))
 
-  // 滑行中整屏扫描：光标色块必须**只有 1 个**且是完整格子大小的矩形
-  //（旧拖尾的变形残片会出现 2 个块 / 或一个不成矩形的碎片）
-  const midScan = await scanCursorBlobs(cdp, mid.cursorRgb, dims)
-  const midBlobOk =
-    midScan.blobs.length === 1 &&
-    midScan.blobs[0].w >= dims.cellW * 0.6 && midScan.blobs[0].w <= dims.cellW * 1.5 &&
-    midScan.blobs[0].h >= dims.cellH * 0.6 && midScan.blobs[0].h <= dims.cellH * 1.3
+  // 动画中整屏扫描：光标色（拖尾拉丝与光标同色）只能连成**一个**连通块；
+  // 断成两块 = 「两个光标」回归
+  const midScan = await cdp.eval(scanBlobsExpr(`document.querySelector('#kitty-demo canvas')`, mid.cursorRgb, {
+    tol: 20,
+    minArea: Math.round(0.4 * dims.cellW * dims.cellH),
+  }))
+  const midBlobOk = midScan.blobs.length <= 1
   if (!midBlobOk) console.log('  midScan =', JSON.stringify(midScan))
 
   // 收敛：整屏像素扫描光标色。用同步 render + drawImage 到 2d 画布读像素
@@ -269,162 +385,11 @@ async function probeCursorClick(cdp) {
   console.log('cursor-scan =', JSON.stringify(scan))
   // 收敛后：矩形内有光标像素（光标在画）+ 全屏没有第二个光标色块 + 渲染器判定已收敛
   const convOk = scan.inside > 20 && scan.outsideBlobs === 0 && scan.needsRender === false
-  console.log(`CURSOR-CLICK: ${midOk && midBlobOk && convOk ? 'PASS' : 'FAIL'} (滑行中单刚性方块=${midOk && midBlobOk} 收敛单光标=${convOk})`)
+  console.log(`CURSOR-CLICK: ${midOk && midBlobOk && convOk ? 'PASS' : 'FAIL'} (动画中拖尾=${midOk} 拖尾连续=${midBlobOk} 收敛单光标=${convOk})`)
   return midOk && midBlobOk && convOk
 }
 
-/** 全屏扫描光标色连通块（滑行中断言用） */
-async function scanCursorBlobs(cdp, rgb, dims) {
-  const r = await cdp.eval(`(() => {
-    const eng = window.__kittyDemoEngine
-    eng.renderer.render()
-    const glc = document.querySelector('#kitty-demo canvas')
-    const c2 = document.createElement('canvas')
-    c2.width = glc.width; c2.height = glc.height
-    const ctx = c2.getContext('2d')
-    ctx.drawImage(glc, 0, 0)
-    const img = ctx.getImageData(0, 0, c2.width, c2.height)
-    const [cr, cg, cb] = ${JSON.stringify(rgb)}
-    const tol = 20
-    const match = (i) => Math.abs(img.data[i]-cr)<=tol && Math.abs(img.data[i+1]-cg)<=tol && Math.abs(img.data[i+2]-cb)<=tol
-    const W = c2.width, H = c2.height
-    const mark = new Uint8Array(W*H)
-    for (let p = 0; p < W*H; p++) if (match(p*4)) mark[p] = 1
-    const seen = new Uint8Array(W*H)
-    const blobs = []
-    const stack = []
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const p = y*W+x
-      if (!mark[p] || seen[p]) continue
-      let area = 0, x0 = x, x1 = x, y0 = y, y1 = y
-      stack.push(p); seen[p] = 1
-      while (stack.length) {
-        const q = stack.pop(); area++
-        const qx = q%W, qy = (q/W)|0
-        if (qx<x0) x0=qx; if (qx>x1) x1=qx; if (qy<y0) y0=qy; if (qy>y1) y1=qy
-        for (const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-          const nx = qx+dx, ny = qy+dy
-          if (nx<0||ny<0||nx>=W||ny>=H) continue
-          const np = ny*W+nx
-          if (mark[np] && !seen[np]) { seen[np]=1; stack.push(np) }
-        }
-      }
-      if (area >= 0.1*${JSON.stringify(dims.cellW)}*${JSON.stringify(dims.cellH)}) blobs.push({ x: x0, y: y0, w: x1-x0+1, h: y1-y0+1, area })
-    }
-    return { blobs, W, H }
-  })()`)
-  return r
-}
-
-/* ── 探针 2.5：主题切换（深→浅：配色必须跟着换、新文字必须可见） ── */
-async function probeThemeSwitch(cdp) {
-  // 铺一行 32m（调色板索引 2）提示符 + 默认前景文字；主题切换后这两类颜色都要变。
-  // 同样关闪烁，避免像素断言撞上灭相
-  await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, cursorStyle: 'block', cursorBlink: false })`)
-  await cdp.eval(`window.__kittyDemoEngine.write('\\x1b[?1049l\\x1b[2J\\x1b[H\\x1b[32mroot@demo:~$\\x1b[0m echo before\\r\\n\\x1b[0mplain-default-fg\\r\\n')`)
-  await sleep(300)
-  const before = await cdp.eval(`(() => {
-    const eng = window.__kittyDemoEngine
-    const t = eng.renderer.theme
-    const hex = (c) => [Math.round(c.r*255), Math.round(c.g*255), Math.round(c.b*255)]
-    return { bg: hex(t.bg), fg: hex(t.fg), green: hex(t.palette[2] ?? t.palette[10]), resolved: eng.opts.resolvedTheme }
-  })()`)
-  await cdp.shot('theme-before.png')
-
-  // 窗格在 resolvedTheme 变化时的同款调用：setResolvedTheme + applySettings
-  await cdp.eval(`(() => {
-    const eng = window.__kittyDemoEngine
-    eng.setResolvedTheme('light')
-    eng.applySettings({ ...eng.options })
-  })()`)
-  await sleep(200)
-  // 切换后再写新文字（复现「切换后不显示文字」）
-  await cdp.eval(`window.__kittyDemoEngine.write('\\x1b[32mroot@demo:~$\\x1b[0m after-switch\\r\\n\\x1b[0mplain-after\\r\\n')`)
-  await sleep(300)
-  const after = await cdp.eval(`(() => {
-    const eng = window.__kittyDemoEngine
-    const t = eng.renderer.theme
-    const hex = (c) => [Math.round(c.r*255), Math.round(c.g*255), Math.round(c.b*255)]
-    const rows = eng.viewportText().split('\\n').map(s=>s.trimEnd())
-    return { bg: hex(t.bg), fg: hex(t.fg), green: hex(t.palette[2] ?? t.palette[10]), resolved: eng.opts.resolvedTheme,
-      hasAfter: rows.some(r => r.includes('after-switch')), hasPlain: rows.some(r => r.includes('plain-after')) }
-  })()`)
-  await cdp.shot('theme-after.png')
-
-  // 像素断言：切换后背景是浅色（亮像素占多数）+ 新行文字以浅色方案绿/前景可见
-  const pixels = await cdp.eval(`(() => {
-    const eng = window.__kittyDemoEngine
-    eng.renderer.render()
-    const glc = document.querySelector('#kitty-demo canvas')
-    const c2 = document.createElement('canvas')
-    c2.width = glc.width; c2.height = glc.height
-    const ctx = c2.getContext('2d')
-    ctx.drawImage(glc, 0, 0)
-    const img = ctx.getImageData(0, 0, c2.width, c2.height)
-    const cellW = eng.renderer.atlas.cellW, cellH = eng.renderer.atlas.cellH
-    // 找 after-switch 所在行（viewportText 里倒数第 2 行有内容）
-    const rows = eng.viewportText().split('\\n')
-    let rowIdx = -1
-    for (let i = 0; i < rows.length; i++) if (rows[i].includes('after-switch')) { rowIdx = i; break }
-    if (rowIdx < 0) return { ok: false, why: 'row not found' }
-    const [gr, gg, gb] = ${JSON.stringify(after.green)}
-    const tol = 40
-    let greenPx = 0, brightBg = 0, total = 0
-    const y0 = Math.floor(rowIdx*cellH), y1 = Math.min(c2.height, Math.ceil((rowIdx+1)*cellH))
-    for (let y = y0; y < y1; y++) for (let x = 0; x < c2.width; x++) {
-      const i = (y*c2.width + x)*4
-      total++
-      if (img.data[i]+img.data[i+1]+img.data[i+2] > 600) brightBg++
-      if (Math.abs(img.data[i]-gr)<=tol && Math.abs(img.data[i+1]-gg)<=tol && Math.abs(img.data[i+2]-gb)<=tol) greenPx++
-    }
-    // 默认前景行（plain-after）也要有前景色像素
-    let plainRow = -1
-    for (let i = 0; i < rows.length; i++) if (rows[i].includes('plain-after')) { plainRow = i; break }
-    const [fr, fg_, fb] = ${JSON.stringify(after.fg)}
-    let fgPx = 0
-    if (plainRow >= 0) {
-      const py0 = Math.floor(plainRow*cellH), py1 = Math.min(c2.height, Math.ceil((plainRow+1)*cellH))
-      for (let y = py0; y < py1; y++) for (let x = 0; x < c2.width; x++) {
-        const i = (y*c2.width + x)*4
-        if (Math.abs(img.data[i]-fr)<=tol && Math.abs(img.data[i+1]-fg_)<=tol && Math.abs(img.data[i+2]-fb)<=tol) fgPx++
-      }
-    }
-    return { ok: true, rowIdx, greenPx, fgPx, brightRatio: brightBg/total }
-  })()`)
-
-  const themeOk =
-    after.resolved === 'light' &&
-    after.bg[0] > 200 && after.bg[1] > 200 && // 浅色背景
-    (before.green[1] !== after.green[1] || before.bg[0] !== after.bg[0]) // 配色确实变了
-  const textOk = after.hasAfter && after.hasPlain && pixels.ok && pixels.greenPx > 10 && pixels.fgPx > 10 && pixels.brightRatio > 0.5
-  console.log(`THEME-SWITCH: ${themeOk && textOk ? 'PASS' : 'FAIL'} (配色切换=${themeOk} 文字可见=${textOk})`)
-  console.log('  before =', JSON.stringify(before))
-  console.log('  after  =', JSON.stringify(after))
-  console.log('  pixels =', JSON.stringify(pixels))
-  return themeOk && textOk
-}
-
-/** 读 demo 画布的背景 alpha（min 采样：字形只会抬高 alpha，min 即背景层） */
-async function canvasBgAlpha(cdp) {
-  return cdp.eval(`(() => {
-    const eng = window.__kittyDemoEngine
-    eng.renderer.render()
-    const glc = document.querySelector('#kitty-demo canvas')
-    const c2 = document.createElement('canvas')
-    c2.width = glc.width; c2.height = glc.height
-    const ctx = c2.getContext('2d')
-    ctx.drawImage(glc, 0, 0)
-    const img = ctx.getImageData(0, 0, c2.width, c2.height)
-    let min = 255
-    for (let y = 2; y < c2.height; y += 7) for (let x = 2; x < c2.width; x += 7) {
-      const a = img.data[(y*c2.width + x)*4 + 3]
-      if (a < min) min = a
-    }
-    return min
-  })()`)
-}
-
-/* ── 探针 3+4：动态背景（链路 + 重启持久化） ── */
+/* ── 探针 3+4：动态背景（链路 + alpha 联动 + 毛玻璃 + 重启持久化） ── */
 async function probeDynbgChain(cdp) {
   // 与设置 UI 完全同路径（SettingsView.update：IPC set → 全量文档 → applyAppearance）
   const set = (path, value) =>
@@ -440,6 +405,7 @@ async function probeDynbgChain(cdp) {
         colorCss: colorEl ? getComputedStyle(colorEl).backgroundColor : null,
         opacityCss: el ? getComputedStyle(el).opacity : null,
         canvas: el?.querySelector('canvas') !== null,
+        surfaceAlphaCss: document.documentElement.style.getPropertyValue('--t1000-surface-alpha'),
       }
     })()`)
 
@@ -448,25 +414,28 @@ async function probeDynbgChain(cdp) {
   await set('app.appearance.backgroundType', 'color')
   await sleep(400)
   const c1 = await dom()
-  const colorOk = c1.hasClass && c1.layer && c1.colorEl && c1.colorCss === 'rgb(192, 57, 43)' && parseFloat(c1.opacityCss) === 1
+  // 可见度=1 → 界面/画布必须降到 30%（背景真正看得见），毛玻璃必须生效
+  const colorOk =
+    c1.hasClass && c1.layer && c1.colorEl && c1.colorCss === 'rgb(192, 57, 43)' &&
+    parseFloat(c1.opacityCss) === 1 && c1.surfaceAlphaCss.trim() === '30.0%'
   await cdp.shot('dynbg-color.png')
 
-  // 终端画布半透明联动 + 毛玻璃：背景激活时 canvas alpha 必须 < 1、
-  // .kitty-surface 必须有 backdrop-filter（否则背景被实心画布挡住=「不显示」）
-  await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, backgroundOpacity: 0.78 })`)
+  // 终端画布半透明联动：画布 alpha 必须 ≈0.3（≈77/255），毛玻璃必须挂上
+  await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, backgroundOpacity: 0.3 })`)
   await sleep(150)
-  const alphaOn = await canvasBgAlpha(cdp)
+  const alphaOn = await canvasBgAlpha(cdp, `document.querySelector('#kitty-demo canvas')`)
   const glass = await cdp.eval(`(() => {
     const el = document.querySelector('#kitty-demo .kitty-surface')
     return el ? (getComputedStyle(el).backdropFilter || getComputedStyle(el).webkitBackdropFilter || 'none') : null
   })()`)
-  const alphaOnOk = alphaOn > 150 && alphaOn < 215
+  const alphaOnOk = alphaOn >= 55 && alphaOn < 110
   const glassOk = typeof glass === 'string' && glass !== 'none'
+  // 关闭背景：画布回到终端自己的不透明度 0.88
   await cdp.eval(`window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, backgroundOpacity: 0.88 })`)
   await sleep(150)
-  const alphaOff = await canvasBgAlpha(cdp)
+  const alphaOff = await canvasBgAlpha(cdp, `document.querySelector('#kitty-demo canvas')`)
   const alphaOffOk = alphaOff >= 216
-  console.log(`  canvas alpha: 背景开=${alphaOn} (期望≈198) 毛玻璃=${glass} 背景关=${alphaOff} (期望≈224)`)
+  console.log(`  canvas alpha: 背景开=${alphaOn} (期望≈77) 毛玻璃=${glass} 背景关=${alphaOff} (期望≈224)`)
 
   // 图片类型：走 body::before（静态层），断言 CSS 变量与 has-bg
   await set('app.appearance.backgroundType', 'image')
@@ -508,7 +477,7 @@ async function probeDynbgChain(cdp) {
   const c3 = await dom()
   const offOk = !c3.hasClass && !c3.layer
 
-  console.log(`DYNBG-CHAIN: ${colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && scriptOk && offOk ? 'PASS' : 'FAIL'} (纯色=${colorOk} 画布半透明=${alphaOnOk && alphaOffOk} 毛玻璃=${glassOk} 图片=${imageOk} 脚本=${scriptOk} 关闭=${offOk})`)
+  console.log(`DYNBG-CHAIN: ${colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && scriptOk && offOk ? 'PASS' : 'FAIL'} (纯色+30%透出=${colorOk} 画布半透明=${alphaOnOk && alphaOffOk} 毛玻璃=${glassOk} 图片=${imageOk} 脚本=${scriptOk} 关闭=${offOk})`)
   console.log('  color dom =', JSON.stringify(c1))
   console.log('  image dom =', JSON.stringify(cImg))
   console.log('  script dom =', JSON.stringify(c2), 'pixels =', JSON.stringify(pixels))
@@ -516,7 +485,175 @@ async function probeDynbgChain(cdp) {
   return colorOk && alphaOnOk && glassOk && alphaOffOk && imageOk && scriptOk && offOk
 }
 
+/* ── 探针 5：真实窗格端到端（主题保持 + 背景可见 + 模拟鼠标） ── */
+async function probeRealPane(cdp) {
+  // 打开真实窗格：demoSession 造一个 ready 状态的 tab，TerminalPane 走完整创建链路
+  //（kitty 引擎 + WebGL 渲染器 + 设置/主题/外观全部真实 effect），与 demo 引擎无关
+  await cdp.eval(`window.__t1000.demoSession()`)
+  await sleep(500)
+  let engineReady = false
+  for (let i = 0; i < 24 && !engineReady; i++) {
+    engineReady = (await cdp.eval('typeof window.__t1000PaneEngine?.write === "function"')) === true
+    if (!engineReady) await sleep(300)
+  }
+  if (!engineReady) {
+    console.log('REAL-PANE: FAIL (真实窗格引擎未创建)')
+    return false
+  }
+  const paneCanvas = `document.querySelector('.kitty-canvas')`
+  const paneRender = `window.__t1000PaneEngine?.renderer?.render?.()`
+
+  // 先强制深色作为基线（测试 userdata 启动时可能直接落在 light/system）
+  await cdp.eval(`window.__t1000.setThemeMode('dark')`)
+  await cdp.eval(`window.__t1000.setAppearance('app.appearance.backgroundType', 'none')`)
+  await sleep(700)
+
+  // 灌「历史」：调色板色 + 默认前景混排
+  await cdp.eval(`window.__t1000PaneEngine.write('\\x1b[32mroot@pane:~$\\x1b[0m history-green-1\\r\\n\\x1b[34mroot@pane:~$\\x1b[0m history-blue-2\\r\\n\\x1b[0mplain-default-fg\\r\\n')`)
+  await sleep(600)
+
+  /** 画布上指定颜色的像素计数（不分连通块——字符笔画彼此独立，blob 面积会漏） */
+  const countColor = (rgb) =>
+    cdp.eval(`(() => {
+      ${paneRender}
+      const glc = ${paneCanvas}
+      if (!glc) return -1
+      const c2 = document.createElement('canvas')
+      c2.width = glc.width; c2.height = glc.height
+      const ctx = c2.getContext('2d')
+      ctx.drawImage(glc, 0, 0)
+      const img = ctx.getImageData(0, 0, c2.width, c2.height)
+      const [cr, cg, cb] = ${JSON.stringify(rgb)}
+      let n = 0
+      for (let p = 0; p < c2.width*c2.height; p++) {
+        const i = p*4
+        if (Math.abs(img.data[i]-cr)<=45 && Math.abs(img.data[i+1]-cg)<=45 && Math.abs(img.data[i+2]-cb)<=45) n++
+      }
+      return n
+    })()`)
+
+  const before = await cdp.eval(`(() => {
+    const eng = window.__t1000PaneEngine
+    const t = eng.renderer.theme
+    const hex = (c) => [Math.round(c.r*255), Math.round(c.g*255), Math.round(c.b*255)]
+    return { bg: hex(t.bg), green: hex(t.palette[2]), resolved: eng.opts.resolvedTheme }
+  })()`)
+  const greenPxBefore = await countColor(before.green)
+  await cdp.shot('pane-before-theme.png')
+
+  // 切应用主题到浅色（store.applyTheme 真实路径）：终端配色跟随（深色=Mocha →
+  // 明亮=Latte「稍微改一下」），历史文字必须原样可见（「切浅色吞字」回归）
+  await cdp.eval(`window.__t1000.setThemeMode('light')`)
+  await sleep(800)
+  const after = await cdp.eval(`(() => {
+    const eng = window.__t1000PaneEngine
+    const t = eng.renderer.theme
+    const hex = (c) => [Math.round(c.r*255), Math.round(c.g*255), Math.round(c.b*255)]
+    const rows = eng.viewportText().split('\\n').map(s=>s.trimEnd()).filter(Boolean)
+    return {
+      bg: hex(t.bg), green: hex(t.palette[2]), resolved: eng.opts.resolvedTheme,
+      appTheme: document.documentElement.dataset.theme,
+      historyKept: rows.some(r => r.includes('history-green-1')) && rows.some(r => r.includes('plain-default-fg')),
+    }
+  })()`)
+  await cdp.shot('pane-after-theme.png')
+  const greenPxAfter = await countColor(after.green)
+  // 明亮模式：配色切到浅色系列（bg 变亮、绿变 Latte），文字像素可见
+  const themeKeepOk =
+    after.appTheme === 'light' &&
+    after.bg[0] > 200 && after.bg[1] > 200 &&
+    JSON.stringify(after.green) !== JSON.stringify(before.green) &&
+    after.historyKept
+  // 明亮模式：配色切到浅色系列（bg 变亮、绿变 Latte），文字像素可见。
+  // 阈值 60：一行提示符约 130~170 像素的绿笔画，取下限防抖动。
+  const textVisibleOk = greenPxBefore > 60 && greenPxAfter > 60
+
+  // 背景色透过真实窗格：画布 alpha ≈0.3 + **DOM 合成等价验证**。
+  // 离屏渲染的 Page.captureScreenshot 不合成 fixed 全视口层（注入实验证实：
+  // body/#root 级 fixed 红蓝层都 0 像素），合成像素无法在无头下取证；
+  // 改为验证合成的全部要素：红层满视口且在内容之下 + 画布到红层之间
+  // 每一层都半透明 —— 这些要素齐备时，真实（有头）合成必然透出红色。
+  await cdp.eval(`window.__t1000.setAppearance('app.appearance.backgroundOpacity', 1)`)
+  await cdp.eval(`window.__t1000.setAppearance('app.appearance.backgroundColor', '#c0392b')`)
+  await cdp.eval(`window.__t1000.setAppearance('app.appearance.backgroundType', 'color')`)
+  await sleep(900)
+  const paneAlpha = await canvasBgAlpha(cdp, paneCanvas, paneRender)
+  const composite = await cdp.eval(`(() => {
+    const canvas = document.querySelector('.kitty-canvas')
+    const dyn = document.querySelector('.t1000-dynbg')
+    if (!canvas || !dyn) return { ok: false, why: 'missing elements' }
+    const dr = dyn.getBoundingClientRect()
+    const coversViewport = dr.width >= window.innerWidth * 0.95 && dr.height >= window.innerHeight * 0.95
+    const colorEl = dyn.querySelector('.t1000-dynbg--color')
+    const redSet = colorEl && getComputedStyle(colorEl).backgroundColor === 'rgb(192, 57, 43)'
+    const dynOpacity = parseFloat(getComputedStyle(dyn).opacity)
+    // 画布 → body 之间不许有不透明层（alpha<1 或全透明）
+    const opaqueLayers = []
+    let p = canvas.parentElement
+    while (p && p !== document.body) {
+      const bg = getComputedStyle(p).backgroundColor
+      const m = bg.match(/rgba?\\(([^)]+)\\)/)
+      if (m) {
+        const parts = m[1].split(',').map(s => parseFloat(s))
+        const a = parts.length === 4 ? parts[3] : 1
+        if (a >= 0.999) opaqueLayers.push(p.tagName + '.' + String(p.className || '').split(' ')[0])
+      }
+      p = p.parentElement
+    }
+    // DOCUMENT_POSITION_FOLLOWING：canvas 在 dyn 之后 → dyn 在画布之前绘制（在下层）
+    const dynBeforeContent = !!(dyn.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING)
+    return { coversViewport, redSet, dynOpacity, opaqueLayers, dynBeforeContent }
+  })()`)
+  const bgVisibleOk =
+    paneAlpha >= 55 &&
+    paneAlpha < 110 &&
+    composite.coversViewport &&
+    composite.redSet &&
+    composite.dynOpacity > 0.95 &&
+    composite.opaqueLayers.length === 0 &&
+    composite.dynBeforeContent
+  await cdp.shot('pane-bg-red.png')
+
+  // 模拟鼠标：真实点击终端区域（按下/抬起/移动），引擎必须存活且无异常
+  const canvasBox = await cdp.eval(`(() => {
+    const el = document.querySelector('.kitty-canvas')
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { x: r.left, y: r.top, w: r.width, h: r.height }
+  })()`)
+  let mouseOk = false
+  if (canvasBox && canvasBox.w > 100) {
+    const cx = Math.round(canvasBox.x + canvasBox.w / 2)
+    const cy = Math.round(canvasBox.y + canvasBox.h / 2)
+    try {
+      await cdp.mouse('mouseMoved', cx, cy)
+      await cdp.mouse('mousePressed', cx, cy, { button: 'left', buttons: 1 })
+      await cdp.mouse('mouseMoved', cx - 60, cy + 20, { buttons: 1 })
+      await cdp.mouse('mouseReleased', cx - 60, cy + 20)
+      await cdp.mouse('mouseMoved', cx + 80, cy - 30)
+      await sleep(300)
+      const alive = await cdp.eval(`Boolean(window.__t1000PaneEngine?.meta?.cols)`)
+      mouseOk = alive === true
+    } catch (e) {
+      mouseOk = false
+    }
+  }
+  await cdp.shot('pane-after-mouse.png')
+
+  // 清理：主题回深色、背景关掉
+  await cdp.eval(`window.__t1000.setThemeMode('dark')`)
+  await cdp.eval(`window.__t1000.setAppearance('app.appearance.backgroundType', 'none')`)
+  await sleep(300)
+
+  console.log(`REAL-PANE: ${themeKeepOk && textVisibleOk && bgVisibleOk && mouseOk ? 'PASS' : 'FAIL'} (配色跟随=${themeKeepOk} 历史文字可见=${textVisibleOk} 背景透出=${bgVisibleOk} 模拟鼠标=${mouseOk})`)
+  console.log('  before =', JSON.stringify(before), 'greenPxBefore =', greenPxBefore)
+  console.log('  after  =', JSON.stringify(after), 'greenPxAfter =', greenPxAfter)
+  console.log('  paneAlpha =', paneAlpha, 'composite =', JSON.stringify(composite), 'greenPxBefore =', greenPxBefore, 'greenPxAfter =', greenPxAfter)
+  return themeKeepOk && textVisibleOk && bgVisibleOk && mouseOk
+}
+
 /* ── 主流程 ── */
+await ensureXvfb()
 mkdirSync(SHOTS, { recursive: true })
 // 只清已知文件（整目录 rm 会撞批量删除保护），保证从干净状态开始
 for (const f of ['settings.json', 'local-store.db', 'local-store.db-wal', 'local-store.db-shm', 'migration.json']) {
@@ -536,7 +673,6 @@ let appLogRef = { log: '' }
     const cdp = await connectWithDemo(electron, appLogRef)
     results.tui = await probeKernelTui(cdp)
     results.cursor = await probeCursorClick(cdp)
-    results.theme = await probeThemeSwitch(cdp)
     results.dynbg = await probeDynbgChain(cdp)
     // 种下纯色背景供重启探针
     await cdp.eval(`window.__t1000.setAppearance('app.appearance.backgroundColor', '#1abc5b')`, true)
@@ -588,4 +724,23 @@ let appLogRef = { log: '' }
     electron.kill('SIGKILL')
   }
 }
-process.exitCode = results.tui && results.cursor && results.theme && results.dynbg && results.boot ? 0 : 1
+
+// 第三段：真实窗格端到端（独立实例，不建 demo 引擎避免画布混淆）
+{
+  const electron = launchApp()
+  electron.stdout.on('data', (d) => (appLogRef.log += d))
+  electron.stderr.on('data', (d) => (appLogRef.log += d))
+  try {
+    const cdp = await connectWithDemo(electron, appLogRef, { withDemo: false })
+    results.realPane = await probeRealPane(cdp)
+  } catch (err) {
+    console.error('REAL-PANE ERROR', err.message)
+    console.error(appLogRef.log.slice(-1200))
+    results.realPane = false
+  } finally {
+    electron.kill('SIGTERM')
+    await sleep(500)
+    electron.kill('SIGKILL')
+  }
+}
+process.exitCode = results.tui && results.cursor && results.dynbg && results.boot && results.realPane ? 0 : 1

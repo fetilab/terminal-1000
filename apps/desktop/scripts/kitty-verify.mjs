@@ -275,6 +275,12 @@ try {
   console.log(`SCROLL: ${scrollOk ? 'PASS' : 'FAIL'} (滚屏=${scrollOk1} 回看=${scrollOk2} 跳底=${scrollOk3})`)
 
   /* ── 光标拖尾（kitty cursor_trail.c 移植）：跨格跳转 → 角落后 → 收敛 ── */
+  // 关掉光标闪烁：blink 灭相帧 kitty 本来就不画光标（cursorQuads=0），
+  // 收敛断言撞上灭相会随机翻车——断言要与闪烁相位无关
+  await cdp.send('Runtime.evaluate', {
+    expression: `window.__kittyDemoEngine.applySettings({ ...window.__kittyDemoEngine.options, cursorBlink: false })`,
+  })
+  await sleep(150)
   // 触发一次跨屏跳转（光标从底部行跳到左上角，≥3 格才越过 start_threshold 2）
   await cdp.send('Runtime.evaluate', {
     expression: `window.__kittyDemoEngine.write('\\x1b[Htrail-probe\\r\\n')`,
@@ -326,9 +332,13 @@ try {
   })
   console.log('trail-end =', JSON.stringify(s5?.result?.value))
   const t2 = s5?.result?.value ?? {}
+  // kitty 收敛语义：所有角进入半格容差后停渲染（needsRender=false），残差 ≤0.5 格
+  // 是原版行为。「单光标」的关键断言：cursorQuads===1（只有一个光标实例）+
+  // 光标矩形 == 目标（钉头：拖尾头与光标永远相连，不会出现分离的第二个块）
   const trailOk2 =
-    t2.d && t2.maxDelta < 0.05 && t2.d.needsRender === false && t2.animIdle === true &&
-    t2.d.opacity > 0.9 && t2.d.cursorQuads === 1
+    t2.d && t2.maxDelta < 0.55 && t2.d.needsRender === false && t2.animIdle === true &&
+    t2.d.opacity > 0.9 && t2.d.cursorQuads === 1 &&
+    t2.d.cursorRect && t2.d.edgeX && t2.d.cursorRect[0] === t2.d.edgeX[0]
 
   // Catppuccin Mocha base #1E1E2E（30,30,46）、text #CDD6F4（205,214,244）。
   // cursorStyleOverride 是用户自己的设置值（bar/block 都合法），只断言形状生效

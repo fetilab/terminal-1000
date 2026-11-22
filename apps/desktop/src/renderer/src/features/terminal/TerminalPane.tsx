@@ -25,7 +25,7 @@ import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
 import type { Unicode11Addon } from '@xterm/addon-unicode11'
 import type { KittyEngine } from './kitty/engine'
-import { Events, type PublicProvider } from '@t1000/shared'
+import { Events, type PublicProvider, type TerminalSettings } from '@t1000/shared'
 import { Icon } from '../../components/Icon'
 import { Badge } from '../../components/Feedback'
 import { IconButton } from '../../components/Button'
@@ -240,6 +240,14 @@ function parseOsc7(data: string): string | null {
   }
 }
 
+/**
+ * 媒体背景激活时终端画布的不透明度：跟随界面半透明系数（与面板同源），
+ * 不激活则用终端自己的 backgroundOpacity 设置。
+ */
+function bgAlphaFor(cfg: TerminalSettings, mediaAlpha: number | null): number {
+  return mediaAlpha !== null ? Math.min(cfg.backgroundOpacity, mediaAlpha) : cfg.backgroundOpacity
+}
+
 function themeFor(colorScheme: string, resolved: 'light' | 'dark'): import('@xterm/xterm').ITheme {
   if (colorScheme === 'light') return TERMINAL_THEME_LIGHT
   if (colorScheme === 'high-contrast') return TERMINAL_THEME_HC
@@ -328,10 +336,12 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   const resolvedThemeRef = useRef(resolvedTheme)
   resolvedThemeRef.current = resolvedTheme
   /* ── 背景透出：动态背景/背景图激活时，终端画布要跟界面一样半透明 ──
-   * 否则 WebGL 清屏 alpha（terminal.backgroundOpacity，默认 0.88）几乎不透明，
-   * 背景层被盖住 —— 用户看到的就是「背景设置了完全不显示」。
-   * 0.78 系数与面板（--t1000-surface-alpha）同源，整体观感一致。 */
+   * 否则 WebGL 画布几乎不透明，背景层被盖住 —— 用户看到的就是「背景设置了
+   * 完全不显示」。系数与面板（--t1000-surface-alpha）同源，整体观感一致。
+   * ref 供引擎创建闭包读（创建 effect 是异步的，等 state 会晚一拍）。 */
   const [surfaceAlpha, setSurfaceAlpha] = useState<number | null>(() => currentMediaSurfaceAlpha())
+  const surfaceAlphaRef = useRef(surfaceAlpha)
+  surfaceAlphaRef.current = surfaceAlpha
   useEffect(() => {
     const sync = (cfg: AppearanceConfig | null): void => {
       if (!cfg) return
@@ -561,7 +571,9 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
             host,
             sessionId: tab.sessionId ?? `pending-${tab.tabId}`,
             kind: tab.kind === 'telnet' ? 'telnet' : tab.kind === 'ssh' ? 'ssh' : 'local',
-            settings: st,
+            // 创建时就应用背景半透明联动——设置 effect 只在依赖变化时跑，
+            // 引擎异步创建完成后不会自动重跑，漏掉这一步背景永远被盖住
+            settings: { ...st, backgroundOpacity: bgAlphaFor(st, surfaceAlphaRef.current) },
             resolvedTheme: resolvedThemeRef.current,
             onWrite: (data) => {
               const current = tabRef.current
@@ -589,6 +601,10 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
           })
           await engine.open()
           kittyRef.current = engine
+          // 测试钩子：把真实窗格的引擎暴露给无头验收（生产包无此启动参数，分支被消除）
+          if (Boolean((window as unknown as { t1000?: { testHook?: boolean } }).t1000?.testHook)) {
+            ;(window as unknown as Record<string, unknown>).__t1000PaneEngine = engine
+          }
           term = engine as unknown as Terminal
           fit = { fit: () => engine.fit() } as unknown as FitAddon
           search = engine.searchShim as unknown as SearchAddon
@@ -868,12 +884,11 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
     const kitty = kittyRef.current
     if (kitty) {
       // kitty 后端：字体/字号/配色/内边距都直接改渲染器，不必重建终端。
-      // 明暗模式必须显式同步——引擎内部 buildTheme 读的是这份 resolved，
-      // 不传的话应用主题切到浅色、终端永远停在深色配色（淡色字看不见）。
+      // 配色跟随应用深浅模式：深色=用户 kitty 配置的 Mocha，明亮=同系列 Latte
+      // （kitty.setResolvedTheme 内部重建渲染主题），历史文字必须原样保留。
       kitty.setResolvedTheme(resolvedTheme)
       // 背景（图/视频/脚本/纯色）激活时终端画布跟着半透明，否则背景层被盖住
-      const bgAlpha =
-        surfaceAlpha !== null ? Math.min(termCfg.backgroundOpacity, surfaceAlpha) : termCfg.backgroundOpacity
+      const bgAlpha = bgAlphaFor(termCfg, surfaceAlphaRef.current)
       kitty.applySettings({ ...termCfg, fontFamily: withEmojiFallback(termCfg.fontFamily), backgroundOpacity: bgAlpha })
       setBackendLabel(kitty.backendLabel)
       return

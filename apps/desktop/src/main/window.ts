@@ -105,6 +105,10 @@ export interface CreateWindowOptions {
 
 export function createWindow(options: CreateWindowOptions = {}): BrowserWindow {
   const saved = options.restoreBounds === false ? undefined : loadWindowBounds()
+  // 自动化验收模式（--t1000-testhook）：窗口**永不显示**。无头验收靠 CDP 截图。
+  // 这不仅是观感问题——Electron 会无视 DISPLAY 环境变量把窗口开到用户真实屏幕上，
+  // 测试期间反复打扰桌面，因此必须在源头禁止。
+  const headless = process.argv.includes('--t1000-testhook')
 
   const win = new BrowserWindow({
     ...(saved?.x !== undefined && saved?.y !== undefined
@@ -126,8 +130,11 @@ export function createWindow(options: CreateWindowOptions = {}): BrowserWindow {
       ...(process.argv.includes('--t1000-testhook') ? { additionalArguments: ['--t1000-testhook'] } : {}),
       contextIsolation: true,
       nodeIntegration: false,
-      // 终端需要持续的定时器精度，后台节流交给应用自己判断
+      // 隐藏窗口也要持续绘制（无头验收的 CDP 截图依赖它）；后台节流交给应用自己判断
       backgroundThrottling: false,
+      // 无头验收：离屏渲染——帧进 buffer 而不是任何屏幕，配合 show:false
+      // 保证测试实例在哪个 display 上都不可见（CDP 截图走离屏帧）
+      ...(process.argv.includes('--t1000-testhook') ? { offscreen: true } : {}),
     },
   })
 
@@ -137,7 +144,8 @@ export function createWindow(options: CreateWindowOptions = {}): BrowserWindow {
   // 没有它们只能靠猜。
   win.once('ready-to-show', () => {
     log.info('窗口 ready-to-show')
-    if (options.show ?? true) {
+    // 无头验收模式：跳过 show()，窗口永不落到真实屏幕
+    if (!headless && (options.show ?? true)) {
       win.show()
       log.info('窗口已显示')
     }

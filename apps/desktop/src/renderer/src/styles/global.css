@@ -25,13 +25,13 @@
   --t1000-bg-hover-solid: #252a35;
   --t1000-bg-active-solid: #2c3240;
   --t1000-bg-input-solid: #171a21;
-  --t1000-bg: var(--t1000-bg-solid);
-  --t1000-bg-sunken: var(--t1000-bg-sunken-solid);
-  --t1000-bg-raised: var(--t1000-bg-raised-solid);
-  --t1000-bg-panel: var(--t1000-bg-panel-solid);
-  --t1000-bg-hover: var(--t1000-bg-hover-solid);
-  --t1000-bg-active: var(--t1000-bg-active-solid);
-  --t1000-bg-input: var(--t1000-bg-input-solid);
+  /*
+   * 派生表面令牌（--t1000-bg / -sunken / -raised / -panel / -hover / -active / -input）
+   * 由 appearance.css（@import 在文件顶部）按 --t1000-surface-alpha 做 color-mix 派生。
+   * 此处**绝不能**再写 `--t1000-bg: var(--t1000-bg-solid)` 一类的静态别名：
+   * 本文件的规则排在 @import 之后，同名定义会把半透明派生永久盖成实色——
+   * 界面透明度/毛玻璃/背景透出会全部失效（2026-11-22 修过的真实事故）。
+   */
   --t1000-overlay: rgba(6, 8, 12, 0.62);
 
   /* ── 描边 ───────────────────────────────────── */
