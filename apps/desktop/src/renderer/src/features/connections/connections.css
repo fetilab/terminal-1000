@@ -192,7 +192,9 @@
   align-items: center;
   gap: 10px;
   flex: 0 0 auto;
-  padding: 8px 12px 0;
+  /* 与左侧面板标题栏同高：它是连接中心上方那一条「SSH / RDP / …」切换条 */
+  height: var(--t1000-toolbar-height);
+  padding: 0 12px;
 }
 
 /* ── 连接表单 ─────────────────────────────────────── */

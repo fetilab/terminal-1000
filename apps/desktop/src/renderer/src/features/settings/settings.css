@@ -1,9 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 terminal-1000 contributors */
 
+/*
+ * 设置页的滚动容器**必须占满内容区宽度**。
+ *
+ * 这里同时是滚动容器（.content-scroll）：一旦给它 max-width，滚动条就画在这个
+ * 限宽的盒子上，于是停在离窗口右边缘一两百像素的地方（曾限 940px，1440 宽窗口下
+ * 滚动条悬在 1246px 处）。内容也不再单独限宽 —— 左边缘要和工具条标题、左侧导航对齐。
+ */
 .settings-body {
   padding: 18px;
-  max-width: 940px;
 }
 
 .settings-grid {

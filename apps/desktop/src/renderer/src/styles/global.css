@@ -76,7 +76,14 @@
   --t1000-panel-width: 252px;
   --t1000-row-height: 46px;
   --t1000-header-height: 44px;
-  --t1000-toolbar-height: 46px;
+  /*
+   * 工具条必须与面板标题栏（.panel-header）等高。
+   *
+   * 两者在同一水平线上左右相邻：左边是侧栏的「设置」「会话」标题栏，右边是
+   * 内容区工具条。差 2px 时两条下边框就在交界处错开一截（用户截图圈出来的就是这里），
+   * 差得不多，但隔着一条竖缝能一眼看出来。改高度请改这一个变量。
+   */
+  --t1000-toolbar-height: 44px;
 
   /* ── 动效 ───────────────────────────────────── */
   --t1000-ease: cubic-bezier(0.2, 0, 0, 1);
@@ -137,15 +144,16 @@ a {
   text-decoration: none;
 }
 
-/* 统一滚动条：细、低对比、悬停才明显 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--t1000-border-strong) transparent;
-}
-
+/*
+ * 统一滚动条：细、低对比、悬停才明显。
+ *
+ * 注意这里**不能**写 scrollbar-width / scrollbar-color：Chromium 里只要这两个标准属性
+ * 不是 auto，就会整条忽略下面的 ::-webkit-scrollbar 规则 —— 结果拿到的是系统默认条
+ * （带上下箭头、粗细不受控）。想自定义就得只用 webkit 伪元素。
+ */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -154,7 +162,8 @@ a {
 
 ::-webkit-scrollbar-thumb {
   background: var(--t1000-border);
-  border: 3px solid transparent;
+  /* 透明边框 + content-box 裁切：thumb 实际 4px 宽，距窗口边缘 2px，贴着边又不顶死 */
+  border: 2px solid transparent;
   border-radius: var(--t1000-radius-pill);
   background-clip: content-box;
 }

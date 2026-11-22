@@ -592,13 +592,19 @@
 }
 
 /* ── 工具条 ─────────────────────────────────────── */
+/*
+ * 高度是**固定值**，不是 min-height：工具条与左侧 .panel-header 相邻，
+ * 差 1px 两条下边框就在交界处错开。早先用 min-height + 8px 上下内边距，
+ * 里面放一个 32px 的搜索框就会撑到 49px（笔记页就是这样歪的）。
+ * 现在改用固定高度 + 垂直居中，任何控件都装在 44px 里。
+ */
 .t-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
-  min-height: var(--t1000-toolbar-height);
-  padding: 8px 12px;
+  height: var(--t1000-toolbar-height);
+  padding: 0 12px;
   border-bottom: 1px solid var(--t1000-border);
   background: var(--t1000-bg);
 }
