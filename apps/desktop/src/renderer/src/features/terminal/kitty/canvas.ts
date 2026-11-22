@@ -14,7 +14,7 @@
 
 import type { KittyMeta, KittyRow } from '@t1000/shared'
 import { KITTY_CELL_WORDS } from '@t1000/shared'
-import type { GlyphAtlas } from './atlas'
+import { drawGeometricGlyph, isGeometricGlyph, type GlyphAtlas } from './atlas'
 import type { RenderTheme, Rgba } from './theme'
 import type { HighlightSpan, ImagePlacement, RendererOptions, SearchSpan } from './webgl'
 import { parseHex } from './theme'
@@ -231,7 +231,25 @@ export class CanvasTerminalRenderer {
         if (this.grid[i + 2]) text += String.fromCodePoint(this.grid[i + 2] ?? 0)
         if ((flags & F_BLINK) !== 0 && this.blinkOff) continue
         ctx.fillStyle = css(fg)
-        ctx.fillText(text, px, py + this.atlas.baseline)
+        /*
+         * 与 WebGL 路径同一套画法：
+         * - 制表/块/阴影用几何绘制（回退渲染器也不能出现断线的框、漏缝的块）；
+         * - 普通文字横向缩放到正好一格，避免右边被格子切掉。
+         */
+        const one = [...text]
+        const gcp = one.length === 1 ? (one[0]?.codePointAt(0) ?? 0) : 0
+        const boxW = wide ? cw * 2 : cw
+        if (gcp && isGeometricGlyph(gcp)) {
+          drawGeometricGlyph(ctx, gcp, px, py, boxW, ch, css(fg), (this.atlas.fontSizeDpr || 12) / 12)
+        } else {
+          const natural = ctx.measureText(text).width || boxW
+          const sx = gcp && natural > 0 ? boxW / natural : 1
+          ctx.save()
+          ctx.translate(px, py + this.atlas.baseline)
+          ctx.scale(sx, 1)
+          ctx.fillText(text, 0, 0)
+          ctx.restore()
+        }
         const underline = (flags & F_UNDERLINE_MASK) >> F_UNDERLINE_SHIFT
         if (underline > 0 || (flags & F_STRIKE) !== 0) {
           // SGR 58：SGR 4:3 附带的下划线颜色（word 5），0 = 默认色

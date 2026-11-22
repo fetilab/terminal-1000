@@ -164,6 +164,8 @@ export class KittyEngine {
   private raf = 0
   private blinkTimer = 0
   private blinkOff = false
+  /** 是否处于闪烁模式（cursorBlink=true）；false = 常亮 */
+  private blinking = false
   private selectionText = ''
   private markers: Marker[] = []
   private decorations: DecorationImpl[] = []
@@ -312,7 +314,8 @@ export class KittyEngine {
           const ck = `${frame.meta.cursor.x},${frame.meta.cursor.y}`
           if (ck !== this.lastCursorKey) {
             this.lastCursorKey = ck
-            this.lastCursorMoveAt = Date.now()
+            // 光标跳了：点亮 + 重新起表，避免正好落在「灭」的相位里
+            this.noteActivity()
             // canvas 回退渲染器没有拖尾状态机，安全跳过
             ;(this.renderer as { noteCursorMoved?: () => void }).noteCursorMoved?.()
           }
@@ -681,6 +684,7 @@ export class KittyEngine {
 
   private startBlink(): void {
     window.clearInterval(this.blinkTimer)
+    this.blinking = true
     // kitty cursor_blink_interval 0.5
     this.blinkTimer = window.setInterval(() => {
       if (this.disposed) return
@@ -693,6 +697,35 @@ export class KittyEngine {
       this.blinkOff = !this.blinkOff
       if (this.renderer.setBlinkOff(this.blinkOff)) this.scheduleRender()
     }, 500)
+  }
+
+  private stopBlink(): void {
+    window.clearInterval(this.blinkTimer)
+    this.blinkTimer = 0
+    this.blinking = false
+    if (this.blinkOff) {
+      this.blinkOff = false
+      if (this.renderer.setBlinkOff(false)) this.scheduleRender()
+    }
+  }
+
+  /**
+   * 有活动（按键、输出、光标跳动）时，闪烁相位立刻回到「亮」。
+   *
+   * 之前的定时器只翻相位、不看活动时刻：你刚敲一个字或移动光标，若正好落在
+   * 「灭」的那半个周期，光标就地消失 0.5 秒 —— 用起来就是「一动光标就看不见」。
+   *
+   * kitty 的规则是「活动后从可见开始重新计时」，这里照做：点亮 + 重新起表。
+   * 常亮模式（cursorBlink=false）下什么都不用做。
+   */
+  noteActivity(): void {
+    this.lastCursorMoveAt = Date.now()
+    if (!this.blinking) return
+    if (this.blinkOff) {
+      this.blinkOff = false
+      if (this.renderer.setBlinkOff(false)) this.scheduleRender()
+    }
+    this.startBlink()
   }
 
   /* ─────────────────────────── 尺寸 ─────────────────────────── */
@@ -803,6 +836,8 @@ export class KittyEngine {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (this.disposed || !this.session) return
+    // 按键即活动：连敲时不该出现「光标在灭的相位里」，点了键就该看得见
+    this.noteActivity()
     if (this.composing) return
     // 组合键交给上层（复制/粘贴/查找/补全）
     if (e.ctrlKey && e.shiftKey) return
@@ -935,6 +970,8 @@ export class KittyEngine {
       cb?.()
       return
     }
+    // 有输出 = 有活动：光标应保持亮着（程序在写屏时闪烁只是干扰）
+    if (data.length > 0) this.noteActivity()
     this.session.write(new TextEncoder().encode(data))
     if (cb) queueMicrotask(cb)
   }
@@ -1147,10 +1184,18 @@ export class KittyEngine {
     this.renderer.setCursorInactiveStyle(settings.cursorInactiveStyle)
     // 闪烁开关热更新：false = 清定时器常亮；true = 重启定时器
     if (settings.cursorBlink !== undefined) {
-      window.clearInterval(this.blinkTimer)
-      this.blinkOff = false
-      if (this.renderer.setBlinkOff(false)) this.scheduleRender()
-      if (settings.cursorBlink) this.startBlink()
+      /*
+       * 只在**真的变了**的时候动定时器。
+       *
+       * applySettings 会被窗格频繁调用（任何一项设置变化、甚至一次重渲染都可能触发）。
+       * 早先这里无条件 startBlink()，等于每来一次就把 500ms 的计时清零 ——
+       * 定时器永远也走不到触发点，光标看上去就是常亮，"闪烁"开关形同虚设。
+       */
+      const want = Boolean(settings.cursorBlink)
+      if (want !== this.blinking) {
+        if (want) this.startBlink()
+        else this.stopBlink()
+      }
     }
     this.fit()
   }
