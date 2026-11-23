@@ -36,16 +36,11 @@ files:
   # electron-builder 无法打包本目录以外的文件，必须排除。
   - '!node_modules/@t1000/**'
 
-  # 只保留**本平台**的原生二进制。
-  # better-sqlite3 随包带了 8 个平台的 prebuild（约 34MB），
-  # 而 Linux x64 包永远只会用 linux-x64.node —— 其余约 32MB 是纯浪费。
+  # 只保留**本平台**的原生二进制 —— 过滤规则必须按 target 平台拆到
+  # linux:/win:/mac: 段里。曾经把 win32-* 全局排除，结果 Windows 包里没有
+  # better_sqlite3.node，应用一启动就崩（Cannot find module）。
+  # better-sqlite3 随包带 8 个平台的 prebuild（约 34MB），只留本平台。
   # ⚠️ 将来要出 arm64 / musl 包时必须按 arch 分别配置，不能沿用这几条。
-  - '!**/node_modules/better-sqlite3/prebuilds/darwin-*'
-  - '!**/node_modules/better-sqlite3/prebuilds/win32-*'
-  - '!**/node_modules/better-sqlite3/prebuilds/linuxmusl-*'
-  - '!**/node_modules/better-sqlite3/prebuilds/linux-arm64*'
-  - '!**/node_modules/node-pty/prebuilds/darwin-*/**'
-  - '!**/node_modules/node-pty/prebuilds/win32-*/**'
 
   # typescript 只为「动态背景 TS 脚本」在主进程做类型剥离（transpileModule 不做类型检查），
   # 70MB 的 lib/*.d.ts 与各 ES 版本 lib 全都用不上 —— 只保留 typescript.js 本体。
@@ -97,6 +92,14 @@ linux:
   # 「装了新版本，图标还是老的」。build/icons/ 里的 9 个尺寸由 scripts/gen-icons.sh
   # 从 icon.svg 渲染，electron-builder 会把它们铺成完整的 hicolor 树。
   icon: build/icons
+  # 只留 glibc linux-x64 的原生二进制（顶层注释见「只保留本平台」段）
+  files:
+    - '!**/node_modules/better-sqlite3/prebuilds/darwin-*'
+    - '!**/node_modules/better-sqlite3/prebuilds/win32-*'
+    - '!**/node_modules/better-sqlite3/prebuilds/linuxmusl-*'
+    - '!**/node_modules/better-sqlite3/prebuilds/linux-arm64*'
+    - '!**/node_modules/node-pty/prebuilds/darwin-*/**'
+    - '!**/node_modules/node-pty/prebuilds/win32-*/**'
   target:
     - deb
     - AppImage
@@ -145,7 +148,16 @@ deb:
 win:
   target:
     - nsis
+  # 交叉构建（wine）时 rcedit 改 exe 资源不可靠，关掉；VM/CI 原生构建时
+  # 用 `-c.win.signAndEditExecutable=true` CLI 覆盖，否则 exe/快捷方式
+  # 都是 Electron 原版图标。
   signAndEditExecutable: false
+  files:
+    - '!**/node_modules/better-sqlite3/prebuilds/darwin-*'
+    - '!**/node_modules/better-sqlite3/prebuilds/linux-*'
+    - '!**/node_modules/better-sqlite3/prebuilds/linuxmusl-*'
+    - '!**/node_modules/node-pty/prebuilds/darwin-*/**'
+    - '!**/node_modules/node-pty/prebuilds/linux-*/**'
 
 nsis:
   # 卸载（以及升级时先跑的旧卸载器）**绝不删用户数据**。
