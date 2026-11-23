@@ -7,3 +7,4 @@ allowBuilds:
   cpu-features: true
   node-pty: true
   ssh2: true
+  esbuild: true
