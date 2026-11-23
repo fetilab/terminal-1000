@@ -5,7 +5,7 @@
 **terminal-1000** 把终端、文件传输、端口转发、图形远程桌面和服务器监控整合到一个桌面应用，
 面向需要管理多台服务器的开发者与运维人员。
 
-**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.2.6**
+**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.2.7**
 
 ---
 
@@ -15,20 +15,19 @@
 
 | 格式 | 适用 | 说明 |
 |---|---|---|
-| `.deb` | Debian / Ubuntu 及衍生 | 约 93 MiB，`sudo apt install ./terminal-1000_0.2.6_amd64.deb` |
-| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 92 MiB，`sudo dnf install ./terminal-1000-0.2.6.x86_64.rpm` |
-| `.pacman` | Arch / Manjaro | 约 94 MiB，`sudo pacman -U terminal-1000-0.2.6.pacman` |
+| `.deb` | Debian / Ubuntu 及衍生 | 约 100 MiB，`sudo apt install ./terminal-1000_0.2.7_amd64.deb` |
+| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 101 MiB，`sudo dnf install ./terminal-1000-0.2.7.x86_64.rpm` |
+| `.pacman` | Arch / Manjaro | 约 100 MiB，`sudo pacman -U terminal-1000-0.2.7.pacman` |
 | `.AppImage` | 任意发行版 | 免安装，`chmod +x` 后直接运行 |
-| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.2.4-x86_64.flatpak` |
-| `.exe` | Windows 10+ | **实验性**，见下方说明 |
+| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.2.7-x86_64.flatpak` |
+| `.exe` | Windows 10+ | 原生 win32 构建（NSIS 安装器，约 128 MiB） |
 
 > **升级不会丢数据**：设置、连接、凭据、笔记都存在系统配置目录里（见
 > [数据存放位置](#数据存放位置)），不在安装目录内。覆盖安装只替换程序文件；
 > 旧版本若把数据存在过别的位置，首次启动会自动**复制**过来，原目录保留不删。
 
-> **Windows 包现状**：安装器可构建，但应用的原生模块（node-pty / better-sqlite3）目前只在
-> Linux ABI 下重建，未做 win32 交叉编译。Windows 用户请先用 WSL 或等待正式的
-> Windows CI 产物（见 [CONTRIBUTING.md](CONTRIBUTING.md) 的 CI 计划）。
+> **Windows 包**：原生 win32 构建，node-pty / better-sqlite3 直接使用随包分发的
+> win32-x64 prebuild，无需 WSL。构建方式见[打包](#打包)一节。
 
 **系统要求**：Linux x86-64（GTK3 / libnotify / NSS）/ Windows 10+。首次启动会要求设置主密码，
 用于加密本机保存的全部服务器凭证。
@@ -205,7 +204,7 @@ pnpm install
 pnpm dev        # 启动开发模式
 pnpm build      # 构建
 pnpm typecheck  # 类型检查
-pnpm test       # 单元测试（1700+ 项）
+pnpm test       # 单元测试（1800+ 项）
 ```
 
 原生模块（node-pty / better-sqlite3 / argon2）需针对 Electron ABI 重编译，`pnpm install` 后会自动执行。
@@ -230,11 +229,24 @@ pnpm build && DISPLAY=:75 node scripts/acceptance.mjs
 cd apps/desktop
 pnpm dist                        # 默认：deb + AppImage
 pnpm exec electron-builder --linux rpm pacman flatpak   # 其余 Linux 目标
-pnpm exec electron-builder --win nsis                   # Windows 安装器（实验性，见上文）
 ```
 
-产物在 `apps/desktop/release/`。注意 rpm 构建依赖 fpm 1.9.3，它与 rpm ≥ 4.20 的
-rpmbuild 不兼容，需要把 `rpmbuild` 钉在 4.x 旧版（本机的垫片方案见 HANDOFF.md）。
+Windows 包需在 **Windows 主机**上构建（原生模块走 win32 prebuild，不需要 WSL）：
+
+```powershell
+cd apps\desktop
+pnpm build
+pnpm exec electron-builder --win nsis -c.win.signAndEditExecutable=true -c.win.icon=build/icon.png
+```
+
+> `-c.win.signAndEditExecutable=true` 嵌入图标与版本信息（exe / 快捷方式不再是 Electron
+> 原版图标）。配置里默认为 `false` 是留给 wine 交叉构建的，原生构建请显式覆盖。
+> 原生二进制过滤在 `electron-builder.yml` 按 `linux.files` / `win.files` 分平台配置 ——
+> 改动过滤规则时务必两段同步检查，否则包里会缺 `.node` 文件、应用启动即崩。
+> 注意 rpm 构建依赖 fpm 1.9.3，它与 rpm ≥ 4.20 的 rpmbuild 不兼容，
+> 需要把 `rpmbuild` 钉在 4.x 旧版（本机的垫片方案见 HANDOFF.md）。
+>
+> 全部产物输出在 `apps/desktop/release/`。
 
 ### 目录结构
 
