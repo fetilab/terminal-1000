@@ -7,6 +7,46 @@
 "修复了 X 的问题"。因为这个项目里有一批缺陷属于"看起来正常、实际从未生效"，
 把根因写下来，比写"已修复"对后来者有用得多。
 
+## [0.2.7] - 2026-11-23
+
+### 修复
+
+- **性能监控与终端之间没有分隔线**：现象是打开监控栏后与终端连成一片。
+  根因是 `terminal.css` 里 `.term-monitor > .monitor` 用 `border-left: none`
+  覆盖了监控面板自带的分隔线 —— 注释声称"分隔条已经画了竖线，避免双线"，
+  但 `.t-splitter` 默认 `background: transparent`（只有 hover 才显色），
+  它从来不承担常驻分隔线的职责。删掉覆盖，与 `.term-files` 的
+  `border-right` 同一模式。
+
+- **同步与云端滚动条不靠边**：`.content-scroll.svc-body` 自身带
+  `max-width: 900px`，滚动条就画在限宽盒子上、停在半空中 ——
+  滚动容器必须全宽（这是项目里第二次踩这个坑），窄版式交给
+  里层内容（`.svc-body > *` 居中限宽）。
+
+### 新增
+
+- **中键粘贴做成设置项**（`terminal.middleClickPaste`，默认开）：
+  对应 kitty 的 `middle release ungrabbed paste_from_selection`
+  默认映射，X11 的几十年肌肉记忆不该替用户关掉；但触控板容易误触
+  中键的人在「设置 → 终端」里可以关。程序抓鼠标时仍照常转发给程序。
+
+### 快捷键
+
+- **补全"新窗口不挂应用内快捷键"的缺口**：`registerFromSettings` 只覆盖
+  它运行那一刻存在的窗口 —— 主窗口销毁重建后所有应用内快捷键静默失效，
+  而注册状态里还显示"生效"。现在 `createWindow` 会调用
+  `attachAllInApp` 把当前启用的应用内绑定补挂上去。
+- 顺手删掉了 hotkey 服务里的死代码 `matchesInputStub`（与 accelerator.ts
+  的 `matchesInput` 重复，零引用）。
+
+### 打包
+
+- **Windows 安装器改为 Win11 虚拟机原生构建**：此前 NSIS 包是在 Linux 上
+  经 wine 交叉出的，`electron-builder.yml` 里 node-pty / better-sqlite3
+  的原生模块是 Linux ABI 重建的（注释里自己写着"正式 Windows 包应在
+  Windows CI 上出"）。两个包都带 win32-x64 prebuilds，原生构建不需要
+  Visual Studio Build Tools。
+
 ## [0.2.6] - 2026-11-22
 
 ### 修复

@@ -1002,8 +1002,9 @@ export class KittyEngine {
       openGesture(tracking, 1)
       if (tracking) {
         this.session?.mouse({ x: cell.x, y: cell.y, button: 'middle', action: 'press', mods })
-      } else {
-        // kitty 的 `middle release ungrabbed paste_from_selection`：X11 上是 PRIMARY
+      } else if (this.options.middleClickPaste) {
+        // kitty 的 `middle release ungrabbed paste_from_selection`：X11 上是 PRIMARY。
+        // 这条默认映射可由「设置 → 终端 → 中键粘贴」关闭（触控板误触的用户）。
         void readSelectionText().then((text) => {
           if (text) this.session?.paste(text)
         })

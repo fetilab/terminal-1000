@@ -61,6 +61,14 @@ export interface TerminalSettings {
   /** 右键粘贴 */
   rightClickPaste: boolean
   /**
+   * 中键粘贴（X11 PRIMARY selection）。
+   *
+   * 与 kitty 的 `middle release ungrabbed paste_from_selection` 默认映射一致：
+   * X11 上中键粘贴是几十年来的肌肉记忆，**默认开启**；不想要的（尤其是会
+   * 误触中键的触控板用户）在这里关掉。
+   */
+  middleClickPaste: boolean
+  /**
    * 有选区时 `Ctrl+C` 复制（而不是发 SIGINT）。
    *
    * **默认关闭**：`Ctrl+C` 首先属于终端里的程序（中断）。Windows Terminal 与

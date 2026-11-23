@@ -1,9 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 terminal-1000 contributors */
 
+/* 滚动容器保持全宽：给 .content-scroll 限宽会让滚动条画在限宽盒子上、
+ * 停在半空中（不是贴内容区右缘）。窄版式交给里层内容。 */
 .svc-body {
   padding: 18px;
+}
+
+.svc-body > * {
   max-width: 900px;
+  margin-inline: auto;
 }
 
 /* 「两个口令」的并排说明卡：这是本面板最容易混淆的地方，值得单独排版 */

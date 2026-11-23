@@ -51,6 +51,7 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
   'terminal.cursorBlink': '同上（term.options.cursorBlink）',
   'terminal.copyOnSelect': 'TerminalPane onSelectionChange → 选中即写入剪贴板',
   'terminal.rightClickPaste': 'TerminalPane onContextMenu → 直接粘贴而不弹菜单',
+  'terminal.middleClickPaste': 'kitty 引擎 onMouseDown 中键 → 粘贴主选区（默认开，X11 惯例；程序抓鼠标时仍转发给程序）',
   'terminal.copyOnCtrlC': 'TerminalPane 捕获阶段 keydown → 有选区时 Ctrl+C 复制（默认关，避免抢 SIGINT）',
   'terminal.pasteOnCtrlV': 'TerminalPane 捕获阶段 keydown → Ctrl+V 粘贴（默认关，避免抢 vim/emacs）',
   'terminal.scrollback': '同上（term.options.scrollback）',

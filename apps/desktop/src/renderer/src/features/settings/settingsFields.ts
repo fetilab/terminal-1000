@@ -340,6 +340,12 @@ export const SETTINGS_FIELDS: Record<
     { path: 'terminal.copyOnSelect', label: '选中即复制', kind: 'switch' },
     { path: 'terminal.rightClickPaste', label: '右键粘贴', kind: 'switch' },
     {
+      path: 'terminal.middleClickPaste',
+      label: '中键粘贴',
+      kind: 'switch',
+      hint: 'X11 惯例（与 kitty 默认一致）：中键粘贴主选区（选中即复制的内容）。触控板容易误触中键的话可以关掉',
+    },
+    {
       path: 'terminal.copyOnCtrlC',
       label: '有选区时 Ctrl+C 复制',
       kind: 'switch',

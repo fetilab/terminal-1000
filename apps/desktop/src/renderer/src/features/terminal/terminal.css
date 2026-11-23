@@ -698,7 +698,8 @@
 }
 
 /* 监控栏外框：只负责"多宽"，内部 MonitorPanel 填满它。
- * 分隔条已经画了竖线，这里不再加 border-left，避免双线。 */
+ * 分隔线由 .monitor 自己的 border-left 提供（Splitter 默认透明，
+ * 只在 hover 时显色，不承担常驻分隔线职责 —— 与 .term-files 同一模式）。 */
 .term-monitor {
   display: flex;
   flex: 0 0 auto;
@@ -709,7 +710,6 @@
 .term-monitor > .monitor {
   flex: 1 1 auto;
   min-width: 0;
-  border-left: none;
 }
 
 /* ── kitty 后端的回看滚动条 ─────────────────────────

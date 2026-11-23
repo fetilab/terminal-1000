@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import type { EventName, EventPayloads } from '@t1000/shared'
 import { appIconPath } from './icon'
 import { createLogger } from './logger'
+import { attachAllInApp } from './services/hotkey'
 
 const log = createLogger('window')
 
@@ -139,6 +140,10 @@ export function createWindow(options: CreateWindowOptions = {}): BrowserWindow {
   })
 
   windows.add(win)
+
+  // 新窗口要补挂应用内快捷键：registerFromSettings 只覆盖它运行那一刻的窗口。
+  // 不补的话主窗口销毁重建后所有应用内快捷键静默失效（注册状态还显示"生效"）。
+  attachAllInApp(win)
 
   // 窗口生命周期日志：出问题时（窗口不出现、白屏）这几条是唯一能定位的线索，
   // 没有它们只能靠猜。

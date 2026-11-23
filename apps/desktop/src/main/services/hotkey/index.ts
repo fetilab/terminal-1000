@@ -182,7 +182,9 @@ export function registerFromSettings(ctx: IpcContext): HotkeyRegistration[] {
   return list
 }
 
-/** 给单个窗口挂应用内快捷键监听（窗口新建时也要调用） */
+/**
+ * 给单个窗口挂应用内快捷键监听（窗口新建时也要调用）
+ */
 export function attachInApp(win: BrowserWindow, accel: string, binding: HotkeyBinding): void {
   /*
    * ⚠️ 这里必须**按 accelerator 累积**，而不是每个窗口只留一条监听。
@@ -218,37 +220,21 @@ export function attachInApp(win: BrowserWindow, accel: string, binding: HotkeyBi
   inputListeners.set(win, list)
 }
 
-/** 把 Electron 的 Input 与规范化后的 accelerator 做匹配 */
-export function matchesInputStub(input: KeyInput, accel: string): boolean {
-  const parts = accel.split('+')
-  const key = parts[parts.length - 1]
-  const needCtrl = parts.includes('Ctrl')
-  const needAlt = parts.includes('Alt')
-  const needShift = parts.includes('Shift')
-  const needMeta = parts.includes('Cmd') || parts.includes('Super')
-
-  if (input.control !== needCtrl) return false
-  if (input.alt !== needAlt) return false
-  if (input.shift !== needShift) return false
-  if (input.meta !== needMeta) return false
-
-  const inputKey = (input.key ?? '').toLowerCase()
-  const target = (key ?? '').toLowerCase()
-  if (inputKey === target) return true
-
-  // 常见别名
-  const ALIAS: Record<string, string[]> = {
-    enter: ['enter', 'return'],
-    escape: ['escape', 'esc'],
-    space: [' ', 'space'],
-    delete: ['delete', 'del'],
-    arrowup: ['arrowup', 'up'],
-    arrowdown: ['arrowdown', 'down'],
-    arrowleft: ['arrowleft', 'left'],
-    arrowright: ['arrowright', 'right'],
+/**
+ * 窗口**新建时**把当前已启用的应用内绑定全部挂上去。
+ *
+ * `registerFromSettings` 只覆盖注册那一刻存在的窗口 —— 主窗口销毁重建
+ * （或将来出现第二个窗口）后不补挂的话，应用内快捷键就全部静默失效，
+ * 而注册状态里还显示"生效"，用户无从排查。
+ */
+export function attachAllInApp(win: BrowserWindow): void {
+  const bindings = getSettings().hotkeys ?? []
+  for (const binding of bindings) {
+    if (!binding.enabled || binding.global) continue
+    const accel = binding.accelerator ? normalizeAccelerator(binding.accelerator) : undefined
+    if (!accel) continue
+    attachInApp(win, accel, binding)
   }
-  const alts = ALIAS[target]
-  return alts ? alts.includes(inputKey) : false
 }
 
 /** 应用退出前注销，避免占用系统快捷键 */

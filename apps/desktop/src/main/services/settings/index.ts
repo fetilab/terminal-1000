@@ -84,6 +84,8 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   cursorBlink: true,
   copyOnSelect: true,
   rightClickPaste: false,
+  // kitty 的 middle release ungrabbed paste_from_selection 默认映射：X11 惯例默认开
+  middleClickPaste: true,
   // 这两条会从终端程序手里抢键位（Ctrl+C = SIGINT、Ctrl+V = vim 块选择），
   // 默认必须关，由用户在设置里显式打开
   copyOnCtrlC: false,
