@@ -224,6 +224,8 @@ export interface AppState {
   transferConflictPolicy: 'ask' | 'overwrite' | 'skip' | 'rename'
   /** AI 交互模式（来自 settings.ai.mode），面板顶部展示 */
   aiMode: 'chat' | 'assistant' | 'confirm' | 'thinking'
+  /** AI 助手称呼（来自 settings.ai.assistantName），终端右键菜单等处展示 */
+  aiAssistantName: string
   /** 终端/远端响铃设置（来自 settings.terminal.bell）；VNC 的 BELL 事件据此决定是否发声 */
   bellMode: 'none' | 'sound' | 'visual'
   /**
@@ -386,6 +388,7 @@ const initialState: AppState = {
   settingsSection: 'app',
   transferConflictPolicy: 'ask',
   aiMode: 'chat',
+  aiAssistantName: '问问老菜',
   bellMode: 'none',
   terminalSettings: {
     // 对齐用户 kitty.conf：MesloLGS NF 12pt、beam 光标、背景透明 0.88、
@@ -899,6 +902,11 @@ export function applyTerminalSettings(next: TerminalSettings): void {
   setState({ terminalSettings: next, bellMode: next.bell })
 }
 
+/** 设置面板改了 ai.assistantName 时同步进 store，右键菜单热更新 */
+export function applyAiAssistantName(next: string): void {
+  setState({ aiAssistantName: typeof next === 'string' && next.trim() ? next : '问问老菜' })
+}
+
 /** 跟随系统主题变化（只在 theme === 'system' 时生效） */
 export function watchSystemTheme(): () => void {
   const mq = window.matchMedia('(prefers-color-scheme: light)')
@@ -926,6 +934,7 @@ export async function loadInitialSettings(): Promise<void> {
     setState({
       transferConflictPolicy: settings.transfer.conflictPolicy,
       aiMode: settings.ai.mode,
+      aiAssistantName: settings.ai.assistantName,
       bellMode: settings.terminal.bell,
       terminalSettings: settings.terminal,
       highlightRules: Array.isArray(settings.highlights) ? settings.highlights : [],

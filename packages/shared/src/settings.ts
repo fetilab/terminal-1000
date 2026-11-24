@@ -214,6 +214,8 @@ export interface AiSettings {
   providers: AiProviderConfig[]
   /** 当前使用的供应商 id */
   activeProviderId?: string
+  /** 助手称呼（出现在终端右键菜单等处；与任何商业助手重名时用户可自行改名） */
+  assistantName: string
   /** 交互模式 */
   mode: 'chat' | 'assistant' | 'confirm' | 'thinking'
   /** 是否允许执行命令 */

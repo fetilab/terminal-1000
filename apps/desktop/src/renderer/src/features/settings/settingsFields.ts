@@ -482,6 +482,12 @@ export const SETTINGS_FIELDS: Record<
 
   ai: [
     {
+      path: 'ai.assistantName',
+      label: '助手称呼',
+      kind: 'text',
+      hint: '显示在终端右键菜单等处，例如默认「问问老菜」会显示为「问问老菜（发给 AI）」；留空回退默认',
+    },
+    {
       path: 'ai.mode',
       label: '交互模式',
       kind: 'select',

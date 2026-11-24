@@ -134,6 +134,9 @@ export const DEFAULT_COMPLETION_SETTINGS: CompletionSettings = {
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
   providers: [],
+  // 助手默认称呼。曾是「问问小易」，与市面主流语音助手（如华为小艺等）撞名，
+  // 改为一个自创词；设置 → AI 助手里可改。
+  assistantName: '问问老菜',
   mode: 'chat',
   // 默认不允许执行命令（安全默认，用户显式开启）
   allowExecution: false,

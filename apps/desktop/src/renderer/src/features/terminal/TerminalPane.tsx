@@ -338,6 +338,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
   })).v
   // 终端外观/行为设置：从 store 读，改动即时热更新到已打开的 xterm
   const termCfg = useStoreShallow((s) => ({ t: s.terminalSettings })).t
+  const aiAssistantName = useStoreShallow((s) => ({ n: s.aiAssistantName })).n
   // 斑马纹是正式设置项（shared TerminalSettings.zebraStripes），随热更新生效
   const toolbarVisible = useStoreShallow((s) => ({ v: s.toolbarVisible })).v
   const zebra = termCfg.zebraStripes
@@ -1145,7 +1146,7 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
    *
    * spec 第 243 行列了 **12 项**，这里逐项落地（外加我们自己的查找/录制/日志）：
    * 打开工具条、复制、粘贴、清屏、到底部、水平切分、垂直切分、重新连接终端、
-   * 翻译、问问小易、复制并粘贴、复制并搜索。
+   * 翻译、问 AI（称呼可配）、复制并粘贴、复制并搜索。
    *
    * 两条纪律：
    * - **无选区就禁用**（并说明原因），不让用户点了没反应；
@@ -1309,7 +1310,8 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
       },
       {
         id: 'ask-ai',
-        label: '问问小易',
+        // 称呼可配置（设置 → AI 助手 → 助手称呼）；默认「问问老菜」
+        label: `${aiAssistantName}（发给 AI）`,
         icon: 'zap',
         disabled: !hasSelection,
         title: hasSelection ? undefined : NO_SEL,

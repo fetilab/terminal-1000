@@ -24,6 +24,7 @@ const PROVIDER: AiProviderConfig = {
 function settings(patch: Partial<AiSettings> = {}): AiSettings {
   return {
     providers: [PROVIDER],
+    assistantName: '问问老菜',
     mode: 'assistant',
     allowExecution: false,
     riskPolicy: { readOnlyAllowlist: [], dangerousDenylist: [], confirmSudo: true },

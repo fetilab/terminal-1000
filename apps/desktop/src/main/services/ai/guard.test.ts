@@ -25,6 +25,7 @@ import {
 function settings(patch: Partial<AiSettings> = {}): AiSettings {
   return {
     providers: [],
+    assistantName: '问问老菜',
     mode: 'assistant',
     allowExecution: true,
     riskPolicy: { readOnlyAllowlist: [], dangerousDenylist: [], confirmSudo: true },

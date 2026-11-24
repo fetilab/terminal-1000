@@ -24,6 +24,7 @@ import { errorText } from '../../lib/format'
 import { applyAppearance } from '../../theme/appearance'
 import {
   actions,
+  applyAiAssistantName,
   applyHighlightRules,
   applyTerminalSettings,
   applyTheme,
@@ -109,6 +110,8 @@ function useSettings(): {
         if (path.startsWith('app.appearance.')) applyAppearance(next)
         // 终端相关改一项就推一次，已打开的 xterm 立刻跟着变（热更新）
         if (path.startsWith('terminal.')) applyTerminalSettings(next.terminal)
+        // 助手称呼热更新（终端右键菜单等处）
+        if (path === 'ai.assistantName') applyAiAssistantName(next.ai.assistantName)
       } catch (err) {
         toast.error(`设置保存失败：${errorText(err)}`)
         void reload()
@@ -128,6 +131,7 @@ function useSettings(): {
       applyTheme(next.app.theme)
       applyAppearance(next)
       applyTerminalSettings(next.terminal)
+      applyAiAssistantName(next.ai.assistantName)
       toast.ok(`「${SECTION_META[section].label}」已恢复默认值`)
     } catch (err) {
       toast.error(`重置失败：${errorText(err)}`)

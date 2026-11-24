@@ -32,6 +32,7 @@ const MAX_AI_READ_BYTES = 2 * 1024 * 1024
 /** 未注入设置时的保守默认（与 guard 的安全默认一致） */
 const SAFE_SETTINGS: AiSettings = {
   providers: [],
+  assistantName: '问问老菜',
   mode: 'chat',
   allowExecution: false,
   riskPolicy: { readOnlyAllowlist: [], dangerousDenylist: [], confirmSudo: true },

@@ -89,6 +89,7 @@ export const SETTINGS_CONSUMERS: Record<string, string> = {
     '状态可经 completionUserCorpusStatus() 查看）',
 
   // ── AI（消费点在主进程护栏与对话服务） ──
+  'ai.assistantName': 'store.aiAssistantName → TerminalPane 右键菜单「{称呼}（发给 AI）」',
   'ai.mode': 'main services/ai/chat.ts（四种模式）',
   'ai.allowExecution': 'main services/ai/guard.ts（未开启时只给建议，不执行）',
   'ai.riskPolicy.confirmSudo': 'main services/ai/guard.ts（sudo 确认策略）',

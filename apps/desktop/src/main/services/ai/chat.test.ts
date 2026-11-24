@@ -87,6 +87,7 @@ function harness(options: {
 
   const settings: AiSettings = {
     providers: [],
+    assistantName: '问问老菜',
     mode: 'assistant',
     allowExecution: true,
     riskPolicy: { readOnlyAllowlist: [], dangerousDenylist: [], confirmSudo: true },
@@ -266,6 +267,7 @@ describe('★ 护栏接入（最重要）', () => {
   it('chatPolicyFrom 恒不放开黑名单（AI 不自动执行危险命令）', () => {
     const policy = chatPolicyFrom({
       providers: [],
+      assistantName: '问问老菜',
       mode: 'assistant',
       allowExecution: true,
       riskPolicy: { readOnlyAllowlist: [], dangerousDenylist: [], confirmSudo: false },

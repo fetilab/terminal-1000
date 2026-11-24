@@ -85,6 +85,7 @@ export interface ChatDeps {
 /** 保守默认：不执行、chat 模式、严格上限 */
 const SAFE_DEFAULT_SETTINGS: AiSettings = {
   providers: [],
+  assistantName: '问问老菜',
   mode: 'chat',
   allowExecution: false,
   riskPolicy: { readOnlyAllowlist: [], dangerousDenylist: [], confirmSudo: true },

@@ -38,6 +38,68 @@ interface TelnetSession {
   state: ConnectionState
   /** 用户配置的按键映射（已解析） */
   keyRules: KeyMappingRule[] | undefined
+  /** 保存了凭据时启用：检测登录提示符并自动应答（null = 未配置凭据，不参与） */
+  auth: AutoAuth | null
+}
+
+/**
+ * 自动登录应答器。 Telnet 的认证不在协议层（那个 RFC 2217 类选项协商早就没人用），
+ * 而是**行提示符约定**：设备打出 `Username:` / `Password:`（或中文），等你敲。
+ * 原实现把 username/password 收进 schema 后完全没消费 —— 用户在连接表单里填了
+ * 凭据也毫无作用，只能每次手敲。这里做成 Xshell 式的提示符自动应答。
+ */
+interface AutoAuth {
+  username: string
+  password: string
+  /** 本轮会话已应答次数（提示符反复出现 = 认证失败重来，封顶防死循环） */
+  attempts: number
+  /** 行尾缓冲（剥 ANSI 后跨 chunk 保留）：提示符可能被分片送来 */
+  tail: string
+}
+
+/** 单次连接最多应答次数：一次登录通常 user+password=2，留出失败重试余量 */
+const AUTH_MAX_ATTEMPTS = 6
+
+/** ANSI/转义序列（CSI、OSC、字符集选择、DECOM 等）：剥掉再做行尾匹配 */
+const ANSI_RE =
+  /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Z]|\x1b[=>]|\x1b[A-Z]/g
+
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, '')
+}
+
+/** 用户名类提示符（英文 + UTF-8 中文；行尾匹配，避免误命中横幅正文） */
+const USER_PROMPT_RE =
+  /(?:user\s*name|login(?:\s*name)?|user(?:id)?|用户名|账号|登录名)\s*[:：]\s*$/i
+
+/** 密码类提示符 */
+const PASS_PROMPT_RE = /(?:pass\s?word|密码|口令)\s*[:：]\s*$/i
+
+/** 检测提示符并应答；凭据走与手动输入完全相同的按键映射路径 */
+export function feedAutoAuth(session: TelnetSession, plain: Buffer): void {
+  const auth = session.auth
+  if (!auth || auth.attempts >= AUTH_MAX_ATTEMPTS) return
+
+  auth.tail = (auth.tail + stripAnsi(plain.toString('utf8'))).slice(-120)
+
+  let answer: string | null = null
+  let what = ''
+  if (PASS_PROMPT_RE.test(auth.tail)) {
+    answer = auth.password
+    what = '密码'
+  } else if (USER_PROMPT_RE.test(auth.tail)) {
+    answer = auth.username
+    what = '用户名'
+  }
+  if (answer === null) return
+
+  // 清空缓冲：应答回显不能再次触发匹配（回显的 "admin\r\n" 不含提示符，
+  // 但某些设备会把整行带提示符回显）
+  auth.tail = ''
+  auth.attempts += 1
+  if (session.socket.destroyed) return
+  session.socket.write(applyKeyMapping(`${answer}\r\n`, session.keyRules))
+  log.info(`Telnet 自动登录：检测到${what}提示符，已应答（${session.connection.host}:${session.connection.port}）`)
 }
 
 const sessions = new Map<string, TelnetSession>()
@@ -93,6 +155,15 @@ function connectSession(connection: TelnetConnection, ctx: IpcContext): Promise<
         connection.keyMapping?.enabled && keyRules && keyRules.length > 0
           ? keyRules.map((r) => ({ from: r.from, to: r.to }))
           : undefined,
+      auth:
+        connection.username && connection.username.length > 0
+          ? {
+              username: connection.username,
+              password: connection.password ?? '',
+              attempts: 0,
+              tail: '',
+            }
+          : null,
     }
     sessions.set(sessionId, session)
 
@@ -133,7 +204,11 @@ function connectSession(connection: TelnetConnection, ctx: IpcContext): Promise<
     socket.on('data', (chunk: Buffer) => {
       // 先剥掉协商字节，只把真实数据显示给用户
       const plain = protocol.process(chunk)
-      if (plain.length > 0) batcher.push(plain.toString('utf8'))
+      if (plain.length > 0) {
+        batcher.push(plain.toString('utf8'))
+        // 自动登录：保存了凭据时监视登录提示符并应答
+        if (session.auth) feedAutoAuth(session, plain)
+      }
 
       // 处理过程中产生的应答（拒绝/接受选项、上报窗口尺寸等）立即回写
       const reply = protocol.drainOutbox()
