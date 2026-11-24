@@ -53,18 +53,28 @@ export function ContextMenu({ open, x, y, items, onClose }: ContextMenuProps): R
 
   useEffect(() => {
     if (!open) return
-    const close = (): void => onClose()
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
     }
-    // 捕获阶段：先于终端自己的处理关掉菜单
+    /*
+     * 点在菜单**外部**才关闭。这里有个必须写清楚的坑：
+     * window 的捕获监听比菜单元素**先**收到 pointerdown，所以以前在
+     * 菜单根节点上 `stopPropagation` 是挡不住它的 —— 用户按下的瞬间菜单
+     * 就被卸载，鼠标抬起时元素已经没了，`click` 永远不触发，
+     * 表现就是"右键菜单的按钮全都点不动"（0.2.8 验收实测）。
+     * 因此这里必须在回调里判 target：点在菜单内不关，让 click 正常走完。
+     */
+    const close = (e: PointerEvent): void => {
+      if (ref.current && e.target instanceof Node && ref.current.contains(e.target)) return
+      onClose()
+    }
     window.addEventListener('pointerdown', close, true)
     window.addEventListener('keydown', onKey, true)
-    window.addEventListener('blur', close)
+    window.addEventListener('blur', close as unknown as EventListener)
     return () => {
       window.removeEventListener('pointerdown', close, true)
       window.removeEventListener('keydown', onKey, true)
-      window.removeEventListener('blur', close)
+      window.removeEventListener('blur', close as unknown as EventListener)
     }
   }, [open, onClose])
 

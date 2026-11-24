@@ -87,11 +87,11 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   rightClickPaste: false,
   // kitty 的 middle release ungrabbed paste_from_selection 默认映射：X11 惯例默认开
   middleClickPaste: true,
-  // Windows Terminal / VS Code 行为：Ctrl+C 有选区就复制（复制完清选区）、
-  // 没选区照常发 SIGINT；Ctrl+V 粘贴。0.2.8 起默认开（老用户由
-  // migrateClipboardKeys 按版本戳一次性迁移，见 readDoc）
-  copyOnCtrlC: true,
-  pasteOnCtrlV: true,
+  // 这两条会从终端程序手里抢键位（Ctrl+C = SIGINT、Ctrl+V = vim 块选择），
+  // 默认必须关：复制粘贴走右键菜单 / Ctrl+Shift+C / Ctrl+Shift+V，
+  // 想要 Windows Terminal 手感的人在设置里显式打开
+  copyOnCtrlC: false,
+  pasteOnCtrlV: false,
   scrollback: 50000,
   // 默认关闭：斑马纹是辅助，不该替用户改变默认观感
   zebraStripes: false,
@@ -227,13 +227,12 @@ export const DEFAULT_HOTKEYS: HotkeyBinding[] = [
   { id: 'hk-split-v', command: 'terminal.splitVertical', accelerator: 'Ctrl+Shift+E', global: false, enabled: true },
   { id: 'hk-toggle-window', command: 'app.toggleWindow', accelerator: 'Ctrl+Shift+Space', global: true, enabled: false },
   /*
-   * ⚠️ 默认值的取舍原则：终端程序常用的按键**默认不抢**，想要的应用级功能去设置里打开。
+   * ⚠️ 默认值的取舍原则（与 terminal.copyOnCtrlC / pasteOnCtrlV 一致）：
+   * 终端程序常用的按键**默认不抢**，想要的应用级功能去设置里打开。
    * - Ctrl+K 是 readline 的 kill-line（bash/zsh 删到行尾），默认关；
    * - Ctrl+Space 是 emacs/readline 的 set-mark，默认关；
    * - Ctrl+, 与 Ctrl+1..7 终端程序基本不用，默认开（保持 0.2.5 的行为，
    *   只是搬进了设置——用户现在可以关掉或改键）。
-   * （Ctrl+C/Ctrl+V 例外：0.2.8 起默认接管，见 DEFAULT_TERMINAL_SETTINGS ——
-   *   Ctrl+C 有选区才复制、没选区仍发 SIGINT，中断不受影响。）
    */
   { id: 'hk-open-settings', command: 'app.openSettings', accelerator: 'Ctrl+,', global: false, enabled: true },
   { id: 'hk-global-search', command: 'app.globalSearch', accelerator: 'Ctrl+K', global: false, enabled: false },
@@ -265,20 +264,26 @@ function migrateHotkeys(settings: Settings): boolean {
 }
 
 /*
- * 剪贴板键位迁移（0.2.8）：`copyOnCtrlC` / `pasteOnCtrlV` 出厂值从 false 翻成 true。
+ * 剪贴板键位迁移：`terminal.clipboardKeysRev` 版本戳。
  *
- * 老用户配置里已经**显式落库**了 false —— 改默认值对 deepMerge 无效（用户值优先）。
- * 不能用「字段是否存在」判定（永远存在），必须像 migrateAppearance 一样盖版本戳：
- * `terminal.clipboardKeysRev` = 1 表示已经翻过，之后用户再手动关掉不会被重置。
+ * 历史：0.2.8 曾把 copyOnCtrlC/pasteOnCtrlV 出厂默认翻成 true（rev 1），
+ * 产物装到本机后确认用户不要这个行为（复制粘贴的问题实际出在右键菜单
+ * 点不动），随即回退 —— rev 1 的文档要把这两个值**翻回 false**，
+ * 否则装过那一版的人键位永远被占。rev 2 = 当前语义（默认不抢）。
  */
-const CLIPBOARD_KEYS_REV = 1
+const CLIPBOARD_KEYS_REV = 2
 
 function migrateClipboardKeys(settings: Settings): boolean {
   const t = settings.terminal
   if (!isPlainObject(t) || t.clipboardKeysRev === CLIPBOARD_KEYS_REV) return false
   const term = t as TerminalSettings
-  term.copyOnCtrlC = true
-  term.pasteOnCtrlV = true
+  if (term.clipboardKeysRev === 1) {
+    // 被 0.2.8 首版翻成 true 的：翻回去
+    term.copyOnCtrlC = false
+    term.pasteOnCtrlV = false
+    log.info('剪贴板键位已回退：Ctrl+C/Ctrl+V 恢复为不抢占')
+  }
+  // 没有 rev（0.2.7 及更早 / 全新安装）：值保持现状（出厂 false 或用户手动开的 true），只盖新戳
   term.clipboardKeysRev = CLIPBOARD_KEYS_REV
   return true
 }
