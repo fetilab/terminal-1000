@@ -22,6 +22,7 @@ import { createLogger } from '../../logger'
 import { OutputBatcher } from '../output-batcher'
 import { registerWritable, unregisterWritable } from '../session-registry'
 import { applyKeyMapping, TelnetProtocol, type KeyMappingRule } from './protocol'
+import { withFreshSecrets } from '../store/fresh-secrets'
 
 const log = createLogger('telnet')
 
@@ -295,7 +296,13 @@ export const KEY_MAPPING_TEMPLATES: Array<{ id: string; name: string; descriptio
 export const telnetHandlers: Record<string, IpcHandler> = {
   connect: (payload, ctx) => {
     const { connection } = parseInput(connectSchema, payload)
-    return connectSession(connection as unknown as TelnetConnection, ctx).then((sessionId) => ({ sessionId }))
+    // 凭据保鲜：渲染层缓存的连接对象可能带着 `__LOCKED__` 掩码（重启后库未解锁
+    // 时加载的），直接喂给应答器会把 `__LOCKED__` 字面量发给设备 —— 用户怎么填
+    // 密码都「登录不上」。与 ssh 域同一套防护：按 id 从库里取权威解密记录。
+    return connectSession(
+      withFreshSecrets(connection as unknown as TelnetConnection) as unknown as TelnetConnection,
+      ctx,
+    ).then((sessionId) => ({ sessionId }))
   },
 
   disconnect: (payload, ctx) => {
