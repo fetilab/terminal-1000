@@ -7,6 +7,7 @@
 
 import type { ConnectionState, TerminalEncoding } from './connection'
 import type { MonitorSnapshot } from './monitor'
+import type { Settings } from './settings'
 
 /** 事件名常量 */
 export const Events = {
@@ -58,6 +59,9 @@ export const Events = {
   // 快捷键
   HOTKEY_TRIGGERED: 'HOTKEY_TRIGGERED',
   HOTKEY_STATUS: 'HOTKEY_STATUS',
+
+  // 设置
+  SETTINGS_CHANGED: 'SETTINGS_CHANGED',
 
   // Telnet
   TELNET_DATA: 'TELNET_DATA',
@@ -305,6 +309,13 @@ export interface EventPayloads {
   }
   /** 注册状态变更（占用冲突等），用于设置界面如实展示 */
   [Events.HOTKEY_STATUS]: { registrations: HotkeyRegistration[] }
+
+  /**
+   * 设置变更广播：任何写方（设置界面、其它服务、迁移）改完设置都发。
+   * 渲染层据此热更新 store —— 没有它，绕过设置界面直接 IPC 写设置
+   * （同步、自动化探针、未来的 MCP 工具）时已打开的终端不会收到新值。
+   */
+  [Events.SETTINGS_CHANGED]: { path: string; settings: Settings }
 
   [Events.PTY_DATA]: { ptyId: string; data: string }
   [Events.PTY_EXIT]: { ptyId: string; exitCode: number; signal?: number }

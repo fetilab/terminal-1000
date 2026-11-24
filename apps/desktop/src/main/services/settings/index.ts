@@ -12,17 +12,18 @@
  */
 
 import { z } from 'zod'
-import type {
-  AiSettings,
-  AppSettings,
-  CompletionSettings,
-  HighlightRule,
-  HotkeyBinding,
-  Settings,
-  SyncSettings,
-  TerminalSettings,
-  TransferSettings,
-  SecuritySettings,
+import {
+  Events,
+  type AiSettings,
+  type AppSettings,
+  type CompletionSettings,
+  type HighlightRule,
+  type HotkeyBinding,
+  type Settings,
+  type SyncSettings,
+  type TerminalSettings,
+  type TransferSettings,
+  type SecuritySettings,
 } from '@t1000/shared'
 import { AppError, parseInput } from '../../errors'
 import type { IpcHandler } from '../../ipc/router'
@@ -86,10 +87,11 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   rightClickPaste: false,
   // kitty 的 middle release ungrabbed paste_from_selection 默认映射：X11 惯例默认开
   middleClickPaste: true,
-  // 这两条会从终端程序手里抢键位（Ctrl+C = SIGINT、Ctrl+V = vim 块选择），
-  // 默认必须关，由用户在设置里显式打开
-  copyOnCtrlC: false,
-  pasteOnCtrlV: false,
+  // Windows Terminal / VS Code 行为：Ctrl+C 有选区就复制（复制完清选区）、
+  // 没选区照常发 SIGINT；Ctrl+V 粘贴。0.2.8 起默认开（老用户由
+  // migrateClipboardKeys 按版本戳一次性迁移，见 readDoc）
+  copyOnCtrlC: true,
+  pasteOnCtrlV: true,
   scrollback: 50000,
   // 默认关闭：斑马纹是辅助，不该替用户改变默认观感
   zebraStripes: false,
@@ -225,12 +227,13 @@ export const DEFAULT_HOTKEYS: HotkeyBinding[] = [
   { id: 'hk-split-v', command: 'terminal.splitVertical', accelerator: 'Ctrl+Shift+E', global: false, enabled: true },
   { id: 'hk-toggle-window', command: 'app.toggleWindow', accelerator: 'Ctrl+Shift+Space', global: true, enabled: false },
   /*
-   * ⚠️ 默认值的取舍原则（与 terminal.copyOnCtrlC / pasteOnCtrlV 一致）：
-   * 终端程序常用的按键**默认不抢**，想要的应用级功能去设置里打开。
+   * ⚠️ 默认值的取舍原则：终端程序常用的按键**默认不抢**，想要的应用级功能去设置里打开。
    * - Ctrl+K 是 readline 的 kill-line（bash/zsh 删到行尾），默认关；
    * - Ctrl+Space 是 emacs/readline 的 set-mark，默认关；
    * - Ctrl+, 与 Ctrl+1..7 终端程序基本不用，默认开（保持 0.2.5 的行为，
    *   只是搬进了设置——用户现在可以关掉或改键）。
+   * （Ctrl+C/Ctrl+V 例外：0.2.8 起默认接管，见 DEFAULT_TERMINAL_SETTINGS ——
+   *   Ctrl+C 有选区才复制、没选区仍发 SIGINT，中断不受影响。）
    */
   { id: 'hk-open-settings', command: 'app.openSettings', accelerator: 'Ctrl+,', global: false, enabled: true },
   { id: 'hk-global-search', command: 'app.globalSearch', accelerator: 'Ctrl+K', global: false, enabled: false },
@@ -261,9 +264,27 @@ function migrateHotkeys(settings: Settings): boolean {
   return true
 }
 
+/*
+ * 剪贴板键位迁移（0.2.8）：`copyOnCtrlC` / `pasteOnCtrlV` 出厂值从 false 翻成 true。
+ *
+ * 老用户配置里已经**显式落库**了 false —— 改默认值对 deepMerge 无效（用户值优先）。
+ * 不能用「字段是否存在」判定（永远存在），必须像 migrateAppearance 一样盖版本戳：
+ * `terminal.clipboardKeysRev` = 1 表示已经翻过，之后用户再手动关掉不会被重置。
+ */
+const CLIPBOARD_KEYS_REV = 1
+
+function migrateClipboardKeys(settings: Settings): boolean {
+  const t = settings.terminal
+  if (!isPlainObject(t) || t.clipboardKeysRev === CLIPBOARD_KEYS_REV) return false
+  const term = t as TerminalSettings
+  term.copyOnCtrlC = true
+  term.pasteOnCtrlV = true
+  term.clipboardKeysRev = CLIPBOARD_KEYS_REV
+  return true
+}
+
 /** 完整默认设置 */
-export function defaultSettings(): Settings {
-  return {
+export function defaultSettings(): Settings {  return {
     app: { ...DEFAULT_APP_SETTINGS },
     security: { ...DEFAULT_SECURITY_SETTINGS },
     terminal: { ...DEFAULT_TERMINAL_SETTINGS },
@@ -442,11 +463,13 @@ function readDoc(): Settings {
     const appearanceMigrated = migrateAppearance(data as Record<string, unknown>)
     const merged = deepMerge(defaultSettings(), data)
     const hotkeysMigrated = migrateHotkeys(merged)
+    const clipboardMigrated = migrateClipboardKeys(merged)
     // 迁移命中任意一项都立即落盘：避免每次启动都用内存里的迁移值、而设置面板显示旧值
-    if (appearanceMigrated || hotkeysMigrated) {
+    if (appearanceMigrated || hotkeysMigrated || clipboardMigrated) {
       writeDoc(merged)
       if (appearanceMigrated) log.info('外观设置已迁移到 v2（单滑杆 + 背景模糊）')
       if (hotkeysMigrated) log.info('快捷键配置已补齐新版本命令')
+      if (clipboardMigrated) log.info('剪贴板键位已迁移：Ctrl+C 复制 / Ctrl+V 粘贴 默认开启')
     }
     return merged
   } catch (err) {
@@ -468,6 +491,23 @@ function writeDoc(settings: Settings): void {
 
 // 内存缓存的文档快照：设置读多写少，避免每次读都 JSON.parse
 let cache: Settings | null = null
+
+/**
+ * 设置变更广播。任何写路径（IPC set/reset、其它服务的 updateSettings、
+ * 迁移）改完设置都要发 —— 渲染层的 store 靠它热更新。
+ *
+ * 没有它，绕过设置界面直接 IPC 写设置时（同步、自动化探针、未来的 MCP
+ * 工具），已打开的终端不会收到新值 —— 探针里实测：关掉 pasteOnCtrlV 后
+ * Ctrl+V 仍然粘贴，因为 termSettingsRef 还是旧值。
+ *
+ * 动态 import window：settings ↔ hotkey ↔ window 的静态环会在这里闭环，
+ * 运行时才解（与 set 里 hotkeys 热重载是同一手法）。
+ */
+function notifyChanged(path: string, settings: Settings): void {
+  void import('../../window')
+    .then((m) => m.broadcast(Events.SETTINGS_CHANGED, { path, settings }))
+    .catch((err: unknown) => log.warn('设置变更广播失败', err))
+}
 
 export function getSettings(): Settings {
   if (!cache) cache = readDoc()
@@ -494,6 +534,7 @@ export function updateSettings(patch: SettingsPatch): Settings {
   const next = deepMerge(getSettings(), patch)
   writeDoc(next)
   cache = next
+  notifyChanged('(patch)', next)
   return next
 }
 
@@ -525,11 +566,12 @@ export function updateRecordingSettings(patch: Record<string, unknown>): Record<
   const current = getSettings() as unknown as Record<string, unknown>
   const existing = current[RECORDING_SETTINGS_GROUP]
   const group = isPlainObject(existing) ? existing : {}
-  const nextGroup: Record<string, unknown> = { ...group, ...patch }
-  const next = { ...current, [RECORDING_SETTINGS_GROUP]: nextGroup } as unknown as Settings
-  writeDoc(next)
-  cache = next
-  return nextGroup
+    const nextGroup: Record<string, unknown> = { ...group, ...patch }
+    const next = { ...current, [RECORDING_SETTINGS_GROUP]: nextGroup } as unknown as Settings
+    writeDoc(next)
+    cache = next
+    notifyChanged(RECORDING_SETTINGS_GROUP, next)
+    return nextGroup
 }
 
 // ── IPC ─────────────────────────────────────────────
@@ -569,6 +611,7 @@ export const settingsHandlers: Record<string, IpcHandler> = {
     writeDoc(next)
     cache = next
     log.debug(`设置已更新: ${path}`)
+    notifyChanged(path, next)
 
     // 快捷键改动即时生效：动态 import 避免 settings ↔ hotkey 的静态循环依赖
     //（hotkey 静态依赖本模块的 getSettings/updateSettings）
@@ -596,6 +639,7 @@ export const settingsHandlers: Record<string, IpcHandler> = {
     writeDoc(next)
     cache = next
     log.info(section ? `设置已重置: ${section}` : '设置已全量重置')
+    notifyChanged(section ?? '*', next)
     return next
   },
 }

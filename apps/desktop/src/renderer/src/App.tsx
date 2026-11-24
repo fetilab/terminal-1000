@@ -33,6 +33,10 @@ import { Loading } from './components/Feedback'
 import { ToastHost } from './components/Toast'
 import {
   actions,
+  applyAiAssistantName,
+  applyHighlightRules,
+  applyTerminalSettings,
+  applyTheme,
   loadConnections,
   loadInitialSettings,
   useStoreShallow,
@@ -221,6 +225,24 @@ export function App(): React.JSX.Element {
      */
     const off = subscribe(Events.HOTKEY_TRIGGERED, (p) => {
       runCommand(p.command)
+    })
+    return off
+  }, [])
+
+  useEffect(() => {
+    /*
+     * 设置变更广播（SETTINGS_CHANGED）：主进程任何写路径（设置界面只是
+     * 其中之一）落库后都会广播整棵设置树，这里把会即时生效的子树同步进
+     * store —— 已打开的终端、右键菜单、高亮规则随之热更新。
+     *
+     * 设置界面自己的 apply* 调用保留：它要的是"写完立即生效"，不等事件
+     * 回环；广播带来的重复应用是幂等的，多跑一次没有副作用。
+     */
+    const off = subscribe(Events.SETTINGS_CHANGED, ({ path, settings }) => {
+      if (path.startsWith('terminal.')) applyTerminalSettings(settings.terminal)
+      if (path === 'ai.assistantName') applyAiAssistantName(settings.ai.assistantName)
+      if (path.startsWith('highlights')) applyHighlightRules(settings.highlights)
+      if (path.startsWith('app.theme')) applyTheme(settings.app.theme)
     })
     return off
   }, [])

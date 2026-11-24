@@ -71,18 +71,24 @@ export interface TerminalSettings {
   /**
    * 有选区时 `Ctrl+C` 复制（而不是发 SIGINT）。
    *
-   * **默认关闭**：`Ctrl+C` 首先属于终端里的程序（中断）。Windows Terminal 与
-   * VS Code 会「有选区就复制」，但那会让习惯了 SIGINT 的人（vim、make、ssh）
-   * 偶尔复制到半截内容却中断不了任务 —— 这种抢占必须是用户自己选的。
+   * **默认开启**（0.2.8 起）：与 Windows Terminal / VS Code 一致 —— 有选区就复制
+   * （复制完清选区），没有选区仍发 SIGINT，中断功能不受影响。
+   * 老用户的 `false` 由 `clipboardKeysRev` 迁移戳一次性翻成 `true`。
    */
   copyOnCtrlC: boolean
   /**
    * `Ctrl+V` 直接粘贴。
    *
-   * **默认关闭**：Linux 上 `Ctrl+V` 是 vim 的块选择、emacs 的 quoted-insert，
-   * 抢走会让这些程序用不了。想要 Windows Terminal 的手感再打开。
+   * **默认开启**（0.2.8 起）：Ctrl+Shift+V / Shift+Insert 之外的第三条路，
+   * 也是 Windows Terminal / Tabby 等现代终端的出厂行为。代价是 vim 的块选择
+   * （insert 模式 Ctrl+V）、emacs 的 quoted-insert 被占 —— 依赖它们的用户在这里关掉。
    */
   pasteOnCtrlV: boolean
+  /**
+   * @internal 剪贴板键位默认值迁移戳（见主进程 migrateClipboardKeys）。
+   * 不在设置面板展示；存在且等于当前版本时不再迁移。
+   */
+  clipboardKeysRev?: number
   /** 滚动回看行数 */
   scrollback: number
   /**

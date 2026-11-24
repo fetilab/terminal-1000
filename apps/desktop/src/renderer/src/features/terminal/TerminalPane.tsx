@@ -1051,9 +1051,10 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
        * - `Ctrl+Insert / Shift+Insert`：X11 与 Windows 传统终端，同样不冲突。
        *
        * 而 `Ctrl+C` / `Ctrl+V` 属于**程序**（中断、vim 块选择、emacs quoted-insert），
-       * 抢走会让用户用不了这些功能，所以只在设置里显式打开后才接管：
-       * - `terminal.copyOnCtrlC`（默认关）：有选区时 Ctrl+C 复制；
-       * - `terminal.pasteOnCtrlV`（默认关）：Ctrl+V 粘贴。
+       * 0.2.8 起默认接管，但做了 Windows Terminal 式的折衷：
+       * - `terminal.copyOnCtrlC`（默认开）：有选区时 Ctrl+C 复制（复制完清选区），
+       *   没有选区不拦截，照常发 SIGINT —— 中断功能不受影响；
+       * - `terminal.pasteOnCtrlV`（默认开）：Ctrl+V 粘贴。依赖 vim 块选择的用户可关。
        */
       const term = termRef.current
       if (!term) return

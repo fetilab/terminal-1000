@@ -314,4 +314,34 @@ describe('settings 域', () => {
     const again = call('getAll') as typeof s
     expect(again.hotkeys.length).toBe(s.hotkeys.length)
   })
+
+  it('0.2.8 剪贴板键位迁移：老用户显式 false 一次性翻成 true（版本戳防重置）', () => {
+    // 0.2.7 落库的文档：copyOnCtrlC/pasteOnCtrlV 是当时的出厂值 false，无版本戳
+    const legacy = {
+      version: 1,
+      data: { terminal: { copyOnCtrlC: false, pasteOnCtrlV: false, fontSize: 12 } },
+    }
+    getStoreService().db.put(storeKeyOf('Settings'), 'app', JSON.stringify(legacy), Date.now())
+    resetSettingsCache()
+
+    const s = call('getAll') as ReturnType<typeof defaultSettings>
+    expect(s.terminal.copyOnCtrlC).toBe(true)
+    expect(s.terminal.pasteOnCtrlV).toBe(true)
+    expect(s.terminal.clipboardKeysRev).toBe(1)
+    // 邻居字段不受迁移影响
+    expect(s.terminal.fontSize).toBe(12)
+
+    // 幂等 + 迁移结果已落盘：用户随后手动关掉，重启不再被翻回来
+    call('set', { path: 'terminal.copyOnCtrlC', value: false })
+    resetSettingsCache()
+    const again = call('getAll') as ReturnType<typeof defaultSettings>
+    expect(again.terminal.copyOnCtrlC).toBe(false)
+    expect(again.terminal.pasteOnCtrlV).toBe(true)
+  })
+
+  it('新装用户直接拿到剪贴板键位默认开', () => {
+    const s = call('getAll') as ReturnType<typeof defaultSettings>
+    expect(s.terminal.copyOnCtrlC).toBe(true)
+    expect(s.terminal.pasteOnCtrlV).toBe(true)
+  })
 })
