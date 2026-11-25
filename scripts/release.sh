@@ -43,6 +43,13 @@ trap 'rm -f "$GITCFG"' EXIT
 } > "$GITCFG"
 git_iso() { GIT_CONFIG_GLOBAL="$GITCFG" git -C "$ROOT" "$@"; }
 
+# GitHub 会把资产名里的空格改写成点：本地 `terminal-1000 Setup 0.3.0.exe`
+# 上传后叫 `terminal-1000.Setup.0.3.0.exe`。两处都依赖这个名字，所以统一走
+# 这一个函数，否则：
+#   · 校验和清单里写的是本地名，用户下载后 `sha256sum -c` 报「找不到文件」；
+#   · 「已存在就跳过」永远匹配不上，重发一次就把 8 个包再传 750MB。
+remote_name() { printf '%s' "${1// /.}"; }
+
 VERSION=$(node -p "require('$ROOT/package.json').version")
 TAG="v$VERSION"
 say "版本 $VERSION（tag $TAG，仓库 $REPO）"
@@ -133,8 +140,17 @@ upload_url=$(curl -sf "${auth[@]}" "$API/releases/tags/$TAG" \
 existing=$(curl -sf "${auth[@]}" "$API/releases/tags/$TAG" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log((j.assets||[]).map(a=>a.name).join("\n"))})')
 
+# 校验和清单自己生成而不是手写：文件名必须与 GitHub 上完全一致才可能校验通过。
+SUMS="$REL_DIR/SHA256SUMS.txt"
+say "生成 SHA256SUMS.txt（文件名用 GitHub 规范化后的形式）"
+: > "$SUMS"
 for f in "${ASSETS[@]}"; do
-  name=$(basename "$f")
+  printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" \
+    "$(remote_name "$(basename "$f")")" >> "$SUMS"
+done
+
+for f in "${ASSETS[@]}"; do
+  name=$(remote_name "$(basename "$f")")
   if printf '%s\n' "$existing" | grep -Fxq -- "$name"; then
     say "已存在，跳过 $name"
     continue
@@ -149,8 +165,7 @@ for f in "${ASSETS[@]}"; do
 done
 
 # 校验和清单（可选附件，不参与「八包齐全」校验）
-SUMS="$REL_DIR/SHA256SUMS.txt"
-if [ -f "$SUMS" ] && ! printf '%s\n' "$existing" | grep -Fxq -- "SHA256SUMS.txt"; then
+if ! printf '%s\n' "$existing" | grep -Fxq -- "SHA256SUMS.txt"; then
   say "上传 SHA256SUMS.txt"
   curl "${net[@]}" -f "${PROG[@]}" -X POST "${auth[@]}" \
     -H 'Content-Type: text/plain' \
