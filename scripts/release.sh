@@ -11,7 +11,7 @@
 #   GITHUB_TOKEN=ghp_xxx scripts/release.sh --dry-run  # 只打印将要做什么
 #
 # 做的事：确认工作区干净 → 推 master → 建 tag → 建 Release → 逐个上传附件。
-# 附件从 apps/desktop/release/ 按版本号自动挑选（六种格式）。
+# 附件从 apps/desktop/release/ 按版本号自动挑选（六种桌面格式 + 两个 Android ABI）。
 set -uo pipefail
 
 REPO=${REPO:-fetilab/terminal-1000}
@@ -22,6 +22,26 @@ DRY=0
 
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[31m失败:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# ── 推送用的 git 配置隔离 ────────────────────────────────────────────────
+# 这台机器的 ~/.gitconfig 里挂了几条加速规则：
+#   url.https://<第三方代理>/https://github.com/.insteadof = https://github.com/
+# 它们对匿名 clone 有用，但推送 URL 里内嵌了 token，一旦被 insteadOf 改写，
+# token 就会随 URL 明文发给那个代理（出现在对方访问日志里）。
+# 所以推送/建 tag 一律用一份临时 global 配置：只保留 user 身份与 proxy/sslverify
+# （proxy 是访问 GitHub 的通道，必须留着），一条 url.*.insteadof 都不带。
+GITCFG=$(mktemp)
+trap 'rm -f "$GITCFG"' EXIT
+{
+  printf '[user]\n\tname = %s\n\temail = %s\n' \
+    "$(git -C "$ROOT" config user.name || echo 'terminal-1000 releases')" \
+    "$(git -C "$ROOT" config user.email || echo 'noreply@localhost')"
+  for key in http.proxy https.proxy http.sslverify; do
+    v=$(git -C "$ROOT" config --get "$key" 2>/dev/null) || continue
+    printf '[%s]\n\t%s = %s\n' "${key%%.*}" "${key#*.}" "$v"
+  done
+} > "$GITCFG"
+git_iso() { GIT_CONFIG_GLOBAL="$GITCFG" git -C "$ROOT" "$@"; }
 
 VERSION=$(node -p "require('$ROOT/package.json').version")
 TAG="v$VERSION"
@@ -63,20 +83,32 @@ fi
 
 [ -n "${GITHUB_TOKEN:-}" ] || die "缺少 GITHUB_TOKEN（需要 repo 写权限）"
 
+# 隔离自检：隔离后的配置里绝不能还有 url.*.insteadOf。
+# 有的话说明 insteadOf 来自 system 层（/etc/gitconfig），临时 global 挡不住，
+# 这时宁可停下来也不能把 token 推给第三方。
+if git_iso config --get-regexp '^url\.' >/dev/null 2>&1; then
+  die "git 配置隔离失败：仍能读到 url.*.insteadOf 规则，推送会把 token 发给第三方代理"
+fi
+say "推送通道已隔离：insteadOf 规则全部屏蔽，proxy 保留"
+
 API="https://api.github.com/repos/$REPO"
 auth=(-H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json")
+# 附件动辄上百 MB，网络抖一下不能整个发布重来。
+net=(--retry 5 --retry-delay 8 --retry-all-errors --connect-timeout 30)
 
 # ── 1. 推代码 + tag ─────────────────────────────────────────────────────
 say "推送 master"
-git -C "$ROOT" push "https://x-access-token:$GITHUB_TOKEN@github.com/$REPO.git" HEAD:master || die "推送 master 失败"
+git_iso push "https://x-access-token:$GITHUB_TOKEN@github.com/$REPO.git" HEAD:master \
+  || die "推送 master 失败"
 
-if git -C "$ROOT" rev-parse "$TAG" >/dev/null 2>&1; then
+if git_iso rev-parse "$TAG" >/dev/null 2>&1; then
   say "tag $TAG 已存在，跳过创建"
 else
-  git -C "$ROOT" tag -a "$TAG" -m "terminal-1000 $TAG"
+  git_iso tag -a "$TAG" -m "terminal-1000 $TAG"
 fi
 say "推送 tag $TAG"
-git -C "$ROOT" push "https://x-access-token:$GITHUB_TOKEN@github.com/$REPO.git" "$TAG" || die "推送 tag 失败"
+git_iso push "https://x-access-token:$GITHUB_TOKEN@github.com/$REPO.git" "$TAG" \
+  || die "推送 tag 失败"
 
 # ── 2. 建 Release（已存在就复用）────────────────────────────────────────
 notes=$(sed -n "/^## \[$VERSION\]/,/^## \[/p" "$ROOT/CHANGELOG.md" | sed '$d')
@@ -94,18 +126,33 @@ upload_url=$(curl -sf "${auth[@]}" "$API/releases/tags/$TAG" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(j.upload_url.replace(/\{.*\}$/,""))})')
 [ -n "$upload_url" ] || die "拿不到 upload_url"
 
+# 已有的附件名一次问清，别每传一个都重新拉一遍 release（8 个包就是 8 次请求）。
+existing=$(curl -sf "${auth[@]}" "$API/releases/tags/$TAG" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log((j.assets||[]).map(a=>a.name).join("\n"))})')
+
 for f in "${ASSETS[@]}"; do
   name=$(basename "$f")
-  if curl -sf "${auth[@]}" "$API/releases/tags/$TAG" | grep -q "\"name\": *\"$name\""; then
+  if printf '%s\n' "$existing" | grep -Fxq -- "$name"; then
     say "已存在，跳过 $name"
     continue
   fi
-  say "上传 $name"
-  curl -sf -X POST "${auth[@]}" \
+  say "上传 $name（$(du -h "$f" | cut -f1)，最大可能要几分钟）"
+  curl "${net[@]}" -f -S -# -X POST "${auth[@]}" \
     -H 'Content-Type: application/octet-stream' \
     --data-binary "@$f" \
     "$upload_url?name=$(node -p 'encodeURIComponent(process.argv[1])' "$name")" >/dev/null \
     || die "上传 $name 失败"
+  say "  ✓ $name"
 done
+
+# 校验和清单（可选附件，不参与「八包齐全」校验）
+SUMS="$REL_DIR/SHA256SUMS.txt"
+if [ -f "$SUMS" ] && ! printf '%s\n' "$existing" | grep -Fxq -- "SHA256SUMS.txt"; then
+  say "上传 SHA256SUMS.txt"
+  curl "${net[@]}" -f -S -# -X POST "${auth[@]}" \
+    -H 'Content-Type: text/plain' \
+    --data-binary "@$SUMS" "$upload_url?name=SHA256SUMS.txt" >/dev/null \
+    || say "  （校验和上传失败，不影响八包）"
+fi
 
 say "完成：https://github.com/$REPO/releases/tag/$TAG"

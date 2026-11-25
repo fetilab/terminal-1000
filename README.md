@@ -5,7 +5,7 @@
 **terminal-1000** 把终端、文件传输、端口转发、图形远程桌面和服务器监控整合到一个桌面应用，
 面向需要管理多台服务器的开发者与运维人员。
 
-**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.2.7**
+**许可证：[GPL-3.0](LICENSE)** · 当前版本：**v0.3.0**
 
 ---
 
@@ -15,12 +15,16 @@
 
 | 格式 | 适用 | 说明 |
 |---|---|---|
-| `.deb` | Debian / Ubuntu 及衍生 | 约 100 MiB，`sudo apt install ./terminal-1000_0.2.7_amd64.deb` |
-| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 101 MiB，`sudo dnf install ./terminal-1000-0.2.7.x86_64.rpm` |
-| `.pacman` | Arch / Manjaro | 约 100 MiB，`sudo pacman -U terminal-1000-0.2.7.pacman` |
+| `.deb` | Debian / Ubuntu 及衍生 | 约 100 MiB，`sudo apt install ./terminal-1000_0.3.0_amd64.deb` |
+| `.rpm` | Fedora / openSUSE / RHEL 系 | 约 101 MiB，`sudo dnf install ./terminal-1000-0.3.0.x86_64.rpm` |
+| `.pacman` | Arch / Manjaro | 约 100 MiB，`sudo pacman -U terminal-1000-0.3.0.pacman` |
 | `.AppImage` | 任意发行版 | 免安装，`chmod +x` 后直接运行 |
-| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.2.7-x86_64.flatpak` |
+| `.flatpak` | 支持 Flatpak 的环境 | `flatpak install ./terminal-1000-0.3.0-x86_64.flatpak` |
 | `.exe` | Windows 10+ | 原生 win32 构建（NSIS 安装器，约 128 MiB） |
+| `arm64-v8a.apk` | Android 平板（ARM，绝大多数设备） | 约 49 MiB，见[安卓](#安卓平板)一节 |
+| `x86_64.apk` | Android 平板（x86_64 模拟器 / Waydroid） | 约 48 MiB |
+
+每个版本都附 `SHA256SUMS.txt`，下载后可 `sha256sum -c` 自校验。
 
 > **升级不会丢数据**：设置、连接、凭据、笔记都存在系统配置目录里（见
 > [数据存放位置](#数据存放位置)），不在安装目录内。覆盖安装只替换程序文件；
@@ -29,8 +33,22 @@
 > **Windows 包**：原生 win32 构建，node-pty / better-sqlite3 直接使用随包分发的
 > win32-x64 prebuild，无需 WSL。构建方式见[打包](#打包)一节。
 
-**系统要求**：Linux x86-64（GTK3 / libnotify / NSS）/ Windows 10+。首次启动会要求设置主密码，
-用于加密本机保存的全部服务器凭证。
+**系统要求**：Linux x86-64（GTK3 / libnotify / NSS）/ Windows 10+ / Android 平板（横屏，API 26+）。
+首次启动会要求设置主密码，用于加密本机保存的全部服务器凭证。
+
+### 安卓平板
+
+0.3.0 起有 Android 版本。桌面端的协议栈和界面**一行没有重写**：主进程跑在随包
+分发的 libnode 里，界面用系统 WebView 加载同一份 React 产物，两者之间把 Electron
+的 IPC 换成了本机回环 WebSocket 桥（`window.t1000.invoke / on` 契约不变）。
+
+- 形态是**平板横屏专享**，手机竖屏没有适配
+- 本地终端跑在 proot + Alpine rootfs 里（首次启动解包，约 4 MiB），
+  装不了 proot 的环境自动回退系统 `sh`
+- 触摸键盘条上的按键走引擎的 `pressKey`，不是自己拼转义序列，
+  所以 Ctrl/Alt 粘滞、组合键、kitty 键位协议都能用
+- 自签 APK，不是 Play 商店包；安装时需要在系统里允许「安装未知来源应用」
+
 
 ---
 
