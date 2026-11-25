@@ -95,6 +95,9 @@ API="https://api.github.com/repos/$REPO"
 auth=(-H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json")
 # 附件动辄上百 MB，网络抖一下不能整个发布重来。
 net=(--retry 5 --retry-delay 8 --retry-all-errors --connect-timeout 30)
+# 进度条只在终端里有意义；重定向到日志时它会被写成一行几 MB 的 '\r' 垃圾，
+# 所以非 tty 一律关掉（--no-progress-meter 只关进度、仍会打印错误）。
+if [ -t 2 ]; then PROG=(--progress-bar); else PROG=(--no-progress-meter); fi
 
 # ── 1. 推代码 + tag ─────────────────────────────────────────────────────
 say "推送 master"
@@ -137,7 +140,7 @@ for f in "${ASSETS[@]}"; do
     continue
   fi
   say "上传 $name（$(du -h "$f" | cut -f1)，最大可能要几分钟）"
-  curl "${net[@]}" -f -S -# -X POST "${auth[@]}" \
+  curl "${net[@]}" -f "${PROG[@]}" -X POST "${auth[@]}" \
     -H 'Content-Type: application/octet-stream' \
     --data-binary "@$f" \
     "$upload_url?name=$(node -p 'encodeURIComponent(process.argv[1])' "$name")" >/dev/null \
@@ -149,7 +152,7 @@ done
 SUMS="$REL_DIR/SHA256SUMS.txt"
 if [ -f "$SUMS" ] && ! printf '%s\n' "$existing" | grep -Fxq -- "SHA256SUMS.txt"; then
   say "上传 SHA256SUMS.txt"
-  curl "${net[@]}" -f -S -# -X POST "${auth[@]}" \
+  curl "${net[@]}" -f "${PROG[@]}" -X POST "${auth[@]}" \
     -H 'Content-Type: text/plain' \
     --data-binary "@$SUMS" "$upload_url?name=SHA256SUMS.txt" >/dev/null \
     || say "  （校验和上传失败，不影响八包）"
