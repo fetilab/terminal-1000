@@ -24,7 +24,7 @@ import type { IpcContext, IpcHandler } from '../../ipc/router'
 import { createLogger } from '../../logger'
 import { getSettings, updateSettings } from '../settings'
 import { DEFAULT_HOTKEYS } from '../settings'
-import { findConflicts, matchesInput, normalizeAccelerator, type KeyInput } from './accelerator'
+import { findConflicts, matchFirst, normalizeAccelerator, type KeyInput } from './accelerator'
 
 // 纯逻辑（规范化/冲突检测/按键匹配）在 ./accelerator，本文件只负责与 Electron 打交道
 export { findConflicts, matchesInput, normalizeAccelerator } from './accelerator'
@@ -34,12 +34,34 @@ const log = createLogger('hotkey')
 /** 当前注册结果（bindingId → 状态），供 list 与状态广播使用 */
 let registrations = new Map<string, HotkeyRegistration>()
 
-/** 一个窗口上挂着的全部应用内监听（每个 binding 一条，按 accelerator 去重） */
-interface InAppListener {
+/** 一条应用内绑定：规范化后的加速键 + 它对应的 binding */
+interface InAppEntry {
   accel: string
-  listener: (e: unknown, input: KeyInput) => void
+  binding: HotkeyBinding
 }
-const inputListeners = new WeakMap<BrowserWindow, InAppListener[]>()
+
+/**
+ * 单个窗口的应用内快捷键状态。
+ *
+ * ⚠️ 关键约束：**一个窗口只挂一条 `before-input-event`**，`entries` 是查表用的。
+ *
+ * 早先是「每个应用内绑定各挂一条监听器」。默认配置 14 个快捷键里有 11 个是
+ * 应用内的，于是启动就往 stderr 打：
+ *
+ *   MaxListenersExceededWarning: Possible EventEmitter memory leak detected.
+ *   11 before-input-event listeners added to [WebContents]. MaxListeners is 10.
+ *
+ * 数量其实是固定的、不会真的无限增长，但两个后果是实的：每按一个键 11 个回调
+ * 全部跑一遍；控制台常驻一条看着像崩溃的警告（Windows 上会直接开个黑窗口显示
+ * 它，用户第一眼看到的就是这行字）。
+ *
+ * 改成单 dispatcher 后监听器数量恒为 1，按键只走一次表查找。
+ */
+interface InAppState {
+  entries: InAppEntry[]
+  dispatcher: (e: unknown, input: KeyInput) => void
+}
+const inAppState = new WeakMap<BrowserWindow, InAppState>()
 
 let activeCtx: IpcContext | null = null
 
@@ -88,12 +110,10 @@ export function unregisterAll(): void {
     log.warn('注销全局快捷键失败', err)
   }
   for (const win of BrowserWindow.getAllWindows()) {
-    const list = inputListeners.get(win)
-    if (!list) continue
-    for (const item of list) {
-      win.webContents.removeListener('before-input-event', item.listener as never)
-    }
-    inputListeners.delete(win)
+    const state = inAppState.get(win)
+    if (!state) continue
+    win.webContents.removeListener('before-input-event', state.dispatcher as never)
+    inAppState.delete(win)
   }
   registrations = new Map()
 }
@@ -183,41 +203,45 @@ export function registerFromSettings(ctx: IpcContext): HotkeyRegistration[] {
 }
 
 /**
- * 给单个窗口挂应用内快捷键监听（窗口新建时也要调用）
+ * 给单个窗口挂应用内快捷键监听（窗口新建时也要调用）。
+ *
+ * 只会往表里加/更新一条绑定；`before-input-event` 监听器**每窗口至多一条**，
+ * 首次调用时挂上，之后复用（见 `InAppState` 的注释）。
  */
 export function attachInApp(win: BrowserWindow, accel: string, binding: HotkeyBinding): void {
-  /*
-   * ⚠️ 这里必须**按 accelerator 累积**，而不是每个窗口只留一条监听。
-   *
-   * 早先是 `WeakMap<窗口, listener>`，每次调用都先 remove 掉上一条 —— 而
-   * `registerFromSettings` 是**对每个 binding 依次调用**的，于是后一条把前一条
-   * 顶掉，最终只有**最后一个快捷键**真正生效（其余全静默无效）。
-   * 用户看到的正是「设置里明明绑了，按下去没反应」。
-   */
-  const list = inputListeners.get(win) ?? []
-  const same = list.find((item) => item.accel === accel)
-  if (same) {
-    win.webContents.removeListener('before-input-event', same.listener as never)
-    list.splice(list.indexOf(same), 1)
-  }
-
-  // Electron 的 Input 结构上兼容 KeyInput（control/alt/shift/meta/key），
-  // 这里用最小形状接收，避免把 electron 类型渗进纯逻辑
-  const listener = (e: unknown, input: KeyInput): void => {
-    if (!activeCtx) return
-    if (!matchesInput(input, accel)) return
+  let state = inAppState.get(win)
+  if (!state) {
     /*
+     * 单 dispatcher：一次按键只走一遍表查找。
+     *
      * 必须 preventDefault：`before-input-event` 不拦的话按键会继续送进渲染层，
      * 终端就会把它当普通输入编码给 PTY（Ctrl+1 → `1`、Ctrl+K → `^K`）。
      * 那样既是"快捷键和终端同时响应"，也会把垃圾字符塞进用户的命令里。
      */
-    const ev = e as { preventDefault?: () => void }
-    ev.preventDefault?.()
-    emitTriggered(activeCtx, binding, 'in-app')
+    const created: InAppState = {
+      entries: [],
+      dispatcher: (e, input) => {
+        if (!activeCtx) return
+        const hit = matchFirst(created.entries, input)
+        if (!hit) return
+        const ev = e as { preventDefault?: () => void }
+        ev.preventDefault?.()
+        emitTriggered(activeCtx, hit.binding, 'in-app')
+      },
+    }
+    win.webContents.on('before-input-event', created.dispatcher as never)
+    inAppState.set(win, created)
+    state = created
   }
-  win.webContents.on('before-input-event', listener as never)
-  list.push({ accel, listener })
-  inputListeners.set(win, list)
+
+  // 按 accelerator 去重：同键重复注册时用最新的 binding 覆盖旧的。
+  // （早先这里靠「数组里找同 accel 的监听器再 remove」，换成查表后只需覆盖条目。）
+  const existing = state.entries.findIndex((item) => item.accel === accel)
+  if (existing >= 0) {
+    state.entries[existing] = { accel, binding }
+  } else {
+    state.entries.push({ accel, binding })
+  }
 }
 
 /**

@@ -150,3 +150,20 @@ export function matchesInput(input: KeyInput, accel: string): boolean {
   const alts = INPUT_KEY_ALIASES[key]
   return alts ? alts.includes(inputKey) : false
 }
+
+/**
+ * 在绑定表里找出与这次按键匹配的**第一条**（顺序即优先级）。
+ *
+ * 为什么要抽成纯函数：主进程现在一个窗口只挂**一条** `before-input-event`，
+ * 靠的就是在表里查。查得准不准（尤其是"只命中一条、不重复触发"）是这套设计
+ * 的关键，纯函数才能直接在 Node 下单测，不必起 Electron。
+ */
+export function matchFirst<T extends { accel: string }>(
+  entries: readonly T[],
+  input: KeyInput,
+): T | undefined {
+  for (const item of entries) {
+    if (matchesInput(input, item.accel)) return item
+  }
+  return undefined
+}

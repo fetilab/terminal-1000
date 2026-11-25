@@ -12,7 +12,13 @@
 import { describe, expect, it } from 'vitest'
 import type { HotkeyBinding } from '@t1000/shared'
 // 从纯逻辑模块导入（不 import ./index，避免把 Electron 运行时拖进 Node 测试）
-import { findConflicts, matchesInput, normalizeAccelerator, type KeyInput } from './accelerator'
+import {
+  findConflicts,
+  matchFirst,
+  matchesInput,
+  normalizeAccelerator,
+  type KeyInput,
+} from './accelerator'
 
 describe('normalizeAccelerator', () => {
   it('规范修饰键顺序（无论输入顺序如何）', () => {
@@ -141,5 +147,68 @@ describe('matchesInput', () => {
   it('功能键匹配', () => {
     expect(matchesInput(input({ control: true, key: 'F5' }), 'Ctrl+F5')).toBe(true)
     expect(matchesInput(input({ control: true, key: 'f5' }), 'Ctrl+F5')).toBe(true)
+  })
+})
+
+/**
+ * `matchFirst` 是主进程那套「一个窗口只挂一条 before-input-event」的查表核心。
+ *
+ * 之前每个应用内绑定各挂一条监听器：默认配置 11 个应用内键 → 11 条监听器，
+ * 越过 Node 的默认上限 10，启动就往 stderr 打 MaxListenersExceededWarning
+ * （Windows 上还会因为这个警告开一个控制台黑窗口）。改成单 dispatcher 后，
+ * 「这次按键该触发哪一条」全靠这个函数，所以它的边界要单独测。
+ */
+describe('matchFirst', () => {
+  const input = (over: Partial<KeyInput>): KeyInput => ({
+    control: false,
+    alt: false,
+    shift: false,
+    meta: false,
+    key: '',
+    ...over,
+  })
+  const table = [
+    { accel: 'Ctrl+T', id: 'new-tab' },
+    { accel: 'Ctrl+W', id: 'close-tab' },
+    { accel: 'Ctrl+Shift+T', id: 'reopen-tab' },
+  ]
+
+  it('命中对应的那一条', () => {
+    expect(matchFirst(table, input({ control: true, key: 'w' }))?.id).toBe('close-tab')
+    expect(matchFirst(table, input({ control: true, key: 't' }))?.id).toBe('new-tab')
+  })
+
+  it('★ Ctrl+T 不会误命中 Ctrl+Shift+T（修饰键必须全等）', () => {
+    expect(matchFirst(table, input({ control: true, key: 't' }))?.id).toBe('new-tab')
+    expect(matchFirst(table, input({ control: true, shift: true, key: 't' }))?.id).toBe('reopen-tab')
+  })
+
+  it('没有匹配时返回 undefined（交给渲染层/终端处理）', () => {
+    expect(matchFirst(table, input({ control: true, key: 'q' }))).toBeUndefined()
+    // 裸 t 是正常输入，不能被快捷键盘吃掉
+    expect(matchFirst(table, input({ key: 't' }))).toBeUndefined()
+  })
+
+  it('空表返回 undefined', () => {
+    expect(matchFirst([], input({ control: true, key: 't' }))).toBeUndefined()
+  })
+
+  it('★ 只返回一条：同一次按键不会触发多个命令', () => {
+    // 冲突配置（理论上会被 findConflicts 拦掉，但查表本身也不能重复触发）
+    const dup = [
+      { accel: 'Ctrl+T', id: 'a' },
+      { accel: 'Ctrl+T', id: 'b' },
+    ]
+    const hit = matchFirst(dup, input({ control: true, key: 't' }))
+    expect(hit?.id).toBe('a')
+    expect(matchFirst(dup, input({ control: true, key: 't' }))).not.toBe(dup[1])
+  })
+
+  it('保持表内顺序作为优先级', () => {
+    const ordered = [
+      { accel: 'Ctrl+K', id: 'first' },
+      { accel: 'Ctrl+K', id: 'second' },
+    ]
+    expect(matchFirst(ordered, input({ control: true, key: 'k' }))?.id).toBe('first')
   })
 })
