@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">terminal-1000</string>
+
+    <!-- 前台服务通知 -->
+    <string name="notification_channel_name">终端会话</string>
+    <string name="notification_channel_desc">保持终端与远程连接在后台运行</string>
+    <string name="notification_title">terminal-1000 运行中</string>
+    <string name="notification_text">本地运行时保持连接，点按返回应用</string>
+
+    <!-- 原生侧错误提示 -->
+    <string name="err_runtime_missing">运行时缺失：安装包不完整</string>
+</resources>

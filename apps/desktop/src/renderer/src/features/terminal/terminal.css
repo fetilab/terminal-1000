@@ -74,6 +74,11 @@
   flex: 0 0 auto;
   min-width: 0;
   min-height: 0;
+  /* 硬上限：内联宽度是用户拖出来的绝对值，在窄窗口（平板横屏、开了软键盘）
+     会把终端挤到只剩两三百像素。JS 那套按比例收缩依赖实测宽度，
+     窗口尺寸在挂载后才变化时它拿不到新值（k 恒为 1，等于没收缩）。
+     这一条与 JS 无关，永远保证终端至少拿到一半以上。 */
+  max-width: 46%;
   border-right: 1px solid var(--t1000-border);
   background: var(--t1000-bg-panel);
 }
@@ -782,4 +787,103 @@
 .kitty-review:hover {
   color: var(--t1000-fg);
   border-color: var(--t1000-accent);
+}
+
+/* ── 触摸键盘条 ────────────────────────────────────────────────
+ *
+ * 只在触摸平台（Android）出现，位置在终端画布与状态栏之间 ——
+ * `.term-pane` 已经是 flex 列、`.term-pane__surface` 是 flex:1，
+ * 所以这一条只要 flex:0 0 auto 就能把画布自然压短，不需要动任何绝对定位。
+ *
+ * 底色必须 transparent：它是**满幅**容器，一旦上色就会和终端区形成
+ * 一条色差带（单层底色原则）。
+ */
+.touch-keys {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-top: 1px solid var(--t1000-border);
+  background: transparent;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* 横向滚动时不要纵向手势抢走（触摸平台的关键细节） */
+  touch-action: pan-x;
+}
+
+/* 滚动条压到极细：这排按钮本身就窄，多一条滚动槽会顶高整条 */
+.touch-keys::-webkit-scrollbar {
+  height: 4px;
+}
+.touch-keys::-webkit-scrollbar-thumb {
+  background: var(--t1000-border-strong);
+  border-radius: 2px;
+}
+
+.touch-keys__key {
+  flex: 0 0 auto;
+  min-width: 36px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--t1000-border);
+  border-radius: 6px;
+  /* 药丸保留底色：有圆角、不贯穿整屏，比面板更实符合直觉 */
+  background: var(--t1000-bg-raised);
+  color: var(--t1000-fg-dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  /* 触摸平台：按下即反馈，不要 300ms 延迟 */
+  touch-action: manipulation;
+  transition:
+    background 90ms ease,
+    color 90ms ease,
+    border-color 90ms ease;
+}
+
+.touch-keys__key--narrow {
+  min-width: 30px;
+  padding: 0 6px;
+}
+
+.touch-keys__key:hover {
+  background: var(--t1000-bg-hover);
+  color: var(--t1000-fg);
+}
+
+.touch-keys__key:active {
+  background: var(--t1000-bg-active);
+  color: var(--t1000-fg);
+}
+
+/* 粘滞修饰键点亮态：用强调色，避免和普通按钮的 hover 混淆 */
+.touch-keys__key--mod {
+  font-family: var(--t1000-font-mono, ui-monospace, monospace);
+  letter-spacing: 0.02em;
+}
+
+.touch-keys__key--mod.is-on {
+  background: var(--t1000-accent);
+  border-color: var(--t1000-accent);
+  color: var(--t1000-accent-fg);
+}
+
+.touch-keys__sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--t1000-border);
+}
+
+.touch-keys__hint {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  color: var(--t1000-accent);
+  font-size: 11px;
+  white-space: nowrap;
 }

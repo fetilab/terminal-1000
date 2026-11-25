@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Copyright (C) 2026 terminal-1000 contributors
+
+  明文流量只对回环地址开放。
+
+  为什么需要明文：WebView ↔ Node 之间的桥是 `ws://127.0.0.1:<port>`，
+  而 Android 9+ 默认禁止 cleartext。**不能**用 `usesCleartextTraffic="true"`
+  一把梭 —— 那会让应用里所有 http 请求（AI 供应商、同步服务、更新检查）
+  都可能被降级到明文，等于关掉了整个传输层保护。
+
+  这里只给 127.0.0.1 开一个小口，其余仍然强制 TLS。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

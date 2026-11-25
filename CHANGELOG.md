@@ -7,6 +7,68 @@
 "修复了 X 的问题"。因为这个项目里有一批缺陷属于"看起来正常、实际从未生效"，
 把根因写下来，比写"已修复"对后来者有用得多。
 
+## [0.3.0] - 2026-11-25
+
+首个 **Android 平板** 版本。桌面端的渲染层与主进程逻辑原样复用，只把
+Electron 的宿主层换成「libnode + WebView + 回环 WS 桥」，因此六种协议、
+外观体系、快捷键、命令块、AI 等能力在平板上保持一致。
+
+### 新增
+
+- **Android 平板移植（arm64-v8a / x86_64）**：Node 运行时（libnode）跑原有
+  TypeScript 主进程，UI 用系统 WebView 承载同一份 React 产物；两边通过
+  回环 WebSocket 双通道桥通信，`window.t1000.invoke/on` 契约与桌面完全一致。
+- **内置 Alpine Linux 环境（proot）**：打包 Alpine 3.24.4 minirootfs 与
+  Termux 的 proot 5.1.107.102。首次启动由纯 Kotlin 的 tar 解包器解到私有目录
+  （516 条目 / 131ms），本地终端默认落在 guest 里（`id -u` = 0、`apk` 可用），
+  失败自动回退系统 `sh`。
+- **触摸键盘条**：平板软键盘没有 Esc/Tab/Ctrl/方向键，而终端离了这些基本没法
+  用。新增一排按键：Ctrl/Alt 为**粘滞修饰键**（点亮后下一个字符也吃到修饰，
+  因此 Ctrl+L 清屏、Ctrl+R 搜历史在软键盘上可用），其余为 Esc/Tab/方向键/
+  Home/End/PgUp/PgDn/⌫/^C/^D。所有按键走 kitty 编码器（`session.key`），
+  不手拼转义序列 —— 否则在 legacy / CSI u / application cursor keys 之间切换
+  时（例如进 vim）会全错。
+- **协议矩阵验收脚本** `apps/desktop/scripts/protocol-verify.mjs`：7 组 27 项，
+  全部走真实 socket（node-pty、ssh2 真实服务端、真实 SFTP 子系统、
+  direct-tcpip 隧道真穿一次 HTTP、IAC telnetd 自动登录、RFB 握手与帧、
+  FreeRDP 子进程 argv 取证）。
+
+### 修复
+
+- **RDP 在 Ubuntu 24.04+ 上「明明装了 FreeRDP 却报未检测到」（现象 → 根因）**：
+  候选二进制名只有 `xfreerdp` / `wlfreerdp` / `freerdp`，而 FreeRDP 3 的
+  Debian/Ubuntu 打包拆成 `xfreerdp3`（freerdp3-x11）、`wlfreerdp3`
+  （freerdp3-wayland）、`sdl-freerdp3`（freerdp3-sdl），并且**不一定**提供
+  不带版本号的别名。补全候选表并区分 22.04 / 24.04+ 的安装提示。
+- **proot 在应用进程里 `main()` 之前 SIGSEGV（现象 → 根因）**：`pty.open` 成功、
+  零字节输出、信号 11，`--version` 也一样崩。根因不在 seccomp/uid/SELinux，
+  而是 **AGP 打包时 `llvm-strip` 破坏了 patchelf 改过的 ELF 布局**：
+  `patchelf` 把 `.interp/.dynstr` 追加到新页边界并留下填充，strip 删掉填充
+  却不修正 `p_offset`，导致最后一个 PT_LOAD 的 `p_offset % 0x4000` 与
+  `p_vaddr % 0x4000` 不再相等 → `linker64` 映射错位。
+  修法三件套：`packaging.jniLibs.keepDebugSymbols` 覆盖四个 proot 相关库、
+  `packageDebug` 阶段逐字节校验 APK 内二进制与源文件一致、
+  `build-rootfs.sh` 增加 PT_LOAD 同余自检。
+- **平板底部被系统导航栏压住（现象 → 根因）**：按键条与状态栏被切掉一半。
+  两个根因叠加：① `WebView.setPadding()` **不缩小页面视口**（视图 1600×1000、
+  padding 35/75 都设了，`innerHeight` 仍是 800dp），必须让容器承接 insets；
+  ② `isVisible(Type.systemBars())` 是**组合判据**，只隐藏状态栏时返回 false，
+  可导航栏其实画着（实测 nav 可见 75px），于是 padding 恒为 0。
+  改为按 `statusBars` / `navigationBars` / `ime` 分别判断，底部取
+  `max(nav, ime, tappableElement)`（Waydroid 的平板任务栏正是「画着、吞触摸、
+  却报 nav 不可见」的典型）。
+- **Alpine rootfs「解包成功却判定缺 /bin/sh」**：`/bin/sh` 是指向 `/bin/busybox`
+  的**绝对路径符号链接**，在宿主上解析必然断链 → `File.exists()` 返回 false。
+  改用 `lstat`（不跟随链接）判断条目存在性。
+- **`assets/*.tar.gz` 在 APK 里莫名变成 8.7MB 的 `root.tar`**：aapt 对 `.gz`
+  结尾的 asset 有「自动解压并改名」的遗留行为，`noCompress` 拦不住。产物后缀
+  改用 `.tgz`（APK 从 58MB 回到 53MB）。
+
+### 变更
+
+- 桌面端不受影响：Android 专属能力（触摸键盘条）只在
+  `window.t1000.platform === 'android'` 时渲染。
+
 ## [0.2.8] - 2026-11-24
 
 ### 修复

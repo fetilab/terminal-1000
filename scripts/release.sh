@@ -29,7 +29,11 @@ say "版本 $VERSION（tag $TAG，仓库 $REPO）"
 
 [ -d "$REL_DIR" ] || die "找不到 $REL_DIR，先跑 scripts/pack-local.sh"
 
-# 附件：六种格式。文件名带版本号，缺一个就报出来而不是静默少传。
+# 附件：六种桌面格式 + 两个 Android ABI。
+# 文件名带版本号，缺一个就报出来而不是静默少传。
+#
+# Android 两个包由 `apps/android` 的打包流程产出（需要 Android SDK）：
+#   assembleRelease → zipalign → apksigner，产物拷进 same release 目录即可。
 ASSETS=(
   "$REL_DIR/terminal-1000-$VERSION.AppImage"
   "$REL_DIR/terminal-1000_${VERSION}_amd64.deb"
@@ -37,6 +41,8 @@ ASSETS=(
   "$REL_DIR/terminal-1000-$VERSION.pacman"
   "$REL_DIR/terminal-1000-$VERSION-x86_64.flatpak"
   "$REL_DIR/terminal-1000 Setup $VERSION.exe"
+  "$REL_DIR/terminal-1000-$VERSION-arm64-v8a.apk"
+  "$REL_DIR/terminal-1000-$VERSION-x86_64.apk"
 )
 missing=0
 for f in "${ASSETS[@]}"; do
@@ -47,7 +53,7 @@ for f in "${ASSETS[@]}"; do
     missing=1
   fi
 done
-[ "$missing" -eq 0 ] || die "六种格式没齐，不会只上传一部分"
+[ "$missing" -eq 0 ] || die "八种格式没齐，不会只上传一部分"
 
 if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
   die "工作区有未提交改动，先提交（Release 必须对应一个确定的提交）"

@@ -25,6 +25,7 @@ import type { FitAddon } from '@xterm/addon-fit'
 import type { SearchAddon } from '@xterm/addon-search'
 import type { Unicode11Addon } from '@xterm/addon-unicode11'
 import type { KittyEngine } from './kitty/engine'
+import { TouchKeyBar } from './TouchKeyBar'
 import { Events, type PublicProvider, type TerminalSettings } from '@t1000/shared'
 import { Icon } from '../../components/Icon'
 import { Badge } from '../../components/Feedback'
@@ -285,6 +286,22 @@ export interface TerminalPaneProps {
  * 由这个登记表决定谁接手 —— 分屏时命令只作用于用户正在操作的那半屏。
  */
 const lastFocusedPane = new Map<string, HTMLElement>()
+
+/**
+ * 是否显示触摸键盘条。
+ *
+ * 判据取桥注入的 `platform`（Android 上 preload 被替换成回环桥，值就是 'android'），
+ * 而不是 UA 嗅探：同一份渲染层代码在 Electron 与 WebView 里跑，
+ * `platform` 是唯一一处由**运行环境自己声明**答案的地方。
+ * 桥不存在（单测、纯浏览器预览）时按桌面处理 —— 少一排按钮总比报错好。
+ */
+const TOUCH_KEY_BAR = (() => {
+  try {
+    return window.t1000?.platform === 'android'
+  } catch {
+    return false
+  }
+})()
 
 export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Element {
   const paneRef = useRef<HTMLDivElement | null>(null)
@@ -1497,6 +1514,14 @@ export function TerminalPane({ tab, visible }: TerminalPaneProps): React.JSX.Ele
             </div>
           ) : null}
         </div>
+      ) : null}
+
+      {/* 触摸键盘条：只有触摸平台（Android）才有软键盘缺键的问题，桌面上是纯噪音 */}
+      {TOUCH_KEY_BAR ? (
+        <TouchKeyBar
+          onKey={(key, mods) => kittyRef.current?.pressKey(key, mods)}
+          onStickyChange={(mods) => kittyRef.current?.setPendingMods(mods)}
+        />
       ) : null}
 
       <div className="term-pane__status">

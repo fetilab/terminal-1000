@@ -1,0 +1,20 @@
+{
+  "name": "@t1000/android-host",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "terminal-1000 Android node host (reuses desktop main process via electron shim)",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.9.3"
+  }
+}

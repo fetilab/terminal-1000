@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<resources>
+    <!--
+      终端应用的主题：深色、无标题栏、无 ActionBar。
+
+      为什么不用 DayNight：终端画布与周围面板的配色由应用自己的外观设置
+      （背景三件套 + 六组 alpha）决定，系统深色/浅色是**渲染层**的事 ——
+      这里只需要一个"启动时不会闪白"的底色。启动瞬间闪一下白屏在深色主题下
+      非常刺眼，所以 windowBackground 直接给深色。
+    -->
+    <style name="Theme.T1000" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">#1a1a1a</item>
+        <item name="android:statusBarColor">#1a1a1a</item>
+        <item name="android:navigationBarColor">#1a1a1a</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

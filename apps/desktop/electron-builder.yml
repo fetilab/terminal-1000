@@ -114,6 +114,15 @@ pacman:
 
 # Electron 45 需要 24.08 运行时（默认 20.08 的 glibc 跑不起来），BaseApp 提供 Electron 运行环境
 flatpak:
+  # ⚠️ 必须显式给空 files，不能删。
+  #
+  # flatpak 目标的 options 是 `{...platformSpecificBuildOptions, ...config.flatpak}`，
+  # 也就是它会继承 `linux.files`（我们那里写的是 `!**/node_modules/…` 这类排除模式）。
+  # 而 @malept/flatpak-bundler 把 options.files 当 `[源, 目标]` 元组用：
+  # 对字符串取 `sourceDest[0]` 得到的是**第一个字符** `'!'`，
+  # 于是 `path.resolve('!')` → `<apps/desktop>/!` → ENOENT stat 报错，
+  # 整个 linux 打包批次就地中断（表现：只出了 deb/AppImage，flatpak 之后的目标全没了）。
+  files: []
   runtime: org.freedesktop.Platform
   runtimeVersion: 24.08
   base: org.electronjs.Electron2.BaseApp

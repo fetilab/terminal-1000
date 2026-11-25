@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  FileProvider 路径白名单。
+
+  只暴露 files 下的子目录，而不是整个 filesDir ——
+  filesDir 里有数据库与主密码校验值，虽然 FileProvider 需要显式授权才可读，
+  但少暴露一层总是对的（最小权限原则）。
+-->
+<paths>
+    <!-- SFTP 下载 / 在线编辑的临时副本 -->
+    <files-path name="downloads" path="downloads/" />
+    <files-path name="cache_tmp" path="tmp/" />
+    <!-- 备份导出：用户从应用内导出后可以"用其它 App 打开" -->
+    <files-path name="backups" path="terminal-1000/backups/" />
+</paths>

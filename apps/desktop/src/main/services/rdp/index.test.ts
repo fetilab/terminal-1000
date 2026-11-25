@@ -200,6 +200,23 @@ describe('二进制探测与安装提示', () => {
     expect(findRdpBinary({ PATH: '/usr/bin' }, (p) => existing.has(p))).toBe('/usr/bin/xfreerdp')
   })
 
+  /**
+   * FreeRDP 3 的 Ubuntu 24.04+ 打包只提供带版本号的名字
+   * （freerdp3-x11 → xfreerdp3、freerdp3-wayland → wlfreerdp3、freerdp3-sdl → sdl-freerdp3）。
+   * 老候选表认不出这三个，装了 FreeRDP 也报「未检测到」，RDP 整个不可用。
+   */
+  it('认得出 FreeRDP 3 的带版本号名字', () => {
+    for (const name of ['xfreerdp3', 'wlfreerdp3', 'sdl-freerdp3']) {
+      const existing = new Set([`/usr/bin/${name}`])
+      expect(findRdpBinary({ PATH: '/usr/bin' }, (p) => existing.has(p))).toBe(`/usr/bin/${name}`)
+    }
+  })
+
+  it('FreeRDP 3 与 2 同时存在时仍优先无版本号的 xfreerdp', () => {
+    const existing = new Set(['/usr/bin/wlfreerdp3', '/usr/bin/xfreerdp', '/usr/bin/xfreerdp3'])
+    expect(findRdpBinary({ PATH: '/usr/bin' }, (p) => existing.has(p))).toBe('/usr/bin/xfreerdp')
+  })
+
   it('都没有 → null', () => {
     expect(findRdpBinary({ PATH: '/usr/bin' }, () => false)).toBeNull()
     expect(findRdpBinary({}, () => true)).toBeNull()

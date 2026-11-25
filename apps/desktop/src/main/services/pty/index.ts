@@ -39,6 +39,7 @@ import {
   type ShellDetectIo,
   type ShellInfo,
 } from './shells'
+import { alpineLayout, alpineProfile } from './alpine'
 
 /** 输出合批窗口（ms）。16ms ≈ 一帧，与 SSH 会话同值。 */
 export const PTY_BATCH_MS = 16
@@ -97,14 +98,18 @@ export function createNodePtySpawner(
 ): PtySpawner {
   return async (file, args, options) => {
     const pty = await loader()
-    const proc = pty.spawn(file, [...args], {
-      name: options.name,
-      cwd: options.cwd,
-      env: options.env,
-      cols: options.cols,
-      rows: options.rows,
-      encoding: 'utf8',
-    })
+    // 桌面端 node-pty 的 spawn 是同步的；Android 桥的实现要过一次原生通道，
+    // 返回 Promise。用 await 统一两种形态：对 node-pty 只是多一个微任务。
+    const proc = await Promise.resolve(
+      pty.spawn(file, [...args], {
+        name: options.name,
+        cwd: options.cwd,
+        env: options.env,
+        cols: options.cols,
+        rows: options.rows,
+        encoding: 'utf8',
+      }),
+    )
 
     const toText = (data: unknown): string => {
       if (typeof data === 'string') return data
@@ -233,8 +238,18 @@ export class PtyManager {
     return detectShells(this.io)
   }
 
+  /**
+   * Android 专属的「真 Linux 环境」profile（proot + Alpine）。
+   * 别的平台上 [alpineLayout] 直接返回 null（环境变量不存在），这里就是空数组，
+   * 所以桌面端的行为完全不变。
+   */
+  private alpineProfiles(): PtyProfile[] {
+    const layout = alpineLayout(this.io)
+    return layout ? [alpineProfile(layout, this.io)] : []
+  }
+
   listProfiles(): PtyProfile[] {
-    return defaultProfiles(this.listShells(), this.io)
+    return [...defaultProfiles(this.listShells(), this.io), ...this.alpineProfiles()]
   }
 
   list(): PtySessionInfo[] {
@@ -248,18 +263,24 @@ export class PtyManager {
 
   async open(request: PtyOpenRequest = {}): Promise<PtyOpenResult> {
     const shells = detectShells(this.io)
-    const profiles = defaultProfiles(shells, this.io)
+    const alpineProfileList = this.alpineProfiles()
+    const profiles = [...defaultProfiles(shells, this.io), ...alpineProfileList]
 
     let profile: PtyProfile | undefined
     if (request.profileId) {
       profile = profiles.find((p) => p.id === request.profileId)
       if (!profile) throw AppError.badRequest(`未知的终端配置: ${request.profileId}`)
+    } else if (!request.shell && alpineProfileList.length > 0) {
+      // Android 上的"本地终端"默认就给真 Linux 环境（bash/git/python 都能用）。
+      // rootfs 还没解包好时 alpineProfiles() 是空的，自然回落到系统 shell，
+      // 用户看到的是 mksh 而不是一个报错的标签页。
+      profile = alpineProfileList[0]
     }
 
     const shell = resolveShell(request.shell ?? profile?.shell, this.io, shells)
     const args = [...(request.args ?? profile?.args ?? [])]
 
-    const requestedCwd = request.cwd?.trim()
+    const requestedCwd = request.cwd?.trim() || profile?.cwd
     let cwd = requestedCwd && requestedCwd.length > 0 ? requestedCwd : this.home
     let cwdFallback = false
     if (!this.cwdExists(cwd)) {
@@ -271,10 +292,12 @@ export class PtyManager {
     const rows = clampInt(request.rows ?? DEFAULT_ROWS, 1, 1000)
 
     const env = buildShellEnv(
-      { ...this.baseEnv, ...(request.env ?? {}) },
+      { ...this.baseEnv, ...(profile?.env ?? {}), ...(request.env ?? {}) },
       {
         term: request.term ?? DEFAULT_TERM,
         ...(request.colorTerm === undefined ? {} : { colorTerm: request.colorTerm }),
+        // profile 自己声明了 PATH（proot 的 guest 路径）时不要用宿主的目录去补
+        extendPath: profile?.env?.['PATH'] === undefined,
       },
       this.io.platform,
     )

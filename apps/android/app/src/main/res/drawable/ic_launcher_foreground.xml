@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  图标前景：终端提示符 `>_`，与桌面端托盘图标同一语汇。
+  用 stroke 而不是实心块，在自适应图标的任何裁切形状下都保持可识别。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M38,42 L54,54 L38,66"
+        android:strokeColor="#4ec9b0"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M60,68 L74,68"
+        android:strokeColor="#dcdcdc"
+        android:strokeWidth="7"
+        android:strokeLineCap="round" />
+</vector>

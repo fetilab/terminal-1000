@@ -29,14 +29,32 @@ import { Events, type ConnectionState, type RdpConnection } from '@t1000/shared'
 import { AppError, parseInput } from '../../errors'
 import type { IpcContext, IpcHandler } from '../../ipc/router'
 
-/** 候选可执行文件名（按优先级） */
-export const RDP_BINARY_CANDIDATES = ['xfreerdp', 'xfreerdp3', 'wlfreerdp', 'freerdp'] as const
+/**
+ * 候选可执行文件名（按优先级）。
+ *
+ * 命名在 FreeRDP 3 里**改了**：Debian/Ubuntu 24.04 起拆成三个包，分别提供
+ * `xfreerdp3`（freerdp3-x11）、`wlfreerdp3`（freerdp3-wayland）、
+ * `sdl-freerdp3`（freerdp3-sdl），而且**不一定有**不带版本号的名字。
+ * 老列表只有 `xfreerdp`/`wlfreerdp`/`freerdp`，在 Ubuntu 24.04+ 上
+ * 明明装了 FreeRDP 却报"未检测到"，RDP 直接不可用。
+ */
+export const RDP_BINARY_CANDIDATES = [
+  'xfreerdp',
+  'xfreerdp3',
+  'wlfreerdp',
+  'wlfreerdp3',
+  'sdl-freerdp3',
+  'sdl-freerdp',
+  'freerdp',
+  'freerdp3',
+] as const
 
 /** 找不到二进制时的可操作提示（不是笼统失败） */
 export function rdpInstallHint(): string {
   return [
-    '未检测到 FreeRDP（xfreerdp），无法打开 RDP 会话。请先安装后再试：',
-    '  Debian/Ubuntu: sudo apt install freerdp2-x11',
+    '未检测到 FreeRDP，无法打开 RDP 会话。请先安装后再试：',
+    '  Debian/Ubuntu 24.04+ : sudo apt install freerdp3-x11（或 freerdp3-wayland）',
+    '  Debian/Ubuntu 22.04  : sudo apt install freerdp2-x11',
     '  Fedora/RHEL:   sudo dnf install freerdp',
     '  Arch:          sudo pacman -S freerdp',
   ].join('\n')

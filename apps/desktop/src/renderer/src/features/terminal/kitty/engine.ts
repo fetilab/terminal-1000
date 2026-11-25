@@ -169,6 +169,14 @@ export class KittyEngine {
   private blinking = false
   /** 窗格是否持有输入焦点（kitty 只在聚焦窗口上闪光标） */
   private focused = true
+  /**
+   * 粘滞修饰键（触摸键盘的 Ctrl/Alt）。
+   *
+   * 软键盘发不出 Ctrl，而 `Ctrl+R`/`Ctrl+A`/`Ctrl+K` 是 shell 的日常操作。
+   * 这里存"下一次输入要带上的修饰位"，由 `takePendingMods` **取走并清零** ——
+   * 粘滞键绝不能漏到后续输入里，否则用户会莫名其妙地发出控制字符。
+   */
+  private pendingMods = 0
   private selectionText = ''
   private markers: Marker[] = []
   private decorations: DecorationImpl[] = []
@@ -907,8 +915,14 @@ export class KittyEngine {
   /** 文本输入（IME 提交、多字符粘贴等价路径） */
   private async sendText(text: string): Promise<void> {
     if (!this.session) return
+    // 粘滞 Ctrl/Alt 只作用于**紧接着的第一个字符**：用户按了 Ctrl 再敲 a，
+    // 得到的是 Ctrl+A；后面继续敲的字仍是普通输入。
+    let mods = this.takePendingMods()
     // IME 提交的整段文本按字符逐个交给 kitty 的编码器（它负责 UTF-8 与 CSI u 的组合）
-    for (const ch of text) this.session.key(ch, 0, 'press')
+    for (const ch of text) {
+      this.session.key(ch, mods, 'press')
+      mods = 0
+    }
   }
 
   /**
@@ -1204,6 +1218,33 @@ export class KittyEngine {
 
   paste(text: string): void {
     this.session?.paste(text)
+  }
+
+  /**
+   * 合成一次按键 —— 给触摸键盘条用。
+   *
+   * 刻意走 `session.key` 而不是直接往 PTY 写 `\x1b[A` 这类字节：
+   * 编码要由 kitty 内核按**当前模式**决定（legacy 控制字符 / CSI u 键盘协议 /
+   * application cursor keys）。自己拼字节在 shell 里看着没问题，一进 vim
+   * （切到 application cursor keys）方向键就全废 —— 这是终端模拟器的经典坑。
+   */
+  pressKey(key: string, mods = 0): void {
+    if (this.disposed || !this.session) return
+    this.noteActivity()
+    this.session.key(key, mods, 'press')
+    this.scheduleRender()
+  }
+
+  /** 设置粘滞修饰位（下一次输入生效一次） */
+  setPendingMods(mods: number): void {
+    this.pendingMods = mods
+  }
+
+  /** 取走粘滞修饰位并清零 */
+  private takePendingMods(): number {
+    const mods = this.pendingMods
+    this.pendingMods = 0
+    return mods
   }
 
   clear(): void {

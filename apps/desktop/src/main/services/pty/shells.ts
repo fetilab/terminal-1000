@@ -17,7 +17,7 @@
  */
 
 import { basename } from 'node:path'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
 
 /** 本地终端明确支持的 shell 名 */
@@ -29,12 +29,20 @@ export const SUPPORTED_SHELLS = [
   'dash',
   'ash',
   'ksh',
+  'mksh',
   'pwsh',
   'powershell',
 ] as const
 
 /** 查找 shell 的目录顺序（与规格一致） */
-export const SHELL_SEARCH_DIRS = ['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'] as const
+export const SHELL_SEARCH_DIRS = [
+  '/bin',
+  '/usr/bin',
+  '/usr/local/bin',
+  '/opt/homebrew/bin',
+  // Android：系统 shell 全在这里，而 /bin 与 /usr/bin 在 Android 上并不存在
+  '/system/bin',
+] as const
 
 /** POSIX 下 PATH 需要补齐的目录（GUI 启动时 PATH 常常很贫瘠） */
 export const PATH_EXTRA_DIRS = [
@@ -44,6 +52,11 @@ export const PATH_EXTRA_DIRS = [
   '/bin',
   '/usr/sbin',
   '/sbin',
+  // Android 的命令目录（桌面端不存在，加进 PATH 也无害）
+  '/system/bin',
+  '/system/xbin',
+  '/vendor/bin',
+  '/product/bin',
 ] as const
 
 export const SHELLS_FILE = '/etc/shells'
@@ -71,6 +84,11 @@ export const COMMON_SHELL_PATHS = [
   '/opt/homebrew/bin/bash',
   '/opt/homebrew/bin/zsh',
   '/opt/homebrew/bin/fish',
+  // Android：没有 /bin、也没有 /etc/shells，系统 shell 是 mksh
+  '/system/bin/sh',
+  '/system/bin/mksh',
+  '/system/xbin/sh',
+  '/vendor/bin/sh',
 ] as const
 
 export interface ShellInfo {
@@ -88,6 +106,15 @@ export interface ShellDetectIo {
   readFile(path: string): string | null
   /** 路径是否存在（可执行文件判断） */
   exists(path: string): boolean
+  /**
+   * 路径条目是否存在，**不跟随符号链接**。
+   *
+   * 判断 rootfs 里的路径时必须用它：Alpine 的 `/bin/sh`、`/bin/ash` 是
+   * 绝对路径的符号链接（`→ /bin/busybox`），在宿主上按字面解析一定是断链，
+   * `exists()` 会返回 false —— 用 `exists()` 的结果就是"环境明明装好了却说没有"。
+   * 未实现时退化为 [exists]。
+   */
+  existsNoFollow?(path: string): boolean
   env(name: string): string | undefined
   /** os.userInfo().shell（可能取不到） */
   userShell?: string
@@ -150,7 +177,10 @@ export function platformDefaultShell(io: Pick<ShellDetectIo, 'platform' | 'env'>
   }
   const fromEnv = io.env('SHELL')?.trim()
   if (fromEnv) return fromEnv
-  return io.platform === 'darwin' ? '/bin/zsh' : '/bin/sh'
+  if (io.platform === 'darwin') return '/bin/zsh'
+  // Android 没有 /bin/sh：系统 shell 是 mksh，路径在 /system/bin
+  if (io.platform === 'android') return '/system/bin/sh'
+  return '/bin/sh'
 }
 
 /**
@@ -224,10 +254,14 @@ export function resolveShell(
  * - TERM：显式传入 > 继承的 TERM > xterm-256color
  * - COLORTERM：显式传入 > 继承的 COLORTERM > truecolor
  * - POSIX：补齐 PATH 里缺失的标准目录（只追加，不抢占已有顺序）
+ *
+ * `extendPath: false` 用于**在别的根文件系统里**跑的进程（Android 的 proot/Alpine）：
+ * 那里的 PATH 必须原样保留，混进宿主机的 `/opt/homebrew/bin`、`/system/bin`
+ * 只会在 guest 里制造一堆不存在的目录。
  */
 export function buildShellEnv(
   base: Record<string, string | undefined>,
-  options: { term?: string; colorTerm?: string } = {},
+  options: { term?: string; colorTerm?: string; extendPath?: boolean } = {},
   platform: NodeJS.Platform = process.platform,
 ): Record<string, string> {
   const env: Record<string, string> = {}
@@ -239,7 +273,7 @@ export function buildShellEnv(
   env['TERM'] = options.term?.trim() || env['TERM']?.trim() || DEFAULT_TERM
   env['COLORTERM'] = options.colorTerm?.trim() || env['COLORTERM'] || DEFAULT_COLORTERM
 
-  if (platform !== 'win32') {
+  if (platform !== 'win32' && options.extendPath !== false) {
     env['PATH'] = extendPosixPath(env['PATH'])
   }
   return env
@@ -309,6 +343,14 @@ export function nodeShellIo(): ShellDetectIo {
       }
     },
     exists: (path) => existsSync(path),
+    existsNoFollow: (path) => {
+      try {
+        lstatSync(path)
+        return true
+      } catch {
+        return false
+      }
+    },
     env: (name) => process.env[name],
     get userShell() {
       if (!userShellRead) {

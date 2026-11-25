@@ -99,6 +99,11 @@ export interface RendererOptions {
   zebra: boolean
 }
 
+// 六个顶点的角点按 QUAD 顺序展开：TL, TR, BL, BL, TR, BR
+// 曾经写成 `QUAD[gl_VertexID]`（常量数组 + 动态下标），在桌面 Chromium 上没问题，
+// 但在 Android WebView（ANGLE + SwiftShader）上**动态下标返回的是垃圾值**，
+// 六个顶点全塌到同一个点 → 三角形退化 → 整个终端一个字都画不出来（且无任何 GL 报错）。
+// 改成纯算术（比较 + select），不碰数组下标，行为在所有后端一致。
 const VERT = `#version 300 es
 precision highp float;
 layout(location=0) in vec2 a_cell;
@@ -116,13 +121,16 @@ out vec4 v_flags;
 out vec2 v_local;
 out vec2 v_cellPos;
 
-const vec2 QUAD[6] = vec2[6](
-  vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),
-  vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0)
-);
+/** 第 n 个顶点的角点（TL, TR, BL, BL, TR, BR）。不用数组下标，见上面的说明 */
+vec2 quadCorner(int n) {
+  float v = float(n);
+  float x = (v == 1.0 || v == 4.0 || v == 5.0) ? 1.0 : 0.0;
+  float y = (v == 2.0 || v == 3.0 || v == 5.0) ? 1.0 : 0.0;
+  return vec2(x, y);
+}
 
 void main() {
-  vec2 corner = QUAD[gl_VertexID];
+  vec2 corner = quadCorner(gl_VertexID);
   // pass 0（背景/光标）用 flags.xy 当尺寸倍数：背景是 1×1，光标可以是细条；
   // pass 1（字形）用 flags.z 当列数倍数：连字/宽字符的 quad 要横跨 span 格
   vec2 size = vec2(1.0);

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Copyright (C) 2026 terminal-1000 contributors
+
+  注意几处不显眼但关键的地方（每条都对应一类真实故障）：
+
+  - `configChanges` 必须包含全部分支：不写的话，旋转屏幕、外接键盘插拔、
+    分屏拖动都会**重建 Activity**，WebView 随之销毁重建 —— 用户看到的是
+    "所有终端会话都没了"。写了之后由我们自己处理尺寸变化。
+  - `screenOrientation="sensorLandscape"`：平板横屏专享（用户决策）。
+    用 sensorLandscape 而不是 landscape，允许 180° 翻转以便平放任意方向（左右手）。
+  - `launchMode="singleTask"`：从最近任务点回应用时复用同一个 Activity，
+    不重新走 onCreate（那会让 Node 再起一份）。
+  - 明文流量只对 localhost 开放（见 network_security_config.xml）：
+    回环 WS 是明文，但**不能**因此全局放开 cleartext。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 前台服务：保持 Node 进程不被系统回收（长连接、长任务的前提） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- 会话结束/备份完成的通知（API 33+ 需运行时申请） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 长任务期间保持 CPU（下载大文件、长时间 SSH 会话） -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 平板/大屏优先，但允许手机安装（横屏使用） -->
+    <supports-screens
+        android:largeScreens="true"
+        android:normalScreens="true"
+        android:xlargeScreens="true" />
+
+    <application
+        android:name=".T1000App"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:requestLegacyExternalStorage="false"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.T1000"
+        android:largeHeap="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:screenOrientation="sensorLandscape"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Node 运行时承载服务。
+
+          `foregroundServiceType="specialUse"`：这不是 dataSync（我们不是在同步数据），
+          而是"维持一个持久的本地计算会话"，属于 specialUse 的典型场景。
+          API 34+ 要求 specialUse 声明属性，见下面的 property。
+        -->
+        <service
+            android:name=".NodeService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="维持终端会话所需的本地 Node 运行时（SSH/SFTP/Telnet 长连接与本地 shell）" />
+        </service>
+
+        <!--
+          FileProvider：把应用私有目录里的文件（SFTP 下载、在线编辑的副本）
+          交给系统 App 打开。Android 7+ 不允许直接传 file:// URI。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

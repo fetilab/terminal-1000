@@ -53,3 +53,23 @@ docs/shot-*.png
 apps/desktop/vitest.config.ts.timestamp-*.mjs
 apps/desktop/electron.vite.config.*.mjs
 _tmp_*
+
+# ── Android（apps/android）──────────────────────────────────────────────
+# 重要：这个工程的"源码"只有 Kotlin + Gradle + 脚本；下面全是**可再生成**的
+# 东西，尤其是 jniLibs（212MB 的 libnode/ICU）与 assets（46MB 的渲染层副本），
+# 一旦入库会把仓库撑到不可用。重建方式见 apps/android/README 与 scripts/：
+#   scripts/fetch-runtime.sh <abi>     → jniLibs（Node + node-pty）
+#   scripts/build-rootfs.sh <abi>      → jniLibs 里的 proot + assets/rootfs.tgz
+#   node-host/build.mjs                → assets/host、assets/renderer、assets/resources
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/
+apps/android/local.properties
+apps/android/_cache/
+apps/android/node-host/node_modules/
+apps/android/node-host/out/
+apps/android/app/src/main/jniLibs/
+apps/android/app/src/main/assets/host/
+apps/android/app/src/main/assets/renderer/
+apps/android/app/src/main/assets/resources/
+apps/android/app/src/main/assets/rootfs.tgz
