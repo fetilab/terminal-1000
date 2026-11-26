@@ -9,16 +9,27 @@
 #
 #   GITHUB_TOKEN=ghp_xxx scripts/release.sh            # 用 package.json 里的版本
 #   GITHUB_TOKEN=ghp_xxx scripts/release.sh --dry-run  # 只打印将要做什么
+#   GITHUB_TOKEN=ghp_xxx scripts/release.sh --android-only  # 只发两个 APK
 #
 # 做的事：确认工作区干净 → 推 master → 建 tag → 建 Release → 逐个上传附件。
-# 附件从 apps/desktop/release/ 按版本号自动挑选（六种桌面格式 + 两个 Android ABI）。
+# 附件从 apps/desktop/release/ 按版本号自动挑选（六种桌面格式 + 两个 Android ABI）；
+# 加 --android-only 时只要两个 APK。
 set -uo pipefail
 
 REPO=${REPO:-fetilab/terminal-1000}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 REL_DIR="$ROOT/apps/desktop/release"
 DRY=0
-[ "${1:-}" = "--dry-run" ] && DRY=1
+# --android-only：只发两个 APK。
+# 用于「桌面端一行没改、只有 Android 修复」的补丁版 —— 让用户重下 750MB 的
+# 六个桌面包毫无意义，而版本号又必须往上走（否则用户分不清手上哪个是坏的）。
+ANDROID_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY=1 ;;
+    --android-only) ANDROID_ONLY=1 ;;
+  esac
+done
 
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[31m失败:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -71,6 +82,13 @@ ASSETS=(
   "$REL_DIR/terminal-1000-$VERSION-arm64-v8a.apk"
   "$REL_DIR/terminal-1000-$VERSION-x86_64.apk"
 )
+if [ "$ANDROID_ONLY" -eq 1 ]; then
+  ASSETS=(
+    "$REL_DIR/terminal-1000-$VERSION-arm64-v8a.apk"
+    "$REL_DIR/terminal-1000-$VERSION-x86_64.apk"
+  )
+  say "--android-only：只发两个 APK（桌面端沿用上个版本）"
+fi
 missing=0
 for f in "${ASSETS[@]}"; do
   if [ -f "$f" ]; then
@@ -80,7 +98,7 @@ for f in "${ASSETS[@]}"; do
     missing=1
   fi
 done
-[ "$missing" -eq 0 ] || die "八种格式没齐，不会只上传一部分"
+[ "$missing" -eq 0 ] || die "附件没齐，不会只上传一部分"
 
 if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
   die "工作区有未提交改动，先提交（Release 必须对应一个确定的提交）"

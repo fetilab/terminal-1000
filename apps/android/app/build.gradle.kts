@@ -34,8 +34,8 @@ android {
         applicationId = "dev.t1000.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 300
-        versionName = "0.3.0"
+        versionCode = 301
+        versionName = "0.3.1"
 
         // 只发 arm64：Node 运行时与原生模块都要针对 ABI 单独提供，
         // 每多一个 ABI 就多一份 40MB+ 的运行时与两套编译产物。
@@ -72,30 +72,37 @@ android {
             useLegacyPackaging = true
 
             /**
-             * **proot 系列绝对不能 strip。**
+             * **一个都不能 strip。**
              *
-             * 这几份 .so 是 `patchelf` 改过的（`--set-soname` / `--replace-needed`
-             * / `--set-rpath`）。patchelf 修改 ELF 时会把 `.interp`、`.dynstr` 追加到
-             * 新的页边界，中间留一段填充，于是最后一个 PT_LOAD 变成
+             * 起因是 patchelf 改过的 proot 系列：patchelf 会把 `.interp`、`.dynstr`
+             * 追加到新的页边界并留一段填充，于是最后一个 PT_LOAD 变成
              * `p_offset=0x44000 / p_vaddr=0x50000`（两者 mod 0x4000 相等，合法）。
+             * AGP 默认的 `llvm-strip` 会删掉这截填充、**却不修正 `p_offset`**：
+             * 文件里变成 `p_offset=0x431b0 / p_vaddr=0x50000`，偏移与地址不再同余
+             * → `linker64` 映射错位 → proot 在 `main()` 之前 SIGSEGV。
              *
-             * AGP 默认会用 `llvm-strip` 清符号，而它会把这截填充删掉、**却不修正
-             * `p_offset`**：文件里变成 `p_offset=0x431b0 / p_vaddr=0x50000`，
-             * 偏移与地址不再同余 → `linker64` 映射错位 → proot 在 `main()` 之前
-             * 就 SIGSEGV，输出 0 字节、logcat 无崩溃记录。
+             * 但当时只把 proot 四个文件加进了白名单，**漏了其余全部**。
+             * 2026-11 的 v0.3.0 arm64 就这么发出去了：jniLibs 源文件 16 个全 OK，
+             * APK 里 libcrypto / libssl / libicuuc / libicui18n / libsqlite3 的
+             * 4K 同余全被 strip 破坏，libnode / libz 的 16K 同余也被破坏 ——
+             * libnode 是 node host 的入口，它加载不了就是「点开应用直接闪退」。
              *
-             * 这个症状极具迷惑性：同一份源码手工推到 /data/local/tmp 跑完全正常
-             * （没被 strip），装进 APK 就崩，且崩得毫无信息量。
-             * keepDebugSymbols 让 MergeNativeLibs 跳过 strip，保持二进制与
-             * `scripts/build-rootfs.sh` 的产物逐字节一致。
-             * 下方的 `verifyNativeLibs` 任务会断言这一点。
+             * x86_64 那份当时恰好 strip 之后仍然对齐，于是 Waydroid 全绿、
+             * arm64 真机全崩。这就是「只验一个 ABI 等于没验」的代价。
+             *
+             * 所以这里改成**通配**：只要进了 jniLibs 的 so 一律不动。
+             * 代价是 APK 里会留符号表（实测 libnode 只差几 KB，因为 Termux 的
+             * node 本身就是 strip 过的）；收益是「能否加载」不再取决于运气。
+             *
+             * 校验放在 `scripts/verify-elf-alignment.py`，由打包脚本在签名前调用：
+             * 判据是 linker 的硬要求 `(p_vaddr - p_offset) % page_size == 0`（4K 与
+             * 16K 都要过）。之所以不在这个 build script 里内联实现，是因为
+             * Kotlin DSL 对 `plugins {}` 与 `android {}` 之间的顶层声明极敏感 ——
+             * 试过两种位置，一次让 `plugins {}` 被静默忽略（`assembleRelease`
+             * 直接找不到），一次让 `android {}` 里的 compileSdk 不生效。
+             * 校验本身与 ABI 无关，放脚本里更可靠也更容易单独复跑。
              */
-            keepDebugSymbols += setOf(
-                "**/libproot.so",
-                "**/libproot-loader.so",
-                "**/libtalloc.so",
-                "**/libandroid-shmem.so",
-            )
+            keepDebugSymbols += setOf("**/*.so")
         }
         resources {
             excludes += setOf(

@@ -1,7 +1,7 @@
 {
   "name": "@t1000/desktop",
   "productName": "terminal-1000",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "terminal-1000 desktop application",
   "license": "GPL-3.0-or-later",

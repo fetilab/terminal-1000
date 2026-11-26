@@ -7,6 +7,45 @@
 "修复了 X 的问题"。因为这个项目里有一批缺陷属于"看起来正常、实际从未生效"，
 把根因写下来，比写"已修复"对后来者有用得多。
 
+## [0.3.1] - 2026-11-26
+
+**只修 Android，桌面端包与 0.3.0 完全相同（无代码改动，无需重装）。**
+
+### 修复
+
+- **Android arm64 包装上后点开就闪退（0.3.0 的发布事故）**。
+  现象：群里反馈「根本无法启动」，没有报错、没有画面，logcat 里也只是一行
+  `dlopen failed`。
+
+  根因：`packaging.jniLibs.keepDebugSymbols` 当时只白名单了 proot 的四个文件，
+  其余 so 仍被 AGP 的 `llvm-strip` 处理。strip 会删掉段与段之间的填充页，
+  却**不修正 `p_offset`**，于是 `(p_vaddr - p_offset) % page_size != 0`，
+  `linker64` 拒绝映射。实测 0.3.0 的 arm64 包里有 **7/16 个 so 不可加载**：
+  `libcrypto` / `libssl` / `libicuuc` / `libicui18n` / `libsqlite3` 连 4 KB
+  同余都被破坏，`libnode` / `libz` 的 16 KB 同余被破坏 —— `libnode` 是 node
+  host 的入口，它加载不了，整个应用就是「点开即死」。
+
+  x86_64 那份恰好 strip 之后仍然对齐，所以 Waydroid 上 28/28 全绿，
+  而 arm64 真机全崩。这次教训写进构建门禁里：`keepDebugSymbols` 改成
+  `**/*.so` 通配，并新增 `apps/android/scripts/verify-elf-alignment.py`
+  在签名前逐 so 校验 4 KB/16 KB 同余、DT_HASH/DT_GNU_HASH、DT_TEXTREL、
+  依赖闭环 —— 不通过就不出包。
+
+- **启动失败时是纯黑屏，没有任何信息**。原先 `fatalReason` 只写进 logcat，
+  界面要等 35 秒且只打日志。现在失败会立刻切到诊断页：失败原因、设备 ABI、
+  **页大小（16 KB 设备会标注）**、Android 版本、WebView 版本，以及 Node 日志
+  末尾 40 行，长按可复制。这样再遇到装不上的情况，用户能直接把原因发出来。
+
+### 新增
+
+- `apps/android/scripts/verify-elf-alignment.py`：独立可复跑的 ELF 可加载性
+  校验器（目录或 APK 都能查）。判据直接对齐 bionic `linker64` 的准入条件。
+- 打包脚本 `host-android-release.sh` 加上 `set -e`：之前 gradle 失败它会继续
+  拿**上一次构建残留的** unsigned APK 去签名，打出一个"签名有效、内容是旧的"
+  包。现在构建前先删除旧产物，构建失败立即退出。
+
+---
+
 ## [0.3.0] - 2026-11-25
 
 首个 **Android 平板** 版本。桌面端的渲染层与主进程逻辑原样复用，只把

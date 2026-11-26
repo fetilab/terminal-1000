@@ -48,6 +48,43 @@ class T1000App : Application() {
         @Volatile
         var fatalReason: String? = null
 
+        /**
+         * 失败时的订阅者。
+         *
+         * 为什么需要它：只靠 [fatalReason] 这个字段，界面得**轮询**才知道该显示
+         * 错误页，而最该显示的时刻（进程刚挂、页面还是黑的）恰恰最容易错过。
+         * 有了这个列表，失败一发生就能把界面切过去。
+         *
+         * 用 CopyOnWriteArrayList：写入极稀疏（一辈子一次），读取在 UI 线程，
+         * 读写并发下不用加锁。
+         */
+        private val fatalObservers = CopyOnWriteArrayList<(String) -> Unit>()
+
+        /** 界面注册失败通知；若已经失败过，立即回调一次（避免错过） */
+        fun onFatal(observer: (String) -> Unit) {
+            val already = fatalReason
+            if (already != null) {
+                runCatching { observer(already) }
+                return
+            }
+            fatalObservers.add(observer)
+            // 注册与发布之间存在竞态窗口，补一次检查
+            val after = fatalReason
+            if (after != null && fatalObservers.remove(observer)) {
+                runCatching { observer(after) }
+            }
+        }
+
+        fun publishFatal(reason: String) {
+            fatalReason = reason
+            Log.e(TAG, "发布启动失败原因: $reason")
+            val snapshot = fatalObservers.toList()
+            fatalObservers.clear()
+            for (o in snapshot) {
+                runCatching { o(reason) }
+            }
+        }
+
         /** 注意：Android 上只能监听 127.0.0.1，绝不能用 0.0.0.0（平板常连公共 Wi-Fi） */
         const val BRIDGE_HOST = "127.0.0.1"
 

@@ -1,6 +1,6 @@
 {
   "name": "@t1000/android-host",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "terminal-1000 Android node host (reuses desktop main process via electron shim)",

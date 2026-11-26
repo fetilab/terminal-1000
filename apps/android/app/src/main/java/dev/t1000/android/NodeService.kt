@@ -63,8 +63,9 @@ class NodeService : Service() {
             onPortReady = { port -> Log.i(TAG, "Node 桥就绪: $port") },
             onFatal = { reason ->
                 Log.e(TAG, "Node 启动失败: $reason")
-                // 把失败原因留给界面显示（Application 单例里读）
-                T1000App.fatalReason = reason
+                // 把失败原因留给界面显示（Application 单例里读），
+                // 同时主动推给已注册的界面 —— 否则用户只能看到黑屏等 35 秒
+                T1000App.publishFatal(reason)
             },
         )
 

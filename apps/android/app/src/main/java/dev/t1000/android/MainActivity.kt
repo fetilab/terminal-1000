@@ -74,6 +74,9 @@ class MainActivity : AppCompatActivity() {
     /** 是否已经加载过页面（Node 重启换端口时需要重新加载） */
     private var loaded = false
 
+    /** 是否已经切到「启动失败」诊断页（避免失败回调与定时兜底重复刷同一页） */
+    private var fatalShown = false
+
     /** 文件选择器的等待者：一次只允许一个选择请求（符合用户直觉） */
     private var pickDeferred: CompletableDeferred<List<Uri>>? = null
     private var pickDirectory = false
@@ -144,7 +147,118 @@ class MainActivity : AppCompatActivity() {
 
         // 先起服务，再等端口。顺序很重要：Service 负责拉起 Node 进程。
         NodeService.start(this)
+
+        /*
+         * 订阅启动失败。
+         *
+         * 之前这里只有一条 35 秒的定时器：到点若还没加载就**写一行 logcat** 了事。
+         * 结果是「点开应用 → 黑屏 → 什么提示都没有」，而真正的原因（子进程
+         * dlopen libnode.so 失败）安安静静躺在 logcat 里 —— 群友反馈「根本无法
+         * 启动」时，双方都无从下手。
+         *
+         * 现在失败一发生就把界面切成诊断页：失败原因 + 设备/ABI/页大小 + Node
+         * 日志尾部。用户长按就能把整块复制出来发给我。
+         */
+        T1000App.onFatal { reason -> showFatalPage(reason) }
+
         awaitBridgeThenLoad()
+    }
+
+    /**
+     * 用一屏 HTML 代替黑屏。
+     *
+     * 刻意把「页大小」摆出来：Android 15 起新机型大量改用 16 KB 页，而
+     * 4 KB 对齐的 so 在 16 KB 设备上会 dlopen 失败 —— 这是最容易被忽略、
+     * 又最能一眼定性的一个数字。
+     */
+    private fun showFatalPage(reason: String) {
+        runOnUiThread {
+            if (fatalShown) return@runOnUiThread
+            fatalShown = true
+            Log.e(TAG, "显示启动失败页: $reason")
+            webView.loadDataWithBaseURL(null, buildFatalHtml(reason), "text/html", "utf-8", null)
+        }
+    }
+
+    /**
+     * 读设备页大小（字节）。
+     *
+     * 为什么不用 `Os.sysconf(OsConstants._SC_PAGESIZE)`：那个常量在 android.jar 里
+     * 是 @hide 的，编译过得了但运行时可能 NoSuchFieldError —— 在"诊断页"这种
+     * 绝不能自己崩的地方不值得冒这个险。
+     *
+     * 改读 `/proc/self/auxv`：内核在进程启动时把 AT_PAGESZ 写进去，格式是
+     * 一串 (type: u64, value: u64) 小端对，AT_PAGESZ = 6。纯文件读取，
+     * 从 API 21 到最新都一样。
+     */
+    private fun detectPageSize(): Long = runCatching {
+        val buf = File("/proc/self/auxv").readBytes()
+        var i = 0
+        while (i + 16 <= buf.size) {
+            var type = 0L
+            var value = 0L
+            for (k in 0 until 8) {
+                type = type or ((buf[i + k].toLong() and 0xFF) shl (8 * k))
+                value = value or ((buf[i + 8 + k].toLong() and 0xFF) shl (8 * k))
+            }
+            if (type == 6L) return@runCatching value // AT_PAGESZ
+            i += 16
+        }
+        0L
+    }.getOrDefault(0L)
+
+    private fun buildFatalHtml(reason: String): String {
+        fun esc(s: String): String = s
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        val pageSize = detectPageSize()
+
+        val webViewPkg = runCatching {
+            WebViewCompat.getCurrentWebViewPackage(this)?.let { "${it.packageName} ${it.versionName}" }
+        }.getOrNull() ?: "(未知)"
+
+        val logTail = runCatching { runtime.tailLog(40) }.getOrDefault("(读取日志失败)")
+
+        val env = buildString {
+            appendLine("应用版本   ${BuildConfigCompat.versionName(this@MainActivity)} (${BuildConfigCompat.versionCode(this@MainActivity)})")
+            appendLine("Android   ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            appendLine("机型      ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("ABI       ${Build.SUPPORTED_ABIS.joinToString(", ")}")
+            appendLine("页大小    $pageSize 字节" + if (pageSize == 16384L) "（16 KB 设备）" else "")
+            appendLine("WebView   $webViewPkg")
+            appendLine("应用 ID   $packageName")
+        }
+
+        return """
+            <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>启动失败</title>
+            <style>
+              :root { color-scheme: dark }
+              body { margin:0; padding:24px; background:#16181d; color:#e6e8ee;
+                     font:15px/1.6 -apple-system,system-ui,"Noto Sans CJK SC",sans-serif }
+              h1 { font-size:20px; margin:0 0 4px }
+              .sub { color:#9aa3b2; font-size:13px; margin-bottom:20px }
+              .card { background:#1e2128; border:1px solid #2b303a; border-radius:10px;
+                      padding:14px 16px; margin-bottom:14px }
+              .reason { color:#ff9a9a; font-weight:600; white-space:pre-wrap; word-break:break-word }
+              h2 { font-size:13px; color:#9aa3b2; font-weight:600; letter-spacing:.06em;
+                   text-transform:uppercase; margin:18px 0 8px }
+              pre { margin:0; padding:12px 14px; background:#12141a; border:1px solid #2b303a;
+                    border-radius:8px; overflow:auto; font:12px/1.55 ui-monospace,Menlo,monospace;
+                    color:#c8d0dd; -webkit-user-select:text; user-select:text }
+              .hint { color:#7f8899; font-size:12px; margin-top:18px }
+            </style></head><body>
+            <h1>terminal-1000 启动失败</h1>
+            <div class="sub">与本机 Node 运行时的连接没有建立起来。</div>
+            <div class="card"><div class="reason">${esc(reason)}</div></div>
+            <h2>环境</h2>
+            <pre>${esc(env)}</pre>
+            <h2>Node 日志（末尾 40 行）</h2>
+            <pre>${esc(logTail)}</pre>
+            <div class="hint">长按上面的文字可以选中复制。反馈问题时把「环境」和「Node 日志」一起发出来。</div>
+            </body></html>
+        """.trimIndent()
     }
 
     override fun onDestroy() {
@@ -321,7 +435,7 @@ class MainActivity : AppCompatActivity() {
             // 这里如实报错而不是静默降级：没有桥，界面等于不能用，
             // 用户应当看到明确提示而不是一屏白。
             Log.e(TAG, "当前 WebView 不支持 document-start 脚本，无法注入桥")
-            T1000App.fatalReason = "系统 WebView 版本过旧，请更新 Android System WebView 后重试"
+            T1000App.publishFatal("系统 WebView 版本过旧，请更新 Android System WebView 后重试")
             return
         }
 
@@ -378,13 +492,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 失败兜底：界面至少要能看到原因，而不是纯黑
+        // 最终兜底：既没失败回调、也没加载成功（例如子进程卡死不退出）。
+        // 到点就把现有的信息摆出来，别让用户对着黑屏猜。
         webView.postDelayed({
-            if (!loaded) {
+            if (!loaded && !fatalShown) {
                 val reason = T1000App.fatalReason
-                if (reason != null) {
-                    Log.e(TAG, "启动失败: $reason")
-                }
+                    ?: "Node 运行时在 35 秒内没有就绪（子进程可能卡住或反复崩溃，原因见下方日志）"
+                showFatalPage(reason)
             }
         }, 35_000)
     }
